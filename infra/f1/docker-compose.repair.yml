@@ -1,0 +1,57 @@
+# F1.1.1 disposable acceptance overlay.
+#
+# This file is valid only with a random ``anhuan-f111-repair-<uuid4hex>``
+# project. It gives every locally-built image a project-unique tag and bounds
+# Docker logs so clean-rebuild rounds cannot reuse images or accumulate output
+# outside their project-scoped resources.
+x-repair-runtime: &repair-runtime
+  restart: "no"
+  logging:
+    driver: local
+    options:
+      max-size: "10m"
+      max-file: "2"
+  labels:
+    anhuan.scope: f111-repair
+    anhuan.repair-project: ${F111_REVERSE_PROJECT:?F111_REVERSE_PROJECT_REQUIRED}
+
+services:
+  keycloak:
+    <<: *repair-runtime
+  keycloak-provisioner:
+    <<: *repair-runtime
+    image: anhuan-f111-repair-api:${F111_REVERSE_PROJECT:?F111_REVERSE_PROJECT_REQUIRED}
+  minio:
+    <<: *repair-runtime
+  redis:
+    <<: *repair-runtime
+  jaeger:
+    <<: *repair-runtime
+  prometheus:
+    <<: *repair-runtime
+  grafana:
+    <<: *repair-runtime
+  otel-collector:
+    <<: *repair-runtime
+  ragflow-mysql:
+    <<: *repair-runtime
+  ragflow-es01:
+    <<: *repair-runtime
+  ragflow-redis:
+    <<: *repair-runtime
+  ragflow-minio:
+    <<: *repair-runtime
+  ragflow:
+    <<: *repair-runtime
+  api:
+    <<: *repair-runtime
+    image: anhuan-f111-repair-api:${F111_REVERSE_PROJECT:?F111_REVERSE_PROJECT_REQUIRED}
+  worker:
+    <<: *repair-runtime
+    image: anhuan-f111-repair-worker:${F111_REVERSE_PROJECT:?F111_REVERSE_PROJECT_REQUIRED}
+  dispatcher:
+    <<: *repair-runtime
+    image: anhuan-f111-repair-worker:${F111_REVERSE_PROJECT:?F111_REVERSE_PROJECT_REQUIRED}
+  web:
+    <<: *repair-runtime
+    image: anhuan-f111-repair-web:${F111_REVERSE_PROJECT:?F111_REVERSE_PROJECT_REQUIRED}

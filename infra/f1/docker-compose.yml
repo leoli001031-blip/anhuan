@@ -1,0 +1,532 @@
+# F1 platform-shell local dev stack.
+# All ports bound to 127.0.0.1; every container/volume/network prefixed anhuan-f1-.
+services:
+  keycloak:
+    # 26.0 (was 25.0): 25.0.6 breaks password-grant login for any
+    # non-master realm ("Account is not fully set up"); 26.0 fixes it.
+    image: quay.io/keycloak/keycloak:26.1.1@sha256:75ca4b2e4e954ff89c20ba8e5aeeef3bd0d250847fedb1c9752949823b319dda
+    command:
+      - start-dev
+      - --import-realm
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - >-
+        export KEYCLOAK_ADMIN_PASSWORD="$$(cat /run/secrets/keycloak_admin_password)";
+        exec /opt/keycloak/bin/kc.sh "$${@}"
+      - --
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      # Import the fully-provisioned realm at startup (official import path;
+      # REST-created realms hit a KC 25.0.6 auth-flow init defect).
+      - KEYCLOAK_IMPORT=/opt/keycloak/data/import/realm-import.json
+    ports:
+      - "127.0.0.1:${F1_KEYCLOAK_HOST_PORT:-8080}:8080"
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - ./keycloak/realm-import.json:/opt/keycloak/data/import/realm-import.json:ro
+    networks:
+      - f1net
+    secrets:
+      - keycloak_admin_password
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080 && exec 3<&- || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  # Realm identities are tracked without credentials.  This one-shot gate
+  # loads one distinct 0600 password file per synthetic user and uses the
+  # Keycloak Admin REST API; values never enter argv, env, logs or artifacts.
+  keycloak-provisioner:
+    build:
+      context: ../..
+      dockerfile: infra/f1/Dockerfile
+    image: anhuan-f1-api:f111
+    command: ["python", "-B", "-m", "platform_foundation.f1.keycloak_provision"]
+    environment:
+      - F1_SECRETS_DIR=/run/secrets/f1
+      - F1_KEYCLOAK_REALM=anhuan
+      - F1_WEB_PUBLIC_ORIGIN=${F1_WEB_PUBLIC_ORIGIN:?F1_WEB_PUBLIC_ORIGIN_REQUIRED}
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_URL=http://keycloak:8080
+    volumes:
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/keycloak_admin_password:/run/secrets/f1/keycloak_admin_password:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/oidc_admin_anhuan_local:/run/secrets/f1/oidc_admin_anhuan_local:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/oidc_tester:/run/secrets/f1/oidc_tester:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/oidc_tenant_a:/run/secrets/f1/oidc_tenant_a:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/oidc_tenant_b:/run/secrets/f1/oidc_tenant_b:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/oidc_invitee:/run/secrets/f1/oidc_invitee:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/oidc_auditor:/run/secrets/f1/oidc_auditor:ro
+    networks:
+      - f1net
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    restart: "no"
+
+  minio:
+    image: minio/minio:RELEASE.2024-07-29T22-14-52Z@sha256:29110b4abbcc7c2a71f19f5e375d50c2771c94272efba59c9a0532c88403672d
+    command: ["server", "--console-address", ":9001", "/data"]
+    environment:
+      - MINIO_ROOT_USER_FILE=/run/secrets/minio_root_user
+      - MINIO_ROOT_PASSWORD_FILE=/run/secrets/minio_root_password
+    ports:
+      - "127.0.0.1:${F1_MINIO_API_HOST_PORT:-9000}:9000"
+      - "127.0.0.1:${F1_MINIO_CONSOLE_HOST_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && exec 3<&- || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    secrets:
+      - minio_root_user
+      - minio_root_password
+
+  redis:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    command: ["redis-server"]
+    ports:
+      - "127.0.0.1:${F1_REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  # P3 local malware scanner.  The full image carries a frozen signature
+  # database; online FreshClam updates stay disabled for deterministic local
+  # prototypes.  ClamD is reachable only on the private Compose network.
+  clamd:
+    image: clamav/clamav:1.4.6-debian13-slim@sha256:aaf6efb85740dc60872e2c13e5b7778c2d57b05b960f854a2461eaf729250d18
+    platform: linux/arm64
+    environment:
+      - CLAMAV_NO_FRESHCLAMD=true
+      - CLAMD_STARTUP_TIMEOUT=300
+      - CLAMD_CONF_MaxFileSize=52428800
+      - CLAMD_CONF_MaxScanSize=52428800
+      - CLAMD_CONF_StreamMaxLength=52428800
+    networks:
+      - f1net
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1073741824
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping=1 >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+
+  prometheus:
+    image: prom/prometheus:v2.53.1@sha256:f20d3127bf2876f4a1df76246fca576b41ddf1125ed1c546fbd8b16ea55117e6
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "127.0.0.1:${F1_PROMETHEUS_HOST_PORT:-9090}:9090"
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9090/-/healthy || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  grafana:
+    image: grafana/grafana:11.1.0@sha256:079600c9517b678c10cda6006b4487d3174512fd4c6cface37df7822756ed7a5
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD__FILE=/run/secrets/grafana_admin_password
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "127.0.0.1:${F1_GRAFANA_HOST_PORT:-3000}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - f1net
+    secrets:
+      - grafana_admin_password
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health > /dev/null || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.59@sha256:e369bd9a8e4a212bfed67aaff59b77ce0676df32828aaccca468a866efcb732b
+    environment:
+      # Bind OTLP receivers to all interfaces so the host port mapping works
+      # (default 127.0.0.1 inside the container blocks forwarded traffic).
+      - COLLECTOR_OTLP_GRPC_HOST_PORT=:4317
+      - COLLECTOR_OTLP_HTTP_HOST_PORT=:4318
+    ports:
+      - "127.0.0.1:${F1_JAEGER_UI_HOST_PORT:-16686}:16686"
+      - "127.0.0.1:${F1_JAEGER_OTLP_GRPC_HOST_PORT:-4317}:4317"
+      - "127.0.0.1:${F1_JAEGER_OTLP_HTTP_HOST_PORT:-4318}:4318"
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:16686/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.107.0@sha256:b65527791431d76d058b2813748a3f4a8912540d7b23beac2f6b4e02c872f5b7
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel/collector.yaml:/etc/otel/config.yaml:ro
+    tmpfs:
+      - /var/log/otel:rw,noexec,nosuid,nodev,size=16777216,mode=0700
+    # No host port binding for the OTLP receivers: 4317/4318 on the host
+    # belong to Jaeger per the F1 port matrix.  The collector's receivers
+    # stay reachable on the internal network (apps send to
+    # otel-collector:4317/4318).
+    depends_on:
+      - jaeger
+      - prometheus
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD", "/otelcol-contrib", "validate", "--config=/etc/otel/config.yaml"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  # --- RAGFlow retrieval sidecar (reuses the F0-J1 stack images) ---
+  # Every RAGFlow-internal dependency is network-only (no host ports); the
+  # F1 business MinIO/Redis own 9000/6379.  Only the ragflow API is exposed
+  # on the host (80/9380) for the worker/QA.
+  ragflow-mysql:
+    image: mysql:8.0.39@sha256:ccb8f749bb5e59f9f8f03bf7282c7ef27a93a1814a24f0a8a926fb4e19b7fb97
+    environment:
+      - MYSQL_ROOT_PASSWORD=${RAGFLOW_MYSQL_ROOT_PASSWORD:-infini_rag_flow}
+    command:
+      --max_connections=1000
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-authentication-plugin=mysql_native_password
+      --init-file /data/application/init.sql
+      --binlog_expire_logs_seconds=604800
+    volumes:
+      - ragflow_mysql_data:/var/lib/mysql
+      - ./ragflow/init.sql:/data/application/init.sql
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-p${RAGFLOW_MYSQL_ROOT_PASSWORD:-infini_rag_flow}"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  ragflow-es01:
+    image: elasticsearch:8.11.3@sha256:58a3a280935d830215802322e9a0373faaacdfd646477aa7e718939c2f29292a
+    volumes:
+      - ragflow_es_data:/usr/share/elasticsearch/data
+    environment:
+      - node.name=ragflow-es01
+      - ELASTIC_PASSWORD=${RAGFLOW_ELASTIC_PASSWORD:-infini_rag_flow}
+      - bootstrap.memory_lock=false
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - cluster.routing.allocation.disk.watermark.low=5gb
+      - cluster.routing.allocation.disk.watermark.high=3gb
+      - cluster.routing.allocation.disk.watermark.flood_stage=2gb
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    mem_limit: 2147483648
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:${RAGFLOW_ELASTIC_PASSWORD:-infini_rag_flow} http://localhost:9200 > /dev/null || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  ragflow-minio:
+    image: pgsty/minio:RELEASE.2026-03-25T00-00-00Z@sha256:a72bf37c235a83a73890d2a46c5b36801fed61c335175e0396070bf84a8bbb98
+    command: ["server", "--console-address", ":9001", "/data"]
+    environment:
+      - MINIO_ROOT_USER=${RAGFLOW_MINIO_USER:-rag_flow}
+      - MINIO_ROOT_PASSWORD=${RAGFLOW_MINIO_PASSWORD:-infini_rag_flow}
+    volumes:
+      - ragflow_minio_data:/data
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  ragflow-redis:
+    image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+    command:
+      [
+        "redis-server",
+        "--requirepass",
+        "${RAGFLOW_REDIS_PASSWORD:-infini_rag_flow}",
+        "--maxmemory",
+        "128mb",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    volumes:
+      - ragflow_redis_data:/data
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${RAGFLOW_REDIS_PASSWORD:-infini_rag_flow}", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  ragflow:
+    image: infiniflow/ragflow@sha256:36c22d70e32494395c0cd5fa8fd65b6ff4aa1302a82ebca1d38d9f3d52d000b8
+    platform: linux/arm64
+    depends_on:
+      ragflow-mysql:
+        condition: service_healthy
+      ragflow-es01:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${F1_RAGFLOW_API_HOST_PORT:-9380}:9380"
+      - "127.0.0.1:${F1_RAGFLOW_HTTP_HOST_PORT:-80}:80"
+    environment:
+      - DOC_ENGINE=elasticsearch
+      - DEVICE=cpu
+      - STACK_VERSION=8.11.3
+      - ES_HOST=ragflow-es01
+      - ES_PORT=1200
+      - ELASTIC_PASSWORD=${RAGFLOW_ELASTIC_PASSWORD:-infini_rag_flow}
+      - MYSQL_PASSWORD=${RAGFLOW_MYSQL_ROOT_PASSWORD:-infini_rag_flow}
+      - MYSQL_HOST=ragflow-mysql
+      - MYSQL_DBNAME=rag_flow
+      - MYSQL_PORT=3306
+      - MINIO_HOST=ragflow-minio
+      - MINIO_CONSOLE_PORT=9001
+      - MINIO_PORT=9000
+      - MINIO_USER=${RAGFLOW_MINIO_USER:-rag_flow}
+      - MINIO_PASSWORD=${RAGFLOW_MINIO_PASSWORD:-infini_rag_flow}
+      - REDIS_HOST=ragflow-redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=${RAGFLOW_REDIS_PASSWORD:-infini_rag_flow}
+      - SVR_WEB_HTTP_PORT=80
+      - SVR_WEB_HTTPS_PORT=443
+      - SVR_HTTP_PORT=9380
+      - ADMIN_SVR_HTTP_PORT=9381
+      - API_PROXY_SCHEME=python
+      - ALLOW_ANY_HOST=0
+      - TZ=Asia/Shanghai
+      - REGISTER_ENABLED=1
+      - USE_DOCLING=false
+      - DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+    volumes:
+      - ragflow_logs:/ragflow/logs
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:80 > /dev/null || exit 1"]
+      interval: 15s
+      timeout: 20s
+      retries: 120
+
+  # --- F1.1 application services ---
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/f1/Dockerfile
+    image: anhuan-f1-api:f111
+    command: ["python", "-m", "uvicorn", "platform_foundation.f1.api.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      - F1_SECRETS_DIR=/run/secrets/f1
+      - F1_PROVIDER_SECRETS_DIR=/run/secrets/provider
+      - F1_F0I_KEY_FILE=/run/secrets/f0i/key
+      - F1_INVITE_KEY_FILE=/run/secrets/f1/invite_signing_key
+      - F1_QA_KEY_FILE=/run/secrets/f1/f1_qa_key
+      - F1_API_PASSWORD_FILE=/run/secrets/f1/f1_api_password
+      - F1_MINIO_ROOT_USER_FILE=/run/secrets/f1/minio_root_user
+      - F1_MINIO_ROOT_PASSWORD_FILE=/run/secrets/f1/minio_root_password
+      - F1_DEEPSEEK_API_KEY_FILE=/run/secrets/provider/deepseek_api_key
+      - F1_RAGFLOW_API_KEY_FILE=/run/secrets/provider/ragflow_api_key
+      - F1_ARK_API_KEY_FILE=/run/secrets/provider/ark_api_key
+      - F1_PG_HOST=host.docker.internal
+      - F1_PG_PORT=${F1_PG_PORT:?F1_PG_PORT_REQUIRED}
+      - F1_PG_DATABASE=${F1_PG_DATABASE:?F1_PG_DATABASE_REQUIRED}
+      - F1_KEYCLOAK_ISSUER_URL=${F1_KEYCLOAK_ISSUER_URL:?F1_KEYCLOAK_ISSUER_URL_REQUIRED}
+      - KEYCLOAK_URL=http://keycloak:8080
+      - MINIO_ENDPOINT=minio:9000
+      - REDIS_URL=redis://redis:6379/0
+      - RAGFLOW_BASE_URL=http://ragflow:80
+      - OTEL_EXPORTER_OTLP_ENDPOINT=jaeger:4317
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:${F1_API_HOST_PORT:-8001}:8001"
+    volumes:
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/f1_api_password:/run/secrets/f1/f1_api_password:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/invite_signing_key:/run/secrets/f1/invite_signing_key:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/f1_qa_key:/run/secrets/f1/f1_qa_key:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/minio_root_user:/run/secrets/f1/minio_root_user:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/minio_root_password:/run/secrets/f1/minio_root_password:ro
+      - ${F1_PROVIDER_SECRETS_DIR:?F1_PROVIDER_SECRETS_DIR_REQUIRED}/deepseek_api_key:/run/secrets/provider/deepseek_api_key:ro
+      - ${F1_PROVIDER_SECRETS_DIR:?F1_PROVIDER_SECRETS_DIR_REQUIRED}/ragflow_api_key:/run/secrets/provider/ragflow_api_key:ro
+      - ${F1_PROVIDER_SECRETS_DIR:?F1_PROVIDER_SECRETS_DIR_REQUIRED}/ark_api_key:/run/secrets/provider/ark_api_key:ro
+      - ${F1_F0I_KEY_FILE:?F1_F0I_KEY_FILE_REQUIRED}:/run/secrets/f0i/key:ro
+    networks:
+      - f1net
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      keycloak-provisioner:
+        condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      clamd:
+        condition: service_healthy
+      ragflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz', timeout=5)\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/f1/Dockerfile
+    image: anhuan-f1-api:f111
+    command: ["python", "-c", "from redis import Redis; from rq import Worker, Queue; from platform_foundation.f1.upload_task import REDIS_URL, QUEUE_NAME; w = Worker([Queue(QUEUE_NAME, connection=Redis.from_url(REDIS_URL))]); w.work()"]
+    environment:
+      - F1_SECRETS_DIR=/run/secrets/f1
+      - F1_PROVIDER_SECRETS_DIR=/run/secrets/provider
+      - F1_F0I_KEY_FILE=/run/secrets/f0i/key
+      - F1_WORKER_PASSWORD_FILE=/run/secrets/f1/f1_worker_password
+      - F1_MINIO_ROOT_USER_FILE=/run/secrets/f1/minio_root_user
+      - F1_MINIO_ROOT_PASSWORD_FILE=/run/secrets/f1/minio_root_password
+      - F1_RAGFLOW_API_KEY_FILE=/run/secrets/provider/ragflow_api_key
+      - F1_ARK_API_KEY_FILE=/run/secrets/provider/ark_api_key
+      - F1_PG_HOST=host.docker.internal
+      - F1_PG_PORT=${F1_PG_PORT:?F1_PG_PORT_REQUIRED}
+      - F1_PG_DATABASE=${F1_PG_DATABASE:?F1_PG_DATABASE_REQUIRED}
+      - KEYCLOAK_URL=http://keycloak:8080
+      - MINIO_ENDPOINT=minio:9000
+      - REDIS_URL=redis://redis:6379/0
+      - RAGFLOW_BASE_URL=http://ragflow:80
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/f1_worker_password:/run/secrets/f1/f1_worker_password:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/minio_root_user:/run/secrets/f1/minio_root_user:ro
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/minio_root_password:/run/secrets/f1/minio_root_password:ro
+      - ${F1_PROVIDER_SECRETS_DIR:?F1_PROVIDER_SECRETS_DIR_REQUIRED}/ragflow_api_key:/run/secrets/provider/ragflow_api_key:ro
+      - ${F1_PROVIDER_SECRETS_DIR:?F1_PROVIDER_SECRETS_DIR_REQUIRED}/ark_api_key:/run/secrets/provider/ark_api_key:ro
+      - ${F1_F0I_KEY_FILE:?F1_F0I_KEY_FILE_REQUIRED}:/run/secrets/f0i/key:ro
+    networks:
+      - f1net
+    depends_on:
+      redis:
+        condition: service_healthy
+      ragflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import redis; redis.Redis.from_url('redis://redis:6379/0').ping()\" || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  dispatcher:
+    build:
+      context: ../..
+      dockerfile: infra/f1/Dockerfile
+    image: anhuan-f1-api:f111
+    command: ["python", "-B", "-m", "platform_foundation.f1.dispatcher"]
+    environment:
+      - F1_SECRETS_DIR=/run/secrets/f1
+      - F1_WORKER_PASSWORD_FILE=/run/secrets/f1/f1_worker_password
+      - F1_PG_HOST=host.docker.internal
+      - F1_PG_PORT=${F1_PG_PORT:?F1_PG_PORT_REQUIRED}
+      - F1_PG_DATABASE=${F1_PG_DATABASE:?F1_PG_DATABASE_REQUIRED}
+      - REDIS_URL=redis://redis:6379/0
+      - F1_DISPATCH_INTERVAL_SECONDS=5
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/f1_worker_password:/run/secrets/f1/f1_worker_password:ro
+    networks:
+      - f1net
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import os,time; p='/tmp/f1-dispatcher-heartbeat'; raise SystemExit(0 if os.path.isfile(p) and time.time()-os.path.getmtime(p)<30 else 1)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/f1/web.Dockerfile
+    image: anhuan-f1-web:f111
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:${F1_WEB_HOST_PORT:-5173}:80"
+    networks:
+      - f1net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+secrets:
+  keycloak_admin_password:
+    file: ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/keycloak_admin_password
+  minio_root_user:
+    file: ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/minio_root_user
+  minio_root_password:
+    file: ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/minio_root_password
+  grafana_admin_password:
+    file: ${F1_SECRETS_DIR:?F1_SECRETS_DIR_REQUIRED}/grafana_admin_password
+
+networks:
+  f1net:
+    driver: bridge
+
+volumes:
+  keycloak_data:
+    driver: local
+  minio_data:
+    driver: local
+  redis_data:
+    driver: local
+  grafana_data:
+    driver: local
+  ragflow_mysql_data:
+    driver: local
+  ragflow_es_data:
+    driver: local
+  ragflow_minio_data:
+    driver: local
+  ragflow_redis_data:
+    driver: local
+  ragflow_logs:
+    driver: local

@@ -1,0 +1,134 @@
+{
+  "defaultAction": "SCMP_ACT_ALLOW",
+  "defaultErrnoRet": 1,
+  "architectures": [
+    "SCMP_ARCH_AARCH64"
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "accept",
+        "accept4",
+        "bind",
+        "connect",
+        "getpeername",
+        "getsockname",
+        "getsockopt",
+        "listen",
+        "recvmmsg",
+        "recvfrom",
+        "recvmsg",
+        "sendmmsg",
+        "sendmsg",
+        "sendto",
+        "setsockopt",
+        "shutdown",
+        "socket",
+        "socketpair"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "names": [
+        "add_key",
+        "bpf",
+        "clone3",
+        "delete_module",
+        "finit_module",
+        "fsconfig",
+        "fsmount",
+        "fsopen",
+        "fspick",
+        "init_module",
+        "io_uring_enter",
+        "io_uring_register",
+        "io_uring_setup",
+        "kexec_file_load",
+        "kexec_load",
+        "keyctl",
+        "mount",
+        "mount_setattr",
+        "move_mount",
+        "open_by_handle_at",
+        "open_tree",
+        "perf_event_open",
+        "pivot_root",
+        "ptrace",
+        "reboot",
+        "request_key",
+        "setns",
+        "swapoff",
+        "swapon",
+        "umount2",
+        "unshare"
+      ],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1
+    },
+    {
+      "names": ["clone"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [
+        {"index": 0, "value": 128, "valueTwo": 128, "op": "SCMP_CMP_MASKED_EQ"}
+      ]
+    },
+    {
+      "names": ["clone"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [
+        {"index": 0, "value": 131072, "valueTwo": 131072, "op": "SCMP_CMP_MASKED_EQ"}
+      ]
+    },
+    {
+      "names": ["clone"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [
+        {"index": 0, "value": 33554432, "valueTwo": 33554432, "op": "SCMP_CMP_MASKED_EQ"}
+      ]
+    },
+    {
+      "names": ["clone"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [
+        {"index": 0, "value": 67108864, "valueTwo": 67108864, "op": "SCMP_CMP_MASKED_EQ"}
+      ]
+    },
+    {
+      "names": ["clone"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [
+        {"index": 0, "value": 134217728, "valueTwo": 134217728, "op": "SCMP_CMP_MASKED_EQ"}
+      ]
+    },
+    {
+      "names": ["clone"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [
+        {"index": 0, "value": 268435456, "valueTwo": 268435456, "op": "SCMP_CMP_MASKED_EQ"}
+      ]
+    },
+    {
+      "names": ["clone"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [
+        {"index": 0, "value": 536870912, "valueTwo": 536870912, "op": "SCMP_CMP_MASKED_EQ"}
+      ]
+    },
+    {
+      "names": ["clone"],
+      "action": "SCMP_ACT_ERRNO",
+      "errnoRet": 1,
+      "args": [
+        {"index": 0, "value": 1073741824, "valueTwo": 1073741824, "op": "SCMP_CMP_MASKED_EQ"}
+      ]
+    }
+  ]
+}

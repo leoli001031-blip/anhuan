@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="安环内部工作台">
+  <rect width="512" height="512" rx="112" fill="#135c45"/>
+  <path d="M256 82 420 145v116c0 93-61 143-164 169C153 404 92 354 92 261V145Z" fill="#e8f4ef"/>
+  <path d="m167 258 57 58 123-129" fill="none" stroke="#135c45" stroke-linecap="round" stroke-linejoin="round" stroke-width="38"/>
+</svg>

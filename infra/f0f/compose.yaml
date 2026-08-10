@@ -1,0 +1,46 @@
+name: anhuan-f0f
+
+services:
+  executor:
+    # Build is intentionally separate (see README).  The executable service
+    # accepts only the immutable local content ID from runtime-lock.json.
+    image: sha256:7316755e9776033453420b11292ed481b253196dc9db4bbe596a149dcd1a0a64
+    pull_policy: never
+    platform: linux/arm64
+    restart: "no"
+    network_mode: none
+    ipc: none
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp.json
+    pids_limit: 64
+    mem_limit: 1024m
+    memswap_limit: 1024m
+    cpus: 1.0
+    shm_size: 64m
+    ulimits:
+      core: 0
+      nofile:
+        soft: 64
+        hard: 64
+      nproc:
+        soft: 64
+        hard: 64
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m,uid=65532,gid=65532,mode=0700
+      - /work:rw,nosuid,nodev,noexec,size=256m,uid=65532,gid=65532,mode=0700
+    stdin_open: true
+    tty: false
+    stop_grace_period: 1s
+    logging:
+      driver: none
+    labels:
+      io.anhuan.f0f.profile.sha256: 6f396e7b3bde411a79aa7d40432e5df2c5ba5833955978facd76c6ddd9a41151
+      io.anhuan.f0f.protocol: f0f-body-result-v1
+      io.anhuan.f0f.external-processing: DENY
+      io.anhuan.f0f.benchmark-tier: NONE
+      io.anhuan.f0f.production-allowed: "false"

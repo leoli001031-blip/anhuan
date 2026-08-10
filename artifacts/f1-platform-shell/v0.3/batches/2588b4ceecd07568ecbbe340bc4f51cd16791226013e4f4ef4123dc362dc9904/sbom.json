@@ -1,0 +1,20 @@
+{
+  "bomFormat": "CycloneDX",
+  "components": [],
+  "metadata": {
+    "component": {
+      "bom-ref": "application:anhuan-f1-fixture:1.1.1",
+      "name": "anhuan-f1-fixture",
+      "type": "application",
+      "version": "1.1.1"
+    },
+    "properties": [
+      {
+        "name": "inventory:sha256",
+        "value": "INVALID"
+      }
+    ]
+  },
+  "specVersion": "1.5",
+  "version": 1
+}

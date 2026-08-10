@@ -1,0 +1,172 @@
+{
+  "schema": "f0h-component-lock-v1",
+  "candidate_status": "LOCAL_PPOCRV6_RUNTIME_ONLY",
+  "base": {
+    "image_id": "sha256:afff23f8e469f76e8b94159ccd5a1a4345c12a9c72c95ad150acf51c8c86085a",
+    "profile_sha256": "8b79ddd2e30708f15f72493bbba937a005ffe61d39c0da9baade89e264b674b6",
+    "architecture": "arm64",
+    "operating_system": "linux",
+    "python_version": "3.11.9",
+    "onnxruntime_version": "1.28.0",
+    "opencv_distribution": "opencv-python-headless",
+    "opencv_version": "5.0.0.93",
+    "pypdfium2_version": "5.12.1"
+  },
+  "provider": {
+    "provider_id": "ppocrv6-small",
+    "engine_distribution": "rapidocr",
+    "engine_version": "3.9.2",
+    "engine": "onnxruntime",
+    "ocr_family": "PP-OCRv6",
+    "detector_model_type": "small",
+    "recognizer_model_type": "small",
+    "orientation_classifier_family": "PP-OCRv2-compatible-mobile",
+    "orientation_classifier_is_v6": false
+  },
+  "configuration": {
+    "classifier_model_path": "/opt/f0h/python/rapidocr/models/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    "detector_model_path": "/opt/f0h/python/rapidocr/models/PP-OCRv6_det_small.onnx",
+    "engine_type": "onnxruntime",
+    "inter_op_num_threads": 1,
+    "intra_op_num_threads": 1,
+    "language": "ch",
+    "max_side_len": 2000,
+    "model_root_dir": "/opt/f0h/python/rapidocr/models",
+    "model_type": "small",
+    "ocr_version": "PP-OCRv6",
+    "recognizer_model_path": "/opt/f0h/python/rapidocr/models/PP-OCRv6_rec_small.onnx",
+    "return_word_box": false
+  },
+  "configuration_sha256": "30b615e7c21b144d12434df5cd1d867317eeef341b80ef3adadef49a5bec626f",
+  "models": [
+    {
+      "role": "detector",
+      "family": "PP-OCRv6",
+      "model_type": "small",
+      "filename": "PP-OCRv6_det_small.onnx",
+      "installed_path": "/opt/f0h/python/rapidocr/models/PP-OCRv6_det_small.onnx",
+      "bytes": 9929594,
+      "sha256": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f"
+    },
+    {
+      "role": "recognizer",
+      "family": "PP-OCRv6",
+      "model_type": "small",
+      "filename": "PP-OCRv6_rec_small.onnx",
+      "installed_path": "/opt/f0h/python/rapidocr/models/PP-OCRv6_rec_small.onnx",
+      "bytes": 21234383,
+      "sha256": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"
+    },
+    {
+      "role": "orientation_classifier",
+      "family": "PP-OCRv2-compatible-mobile",
+      "model_type": "mobile",
+      "filename": "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+      "installed_path": "/opt/f0h/python/rapidocr/models/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+      "bytes": 585532,
+      "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c"
+    }
+  ],
+  "model_bundle_sha256": "eb97addf62fa9cb149229a9c061e8d91fda3c8976c1a9a894b2c88ae65ba888f",
+  "dictionary": {
+    "kind": "EMBEDDED_ONNX_METADATA",
+    "model_role": "recognizer",
+    "metadata_key": "character",
+    "character_lines": 18708,
+    "utf8_sha256": "f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e"
+  },
+  "metadata": {
+    "config_sha256": "06623941e188461a0bc263fe16175cb5e5f6f6b01f4387e546d3a741569fc021",
+    "default_models_sha256": "db47df9d6b071721f1633667b41cfef1e40b5d7f09be030aaea8be801ca2f2f5"
+  },
+  "dependencies": {
+    "base_substitution": {
+      "declared": "opencv-python>=4.5.1.48",
+      "provided": "opencv-python-headless==5.0.0.93",
+      "validated_in_linux_arm64_probe": true
+    },
+    "runtime": [
+      {"name": "antlr4-python3-runtime", "version": "4.9.3", "filename": "antlr4_python3_runtime-4.9.3-py3-none-any.whl", "sha256": "386e2a095c4bc4f0f491bc53908db079fccdaeb57b6a3d5c2765b25ea61ae816", "license": "BSD-3-Clause", "origin": "DERIVED_FROM_LOCKED_PYPI_SDIST"},
+      {"name": "certifi", "version": "2026.7.22", "filename": "certifi-2026.7.22-py3-none-any.whl", "sha256": "62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775", "license": "MPL-2.0", "origin": "PYPI"},
+      {"name": "charset-normalizer", "version": "3.4.9", "filename": "charset_normalizer-3.4.9-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", "sha256": "2a441ea71902098ffe78c5abe6c494f44160b4af614ed16c3d9a3b1d17fd8ee2", "license": "MIT", "origin": "PYPI"},
+      {"name": "colorlog", "version": "6.12.0", "filename": "colorlog-6.12.0-py3-none-any.whl", "sha256": "30d392604e9110045a2c2aeefc27d7a017abbab63f3a8aee594eac0801df784e", "license": "MIT", "origin": "PYPI"},
+      {"name": "idna", "version": "3.18", "filename": "idna-3.18-py3-none-any.whl", "sha256": "7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2", "license": "BSD-3-Clause", "origin": "PYPI"},
+      {"name": "omegaconf", "version": "2.3.1", "filename": "omegaconf-2.3.1-py3-none-any.whl", "sha256": "3d701d14e9a8828f1edd28bb70b725908b34277cdd72cf7d6a83f94dadc6b6a0", "license": "BSD-3-Clause", "origin": "PYPI"},
+      {"name": "rapidocr", "version": "3.9.2", "filename": "rapidocr-3.9.2-py3-none-any.whl", "sha256": "04d6b8d151f823d930bd91910555f57bea897c0c44fa6794267b94cf9c1ef9a0", "license": "Apache-2.0", "origin": "PYPI"},
+      {"name": "requests", "version": "2.34.2", "filename": "requests-2.34.2-py3-none-any.whl", "sha256": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0", "license": "Apache-2.0", "origin": "PYPI"},
+      {"name": "urllib3", "version": "2.7.0", "filename": "urllib3-2.7.0-py3-none-any.whl", "sha256": "9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", "license": "MIT", "origin": "PYPI"}
+    ],
+    "build_provenance": [
+      {"name": "antlr4-python3-runtime", "version": "4.9.3", "filename": "antlr4-python3-runtime-4.9.3.tar.gz", "sha256": "f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b", "origin": "PYPI_SDIST"},
+      {"name": "packaging", "version": "26.3", "filename": "packaging-26.3-py3-none-any.whl", "sha256": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c", "origin": "PYPI_BUILD_ONLY"},
+      {"name": "wheel", "version": "0.47.0", "filename": "wheel-0.47.0-py3-none-any.whl", "sha256": "212281cab4dff978f6cedd499cd893e1f620791ca6ff7107cf270781e587eced", "origin": "PYPI_BUILD_ONLY"}
+    ],
+    "reproducible_build": {
+      "source_date_epoch": 1636156800,
+      "pythonhashseed": 0,
+      "double_build_sha256_equal": true
+    }
+  },
+  "output": {
+    "input_schema": "f0e-envelope-v1",
+    "evidence_schema": "f0e-result-v1",
+    "body_schema": "f0f-body-result-v1",
+    "block_keys": ["bbox", "confidence_ppm", "index", "text"],
+    "normalization_rule": "ocr-text-nfc-lf-v1",
+    "normalization_rule_sha256": "2bdd5fa88fb268bb8f2d3334f441699fb461f897a5b04d7680d6a7dfc310d3cc"
+  },
+  "profile": {
+    "base_image_id": "sha256:afff23f8e469f76e8b94159ccd5a1a4345c12a9c72c95ad150acf51c8c86085a",
+    "base_profile_sha256": "8b79ddd2e30708f15f72493bbba937a005ffe61d39c0da9baade89e264b674b6",
+    "cap_drop_all": true,
+    "concurrency": 1,
+    "container_name_pattern": "^anhuan-f0h-[0-9a-f]{32}$",
+    "cpu_limit_millis": 1000,
+    "input_envelope_schema": "f0e-envelope-v1",
+    "ipc_mode": "none",
+    "log_driver": "none",
+    "max_header_bytes": 4096,
+    "max_ocr_blocks_per_page": 1024,
+    "max_ocr_chars_per_page": 1000000,
+    "max_pdf_pages": 128,
+    "max_pixels_per_page": 16000000,
+    "max_private_output_bytes": 8388608,
+    "max_source_bytes": 67108864,
+    "network_mode": "none",
+    "no_new_privileges": true,
+    "output_schemas": ["f0e-result-v1", "f0f-body-result-v1"],
+    "pids_limit": 64,
+    "provider": "ppocrv6-small",
+    "pull_policy": "never",
+    "read_only_rootfs": true,
+    "render_dpi": 250,
+    "run_as_user": "65532:65532",
+    "runtime_downloads": false,
+    "seccomp_sha256": "d96b278b73bb348b90ee3c4d50f108c038b1f9636d6792a5da82f27c85905c68",
+    "shm_bytes": 67108864,
+    "timeout_cleanup": "KILL_CLI_THEN_DOCKER_KILL_RM_INSPECT_NOT_FOUND_V1",
+    "timeout_seconds": 120,
+    "tmpfs_tmp_bytes": 16777216,
+    "tmpfs_work_bytes": 268435456,
+    "units_per_execution": 1
+  },
+  "profile_sha256": "9c320d4d978fe2d0d5a69f6411b58744a203600909d1171a49aed700de8a4440",
+  "integrity": {
+    "base_component_lock_sha256": "8b248d05c83155a9df768773691371ac32876f2a9e1404ca8534a0bdf88fbe3b",
+    "base_runner_sha256": "a876401a40376de1ca5ec9280f3633821776679b6a584af189c7acfe665a1e11",
+    "requirements_lock_sha256": "a46184438c2f47920f551eed6eeb5ac9d58426ce750368e025702e92516d6c59",
+    "runner_sha256": "f9681ab3c0461cc6b6cb5b1c35858deebc455e009578530b4befa0556cc237cf"
+  },
+  "runtime_policy": {
+    "accuracy_status": "NOT_EVALUATED",
+    "benchmark_tier": "NONE",
+    "external_processing": "DENY",
+    "network": "NONE",
+    "private_ipc_body": true,
+    "production_allowed": false,
+    "raw_text_persisted": false,
+    "runtime_downloads": false,
+    "search_status": "NOT_READY",
+    "user_visible_raw_text": false
+  }
+}

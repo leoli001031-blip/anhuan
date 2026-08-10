@@ -1,0 +1,11 @@
+{
+  "batch_id": "6471dee865234a39d8d94b4e8068ad08a741608d0d42f49653334e7a90e6dec7",
+  "conclusion": "F1_1_1_REJECTED",
+  "files": {
+    "acceptance.json": "da0afd53e96ea4d4e63231e75680417fda196adf3b100c6f6f43bf6bb98ec569",
+    "manifest.json": "6471dee865234a39d8d94b4e8068ad08a741608d0d42f49653334e7a90e6dec7",
+    "sbom.json": "15102af2fc4dd7c118b7dd6cb757d6c1d507f125ec358751de4bda712f065601",
+    "status.html": "36c802af4b5ddcc74ef572a8d8e9cf1e9ae3137205694dd5658cf7f9633b4882"
+  },
+  "schema": "f1.1.1-current-batch-v1"
+}

@@ -1,0 +1,60 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "anhuan-f0f-private-body-0.1-arm64",
+  "documentNamespace": "urn:anhuan:f0f:sbom:7316755e9776033453420b11292ed481b253196dc9db4bbe596a149dcd1a0a64",
+  "creationInfo": {
+    "created": "2026-08-05T00:00:00Z",
+    "creators": [
+      "Tool: Codex",
+      "Organization: Anhuan local fixture engineering"
+    ],
+    "licenseListVersion": "3.27"
+  },
+  "externalDocumentRefs": [
+    {
+      "externalDocumentId": "DocumentRef-f0e",
+      "spdxDocument": "urn:anhuan:f0e:sbom:afff23f8e469f76e8b94159ccd5a1a4345c12a9c72c95ad150acf51c8c86085a",
+      "checksum": {
+        "algorithm": "SHA256",
+        "checksumValue": "323585078f1d36ccbff9d7f92eda5b103b3340c820b31df8ce69003649fed9e9"
+      }
+    }
+  ],
+  "annotations": [
+    {
+      "annotationDate": "2026-08-05T00:00:00Z",
+      "annotationType": "OTHER",
+      "annotator": "Tool: Codex",
+      "comment": "Engineering inventory only. FIXTURE_ONLY, benchmark tier NONE, annotation pending, not Gold, not production, and not legal approval. F0-F adds no package or model; inherited dependencies are frozen in the referenced F0-E SPDX document. Runtime network and external processing are DENY."
+    }
+  ],
+  "packages": [
+    {
+      "name": "anhuan-f0f-private-body",
+      "SPDXID": "SPDXRef-Package-Container",
+      "versionInfo": "0.1-arm64",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "7316755e9776033453420b11292ed481b253196dc9db4bbe596a149dcd1a0a64"
+        }
+      ],
+      "comment": "Local Docker content ID. Execution uses this immutable sha256 ID with pull=never; the mutable tag is a build alias only."
+    }
+  ],
+  "relationships": [
+    {
+      "spdxElementId": "SPDXRef-Package-Container",
+      "relationshipType": "VARIANT_OF",
+      "relatedSpdxElement": "DocumentRef-f0e:SPDXRef-Package-Container",
+      "comment": "F0-F inherits the exact F0-E filesystem and dependency set and adds only the private body protocol runner and lock metadata."
+    }
+  ]
+}

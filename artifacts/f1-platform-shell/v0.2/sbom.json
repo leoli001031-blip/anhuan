@@ -1,0 +1,66 @@
+{
+  "bomFormat": "cyclonedx",
+  "specVersion": "1.5",
+  "components": [
+    {
+      "type": "container",
+      "name": "keycloak",
+      "purl": "quay.io/keycloak/keycloak"
+    },
+    {
+      "type": "container",
+      "name": "minio",
+      "purl": "minio/minio"
+    },
+    {
+      "type": "container",
+      "name": "redis",
+      "purl": "redis"
+    },
+    {
+      "type": "container",
+      "name": "otel_collector",
+      "purl": "otel/opentelemetry-collector-contrib"
+    },
+    {
+      "type": "container",
+      "name": "prometheus",
+      "purl": "prom/prometheus"
+    },
+    {
+      "type": "container",
+      "name": "grafana",
+      "purl": "grafana/grafana"
+    },
+    {
+      "type": "container",
+      "name": "jaeger",
+      "purl": "jaegertracing/all-in-one"
+    },
+    {
+      "type": "container",
+      "name": "ragflow",
+      "purl": "infiniflow/ragflow"
+    },
+    {
+      "type": "container",
+      "name": "ragflow_mysql",
+      "purl": "mysql"
+    },
+    {
+      "type": "container",
+      "name": "ragflow_es",
+      "purl": "elasticsearch"
+    },
+    {
+      "type": "container",
+      "name": "ragflow_minio",
+      "purl": "pgsty/minio"
+    },
+    {
+      "type": "container",
+      "name": "ragflow_redis",
+      "purl": "valkey/valkey"
+    }
+  ]
+}

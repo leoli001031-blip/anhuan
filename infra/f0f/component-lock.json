@@ -1,0 +1,76 @@
+{
+  "schema": "f0f-component-lock-v1",
+  "candidate_status": "LOCAL_FIXTURE_CONTROLLED_BODY_ONLY",
+  "base": {
+    "image_id": "sha256:afff23f8e469f76e8b94159ccd5a1a4345c12a9c72c95ad150acf51c8c86085a",
+    "profile_sha256": "8b79ddd2e30708f15f72493bbba937a005ffe61d39c0da9baade89e264b674b6",
+    "architecture": "arm64",
+    "operating_system": "linux",
+    "python_version": "3.11.9"
+  },
+  "ocr": {
+    "engine": "rapidocr-onnxruntime",
+    "engine_version": "1.4.4",
+    "f0e_normalization_rule": "ocr-text-nfc-lf-v1",
+    "f0e_normalization_rule_sha256": "2bdd5fa88fb268bb8f2d3334f441699fb461f897a5b04d7680d6a7dfc310d3cc",
+    "model_bundle_sha256": "1172ff461a28fd7eab044d28c6459191971ac53955f8595f09685deb6059709e"
+  },
+  "output": {
+    "schema": "f0f-body-result-v1",
+    "block_keys": [
+      "bbox",
+      "confidence_ppm",
+      "index",
+      "text"
+    ],
+    "normalization_rule": "ocr-text-nfc-lf-v1",
+    "normalization_rule_sha256": "2bdd5fa88fb268bb8f2d3334f441699fb461f897a5b04d7680d6a7dfc310d3cc"
+  },
+  "profile": {
+    "base_image_id": "sha256:afff23f8e469f76e8b94159ccd5a1a4345c12a9c72c95ad150acf51c8c86085a",
+    "base_profile_sha256": "8b79ddd2e30708f15f72493bbba937a005ffe61d39c0da9baade89e264b674b6",
+    "cap_drop_all": true,
+    "concurrency": 1,
+    "container_name_pattern": "^anhuan-f0f-[0-9a-f]{32}$",
+    "cpu_limit_millis": 1000,
+    "input_envelope_schema": "f0e-envelope-v1",
+    "ipc_mode": "none",
+    "log_driver": "none",
+    "max_header_bytes": 4096,
+    "max_ocr_blocks_per_page": 1024,
+    "max_ocr_chars_per_page": 1000000,
+    "max_pdf_pages": 128,
+    "max_pixels_per_page": 16000000,
+    "max_private_output_bytes": 8388608,
+    "max_source_bytes": 67108864,
+    "network_mode": "none",
+    "no_new_privileges": true,
+    "output_schema": "f0f-body-result-v1",
+    "pids_limit": 64,
+    "pull_policy": "never",
+    "read_only_rootfs": true,
+    "render_dpi": 250,
+    "run_as_user": "65532:65532",
+    "seccomp_sha256": "d96b278b73bb348b90ee3c4d50f108c038b1f9636d6792a5da82f27c85905c68",
+    "shm_bytes": 67108864,
+    "timeout_cleanup": "KILL_CLI_THEN_DOCKER_KILL_RM_INSPECT_NOT_FOUND_V1",
+    "timeout_seconds": 120,
+    "tmpfs_tmp_bytes": 16777216,
+    "tmpfs_work_bytes": 268435456,
+    "units_per_execution": 1
+  },
+  "profile_sha256": "6f396e7b3bde411a79aa7d40432e5df2c5ba5833955978facd76c6ddd9a41151",
+  "integrity": {
+    "base_component_lock_sha256": "8b248d05c83155a9df768773691371ac32876f2a9e1404ca8534a0bdf88fbe3b",
+    "base_runner_sha256": "a876401a40376de1ca5ec9280f3633821776679b6a584af189c7acfe665a1e11",
+    "runner_sha256": "04d09151dc4b8316a0f1f1af0f8588b58af921aa5cd6ae7d3e3edba3953d723c"
+  },
+  "runtime_policy": {
+    "external_processing": "DENY",
+    "network": "NONE",
+    "private_ipc_body": true,
+    "raw_text_persisted": false,
+    "runtime_downloads": false,
+    "user_visible_raw_text": false
+  }
+}

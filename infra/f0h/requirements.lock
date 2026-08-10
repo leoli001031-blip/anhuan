@@ -1,0 +1,22 @@
+# F0-H incremental Linux/arm64 Python 3.11 runtime dependencies.
+# The frozen F0-E base image supplies NumPy, ONNX Runtime, OpenCV, PDFium,
+# Pillow, PyYAML, Shapely, pyclipper, six and tqdm.  Every added distribution
+# is installed offline from infra/f0h/wheels with --no-deps --require-hashes.
+rapidocr==3.9.2 \
+    --hash=sha256:04d6b8d151f823d930bd91910555f57bea897c0c44fa6794267b94cf9c1ef9a0
+omegaconf==2.3.1 \
+    --hash=sha256:3d701d14e9a8828f1edd28bb70b725908b34277cdd72cf7d6a83f94dadc6b6a0
+antlr4-python3-runtime==4.9.3 \
+    --hash=sha256:386e2a095c4bc4f0f491bc53908db079fccdaeb57b6a3d5c2765b25ea61ae816
+colorlog==6.12.0 \
+    --hash=sha256:30d392604e9110045a2c2aeefc27d7a017abbab63f3a8aee594eac0801df784e
+requests==2.34.2 \
+    --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
+certifi==2026.7.22 \
+    --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775
+charset-normalizer==3.4.9 \
+    --hash=sha256:2a441ea71902098ffe78c5abe6c494f44160b4af614ed16c3d9a3b1d17fd8ee2
+idna==3.18 \
+    --hash=sha256:7f952cbe720b688055e3f87de14f5c3e5fdaa8bc3928985c4077ca689de849a2
+urllib3==2.7.0 \
+    --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897

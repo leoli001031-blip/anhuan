@@ -1,0 +1,35 @@
+name: anhuan-f0d
+
+services:
+  postgres:
+    image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
+    restart: "no"
+    environment:
+      POSTGRES_DB: f0d
+      POSTGRES_USER: f0d_bootstrap
+      POSTGRES_PASSWORD: ${F0D_BOOTSTRAP_PASSWORD:?set F0D_BOOTSTRAP_PASSWORD}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=trust --data-checksums
+      PGDATA: /var/lib/postgresql/18/docker
+      F0D_MIGRATION_PASSWORD: ${F0D_MIGRATION_PASSWORD:?set F0D_MIGRATION_PASSWORD}
+      F0D_RUNTIME_PASSWORD: ${F0D_RUNTIME_PASSWORD:?set F0D_RUNTIME_PASSWORD}
+      F0D_WORKER_PASSWORD: ${F0D_WORKER_PASSWORD:?set F0D_WORKER_PASSWORD}
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - f0d_pg18_3_data:/var/lib/postgresql
+      - ../../migrations/bootstrap/00_roles.sql:/docker-entrypoint-initdb.d/00_roles.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready --username=f0d_bootstrap --dbname=f0d --host=127.0.0.1 --port=5432"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 256mb
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+
+volumes:
+  f0d_pg18_3_data:
+    name: anhuan_f0d_pg18_3_data

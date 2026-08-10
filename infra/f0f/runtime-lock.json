@@ -1,0 +1,55 @@
+{
+  "schema": "f0f-runtime-lock-v1",
+  "candidate_status": "LOCAL_FIXTURE_CONTROLLED_BODY_ONLY",
+  "container_image_id": "sha256:7316755e9776033453420b11292ed481b253196dc9db4bbe596a149dcd1a0a64",
+  "container_image_reference_kind": "LOCAL_DOCKER_CONTENT_ID",
+  "base": {
+    "container_image_id": "sha256:afff23f8e469f76e8b94159ccd5a1a4345c12a9c72c95ad150acf51c8c86085a",
+    "runtime_lock_sha256": "d996594ed9b44804849cbad728c96d349b940cc50b8e35d6175e44056b7e541e",
+    "profile_sha256": "8b79ddd2e30708f15f72493bbba937a005ffe61d39c0da9baade89e264b674b6",
+    "sbom_sha256": "323585078f1d36ccbff9d7f92eda5b103b3340c820b31df8ce69003649fed9e9"
+  },
+  "platform": {
+    "architecture": "arm64",
+    "operating_system": "linux",
+    "python_version": "3.11.9"
+  },
+  "protocol": {
+    "input_schema": "f0e-envelope-v1",
+    "output_schema": "f0f-body-result-v1",
+    "private_ipc_only": true,
+    "success_additional_keys": [
+      "blocks"
+    ],
+    "block_keys": [
+      "bbox",
+      "confidence_ppm",
+      "index",
+      "text"
+    ],
+    "normalization_rule": "ocr-text-nfc-lf-v1",
+    "normalization_rule_sha256": "2bdd5fa88fb268bb8f2d3334f441699fb461f897a5b04d7680d6a7dfc310d3cc"
+  },
+  "profile_sha256": "6f396e7b3bde411a79aa7d40432e5df2c5ba5833955978facd76c6ddd9a41151",
+  "integrity": {
+    "component_lock_sha256": "a144f1b742911d6b549ddef97c2ee3d4fe7b7f3c9eb32206c7f47b53b0a065c1",
+    "compose_sha256": "f9f4c599e913f9e755f55c66e93cf26d210c88f74815673a7d5185fc12a91f32",
+    "dockerfile_sha256": "ea6ddd9e3b1c2d244e395b3b35e35fbcf5d69322eae2693a1111b26ec790d3db",
+    "readme_sha256": "6d80bdf86ac5f5bfa2a2a3e9d9ad46a5a81eea4f5abee5ffb3175d3a87f56b5c",
+    "runner_sha256": "04d09151dc4b8316a0f1f1af0f8588b58af921aa5cd6ae7d3e3edba3953d723c",
+    "sbom_sha256": "d142be98980d3be9c465faac86814bb834e5c4bdbfccce31e941a27d28180bb7",
+    "seccomp_sha256": "d96b278b73bb348b90ee3c4d50f108c038b1f9636d6792a5da82f27c85905c68",
+    "synthetic_probe_sha256": "6685c6750166ab2a8932e8428571749963496dc640cceb1a47de3035f4be7d1c",
+    "third_party_notices_sha256": "78539bdb43daf959ad74dc62cf1c1a74e1309ff77c8321bc2b20e1cd3962a311"
+  },
+  "runtime_policy": {
+    "benchmark_tier": "NONE",
+    "external_processing": "DENY",
+    "network": "NONE",
+    "private_ipc_body": true,
+    "production_allowed": false,
+    "raw_text_persisted": false,
+    "runtime_downloads": false,
+    "user_visible_raw_text": false
+  }
+}

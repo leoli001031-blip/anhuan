@@ -1,0 +1,13 @@
+.venv/
+.git/
+node_modules/
+**/__pycache__/
+**/*.pyc
+infra/f1/ragflow/logs/
+infra/f1/otel/logs/
+tests/
+artifacts/
+fixtures/
+*.log
+src/web/dist/
+src/web/node_modules/

@@ -1,0 +1,57 @@
+{
+  "schema": "f1.1-acceptance-v1",
+  "conclusion": "F1_1_REGISTERED_FIXTURE_E2E_READY",
+  "status_tokens": [
+    "F1_1_REGISTERED_FIXTURE_E2E_READY",
+    "FIXTURE_ONLY",
+    "NOT_PRODUCTION",
+    "ACCURACY_NOT_EVALUATED",
+    "PROFESSIONAL_JUDGMENT_REQUIRED",
+    "ARBITRARY_UPLOAD_INGESTION_NOT_READY",
+    "MALWARE_SCAN_NOT_CONFIGURED"
+  ],
+  "e2e_ready": true,
+  "blocker": null,
+  "reverse_verify": {
+    "valid_e2e_exit": 0,
+    "migration_replay_delta": 0,
+    "tenant_crosswires": 0,
+    "pool_context_leaks": 0,
+    "unauthorized_writes": 0,
+    "duplicate_documents": 0,
+    "duplicate_tasks": 0,
+    "duplicate_chunks": 0,
+    "orphan_objects": 0,
+    "orphan_jobs": 0,
+    "wrong_tenant_citations": 0,
+    "audit_gaps": 0,
+    "new_plaintext_leaks": 0,
+    "upstream_mutations": 0,
+    "scratch_residuals": 0
+  },
+  "images": {
+    "keycloak": "quay.io/keycloak/keycloak@sha256:75ca4b2e4e954ff89c20ba8e5aeeef3bd0d250847fedb1c9752949823b319dda",
+    "minio": "minio/minio@sha256:29110b4abbcc7c2a71f19f5e375d50c2771c94272efba59c9a0532c88403672d",
+    "redis": "redis@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2",
+    "otel_collector": "otel/opentelemetry-collector-contrib@sha256:b65527791431d76d058b2813748a3f4a8912540d7b23beac2f6b4e02c872f5b7",
+    "prometheus": "prom/prometheus@sha256:f20d3127bf2876f4a1df76246fca576b41ddf1125ed1c546fbd8b16ea55117e6",
+    "grafana": "grafana/grafana@sha256:079600c9517b678c10cda6006b4487d3174512fd4c6cface37df7822756ed7a5",
+    "jaeger": "jaegertracing/all-in-one@sha256:e369bd9a8e4a212bfed67aaff59b77ce0676df32828aaccca468a866efcb732b",
+    "ragflow": "infiniflow/ragflow@sha256:36c22d70e32494395c0cd5fa8fd65b6ff4aa1302a82ebca1d38d9f3d52d000b8",
+    "ragflow_mysql": "mysql@sha256:ccb8f749bb5e59f9f8f03bf7282c7ef27a93a1814a24f0a8a926fb4e19b7fb97",
+    "ragflow_es": "elasticsearch@sha256:58a3a280935d830215802322e9a0373faaacdfd646477aa7e718939c2f29292a",
+    "ragflow_minio": "pgsty/minio@sha256:a72bf37c235a83a73890d2a46c5b36801fed61c335175e0396070bf84a8bbb98",
+    "ragflow_redis": "valkey/valkey@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6"
+  },
+  "test_counts": {
+    "f1": 40,
+    "f11": 49,
+    "total_static": 813
+  },
+  "fixture_scope": {
+    "registered_fixtures": 26,
+    "f0i_tenant_chunks": 553,
+    "searchable_child_chunks": 300,
+    "f0i_enterprise_a_sha": "7bb7f5f5ac3149b7e5e7f690f987548163f4d772b0cca11d36e6af1ca81d4a41"
+  }
+}

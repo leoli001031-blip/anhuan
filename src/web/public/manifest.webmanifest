@@ -1,0 +1,20 @@
+{
+  "name": "安环内部工作台",
+  "short_name": "安环工作台",
+  "description": "仅供内部使用的安环业务工作台 PWA 壳",
+  "id": "/internal-app",
+  "start_url": "/internal-app",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f4f7f5",
+  "theme_color": "#135c45",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/pwa-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

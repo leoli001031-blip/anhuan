@@ -1,0 +1,53 @@
+name: anhuan-f0e
+
+services:
+  executor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: default
+      platforms:
+        - linux/arm64
+    image: anhuan-f0e-runtime:0.1-arm64
+    pull_policy: never
+    platform: linux/arm64
+    restart: "no"
+    network_mode: none
+    ipc: none
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp.json
+    pids_limit: 64
+    mem_limit: 1024m
+    memswap_limit: 1024m
+    cpus: 1.0
+    shm_size: 64m
+    ulimits:
+      core: 0
+      nofile:
+        soft: 64
+        hard: 64
+      nproc:
+        soft: 64
+        hard: 64
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m,uid=65532,gid=65532,mode=0700
+      - /work:rw,nosuid,nodev,noexec,size=256m,uid=65532,gid=65532,mode=0700
+    stdin_open: true
+    tty: false
+    stop_grace_period: 1s
+    logging:
+      driver: none
+    labels:
+      io.anhuan.f0e.profile.sha256: 8b79ddd2e30708f15f72493bbba937a005ffe61d39c0da9baade89e264b674b6
+      io.anhuan.f0e.max-pdf-pages: "128"
+      io.anhuan.f0e.max-pages-per-document-job: "16"
+      io.anhuan.f0e.units-per-execution: "1"
+      io.anhuan.f0e.render-dpi: "250"
+      io.anhuan.f0e.max-pixels-per-page: "16000000"
+      io.anhuan.f0e.manual-review-confidence-floor-ppm: "0"
+      io.anhuan.f0e.external-processing: DENY

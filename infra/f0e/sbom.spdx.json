@@ -1,0 +1,320 @@
+{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "anhuan-f0e-offline-ocr-0.1-arm64",
+  "documentNamespace": "urn:anhuan:f0e:sbom:afff23f8e469f76e8b94159ccd5a1a4345c12a9c72c95ad150acf51c8c86085a",
+  "creationInfo": {
+    "created": "2026-08-05T00:00:00Z",
+    "creators": [
+      "Tool: Codex",
+      "Organization: Anhuan local fixture engineering"
+    ],
+    "licenseListVersion": "3.27"
+  },
+  "annotations": [
+    {
+      "annotationDate": "2026-08-05T00:00:00Z",
+      "annotationType": "OTHER",
+      "annotator": "Tool: Codex",
+      "comment": "Engineering inventory only. FIXTURE_ONLY, benchmark tier NONE, not Gold, not production, and not legal approval. Runtime network and external processing are DENY."
+    }
+  ],
+  "packages": [
+    {
+      "name": "anhuan-f0e-offline-ocr",
+      "SPDXID": "SPDXRef-Package-Container",
+      "versionInfo": "0.1-arm64",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "afff23f8e469f76e8b94159ccd5a1a4345c12a9c72c95ad150acf51c8c86085a"
+        }
+      ],
+      "comment": "Local Docker content ID; execution uses this sha256 ID with pull=never. Mutable tag is build alias only."
+    },
+    {
+      "name": "python:3.11.9-slim-bookworm-linux-arm64",
+      "SPDXID": "SPDXRef-Package-BaseImage",
+      "versionInfo": "3.11.9",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [
+        {
+          "algorithm": "SHA256",
+          "checksumValue": "9def7f10e7ab48aa9773d286e957f0732253fc3c9658cc7affa7a5a5540fda78"
+        }
+      ],
+      "comment": "Exact linux/arm64 manifest digest; multi-arch index digest is 8fb099199b9f2d70342674bd9dbccd3ed03a258f26bbd1d556822c6dfc60c317."
+    },
+    {
+      "name": "flatbuffers",
+      "SPDXID": "SPDXRef-Package-flatbuffers",
+      "versionInfo": "25.12.19",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4"}]
+    },
+    {
+      "name": "numpy",
+      "SPDXID": "SPDXRef-Package-numpy",
+      "versionInfo": "2.4.6",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "0ab0a9c4ffb1a6d95ef519fe4247dba8eb6b18ad93999f76b7f657039acabd47"}]
+    },
+    {
+      "name": "onnxruntime",
+      "SPDXID": "SPDXRef-Package-onnxruntime",
+      "versionInfo": "1.28.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "8d66f9ceb29909c70839e4e4fb3435c7b490050d8f162bd5f3aba4ca01ee517f"}]
+    },
+    {
+      "name": "opencv-python-headless",
+      "SPDXID": "SPDXRef-Package-opencv-python-headless",
+      "versionInfo": "5.0.0.93",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "840bd717c21e5c11cadadc022a823315ea417f961213d06b4df010e019eb16f4"}],
+      "comment": "Same-version headless cv2 substitution. The GUI wheel failed the offline slim-image import on unresolved libxcb.so.1; RapidOCR uses no GUI API."
+    },
+    {
+      "name": "packaging",
+      "SPDXID": "SPDXRef-Package-packaging",
+      "versionInfo": "26.3",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "(Apache-2.0 OR BSD-2-Clause)",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c"}]
+    },
+    {
+      "name": "pillow",
+      "SPDXID": "SPDXRef-Package-pillow",
+      "versionInfo": "12.3.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "HPND",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "bcb46e2f9feff8d06323983bd83ed00c201fdcab3d74973e7072a889b3979fcd"}]
+    },
+    {
+      "name": "protobuf",
+      "SPDXID": "SPDXRef-Package-protobuf",
+      "versionInfo": "7.35.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "11d6b0ec246892d85215b0a13ca6e0233cf5284b68f0ac02646427f4ff88a799"}]
+    },
+    {
+      "name": "pyclipper",
+      "SPDXID": "SPDXRef-Package-pyclipper",
+      "versionInfo": "1.4.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "58e29d7443d7cc0e83ee9daf43927730386629786d00c63b04fe3b53ac01462c"}]
+    },
+    {
+      "name": "pypdfium2",
+      "SPDXID": "SPDXRef-Package-pypdfium2",
+      "versionInfo": "5.12.1",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "6eabf028ad8e7bc7811c9acf3a72718c180569b624b844d2c6cc974609784275"}],
+      "comment": "Wrapper declares BSD-3-Clause/Apache-2.0 and the arm64 wheel retains PDFium third-party build license files."
+    },
+    {
+      "name": "pypdfium2-embedded-pdfium",
+      "SPDXID": "SPDXRef-Package-pdfium",
+      "versionInfo": "152.0.7947.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "f5c8d54a498e2112fbcf53e866c4a5635e9839db3a36d88c4772e5384dabeac6"}]
+    },
+    {
+      "name": "PyYAML",
+      "SPDXID": "SPDXRef-Package-pyyaml",
+      "versionInfo": "6.0.3",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "10892704fc220243f5305762e276552a0395f7beb4dbf9b14ec8fd43b57f126c"}]
+    },
+    {
+      "name": "rapidocr-onnxruntime",
+      "SPDXID": "SPDXRef-Package-rapidocr",
+      "versionInfo": "1.4.4",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "Apache-2.0",
+      "copyrightText": "Copyright 2021 RapidOCR Authors",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "971d7d5f223a7a808662229df1ef69893809d8457d834e6373d3854bc1782cbf"}],
+      "comment": "Tag v1.4.4 commit 86ae3f5079df3422c1829cd84baf19bc8a7a9453; package metadata and repository declare Apache-2.0."
+    },
+    {
+      "name": "shapely",
+      "SPDXID": "SPDXRef-Package-shapely",
+      "versionInfo": "2.1.2",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "cc4f7397459b12c0b196c9efe1f9d7e92463cbba142632b4cc6d8bbbbd3e2b09"}]
+    },
+    {
+      "name": "six",
+      "SPDXID": "SPDXRef-Package-six",
+      "versionInfo": "1.17.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"}]
+    },
+    {
+      "name": "tqdm",
+      "SPDXID": "SPDXRef-Package-tqdm",
+      "versionInfo": "4.70.0",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "(MPL-2.0 AND MIT)",
+      "copyrightText": "NOASSERTION",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "7f585706bfddbdebf89daac705b2dfcc16890130727d3197ca62c732b4310953"}]
+    }
+  ],
+  "files": [
+    {
+      "fileName": "/opt/f0e/runner.py",
+      "SPDXID": "SPDXRef-File-runner",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "a876401a40376de1ca5ec9280f3633821776679b6a584af189c7acfe665a1e11"}],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": ["NOASSERTION"],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "/opt/f0e/component-lock.json",
+      "SPDXID": "SPDXRef-File-component-lock",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "8b248d05c83155a9df768773691371ac32876f2a9e1404ca8534a0bdf88fbe3b"}],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": ["NOASSERTION"],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "infra/f0e/Dockerfile",
+      "SPDXID": "SPDXRef-File-dockerfile",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "b8d1466a94d5f1b16daac3ed07915e5fc9ebc0b681aa2da954898633ff6ef518"}],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": ["NOASSERTION"],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "infra/f0e/seccomp.json",
+      "SPDXID": "SPDXRef-File-seccomp",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "69744374970bce06b93756aa93c18e9a4a4abe95ff8f35fe7fbf67a79223092c"}],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": ["NOASSERTION"],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "requirements/f0e.lock",
+      "SPDXID": "SPDXRef-File-requirements",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "080779c62e3598835d51a035d72327b3de2f3ce62e0968e8bce9a893fd17740e"}],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": ["NOASSERTION"],
+      "copyrightText": "NOASSERTION"
+    },
+    {
+      "fileName": "/opt/python/rapidocr_onnxruntime/models/ch_PP-OCRv4_det_infer.onnx",
+      "SPDXID": "SPDXRef-File-model-det",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"}],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": ["Apache-2.0"],
+      "copyrightText": "NOASSERTION",
+      "comment": "Engineering declaration follows the RapidOCR repository/wheel Apache-2.0 evidence; not legal approval."
+    },
+    {
+      "fileName": "/opt/python/rapidocr_onnxruntime/models/ch_PP-OCRv4_rec_infer.onnx",
+      "SPDXID": "SPDXRef-File-model-rec",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b"}],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": ["Apache-2.0"],
+      "copyrightText": "NOASSERTION",
+      "comment": "Chinese/English recognition model with embedded dictionary; engineering declaration only."
+    },
+    {
+      "fileName": "/opt/python/rapidocr_onnxruntime/models/ch_ppocr_mobile_v2.0_cls_infer.onnx",
+      "SPDXID": "SPDXRef-File-model-cls",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c"}],
+      "licenseConcluded": "NOASSERTION",
+      "licenseInfoInFiles": ["Apache-2.0"],
+      "copyrightText": "NOASSERTION",
+      "comment": "Engineering declaration follows the RapidOCR repository/wheel Apache-2.0 evidence; not legal approval."
+    }
+  ],
+  "relationships": [
+    {"spdxElementId": "SPDXRef-DOCUMENT", "relationshipType": "DESCRIBES", "relatedSpdxElement": "SPDXRef-Package-Container"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-BaseImage"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-flatbuffers"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-numpy"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-onnxruntime"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-opencv-python-headless"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-packaging"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-pillow"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-protobuf"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-pyclipper"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-pypdfium2"},
+    {"spdxElementId": "SPDXRef-Package-pypdfium2", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-pdfium"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-pyyaml"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-rapidocr"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-shapely"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-six"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-Package-tqdm"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-File-runner"},
+    {"spdxElementId": "SPDXRef-Package-Container", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-File-component-lock"},
+    {"spdxElementId": "SPDXRef-Package-rapidocr", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-File-model-det"},
+    {"spdxElementId": "SPDXRef-Package-rapidocr", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-File-model-rec"},
+    {"spdxElementId": "SPDXRef-Package-rapidocr", "relationshipType": "CONTAINS", "relatedSpdxElement": "SPDXRef-File-model-cls"}
+  ]
+}

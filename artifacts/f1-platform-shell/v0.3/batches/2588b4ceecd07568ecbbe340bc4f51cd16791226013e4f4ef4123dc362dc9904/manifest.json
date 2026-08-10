@@ -1,0 +1,8 @@
+{
+  "files": {
+    "acceptance.json": "0ad4a34a574edf1d71bac55300e8e400520bf3939cd3ba55459367e0639e1223",
+    "sbom.json": "15102af2fc4dd7c118b7dd6cb757d6c1d507f125ec358751de4bda712f065601",
+    "status.html": "36b4b32f285868b0d4db565e943b42a1db4ca183a7d0c4559d00653d63d04af3"
+  },
+  "schema": "f1.1.1-immutable-batch-v1"
+}

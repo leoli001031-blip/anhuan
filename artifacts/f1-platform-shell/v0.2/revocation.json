@@ -1,0 +1,7 @@
+{
+  "schema": "f1.1-acceptance-revocation-v1",
+  "revoked": true,
+  "reason": "v0.2 acceptance was fake-green: its reverse metrics were constant zeros, the bridge accepted caller-supplied F0-I tenants, RLS did not verify membership (non-members could self-set the tenant), invite consume trusted a client-supplied sub, and PUBLIC could execute SECURITY DEFINER functions.  Fixed in F1.1.1 (f1_0003 + runtime).",
+  "replaced_by": "artifacts/f1-platform-shell/v0.3",
+  "previous_conclusion": "F1_1_REGISTERED_FIXTURE_E2E_READY"
+}

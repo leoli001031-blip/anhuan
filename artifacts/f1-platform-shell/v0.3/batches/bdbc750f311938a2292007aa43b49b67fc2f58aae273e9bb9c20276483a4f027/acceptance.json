@@ -1,0 +1,24 @@
+{
+  "accepted": false,
+  "accuracy_evaluated": false,
+  "arbitrary_upload_closed": true,
+  "blockers": [
+    "F0G_SOURCE_AGGREGATE_RED"
+  ],
+  "conclusion": "F1_1_1_REJECTED",
+  "evidence_sha256": "05c4bae163603b48435d92d157f22beb4fa0eca02f5f1ab0bc193e9c51ba59a8",
+  "formal": {
+    "command_registry_sha256": "e45259dca2c8f27061d18b60c38a983f96b489f63ab3eb7f18bf3101d986800d",
+    "config_sha256": "f11ab663d77811268e21865bb56288cdd2f9a56f35c3a68166c9ef855909defc",
+    "runtime_inventory_sha256": "INVALID",
+    "schema": "f1.1.1-formal-orchestration-v1",
+    "source_file_count": 0,
+    "source_sha256": "INVALID"
+  },
+  "gates": {},
+  "inventory_sha256": "INVALID",
+  "malware_scan_closed": true,
+  "production": false,
+  "professional_judgment_required": true,
+  "schema": "f1.1.1-acceptance-v2"
+}

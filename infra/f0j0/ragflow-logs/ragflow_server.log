@@ -1,0 +1,268 @@
+2026-08-07 14:48:19,956 INFO     36 ragflow_server log path: /ragflow/logs/ragflow_server.log, log levels: {'peewee': 'WARNING', 'pdfminer': 'WARNING', 'root': 'INFO'}
+2026-08-07 14:48:19,956 INFO     36 
+        ____   ___    ______ ______ __
+       / __ \ /   |  / ____// ____// /____  _      __
+      / /_/ // /| | / / __ / /_   / // __ \| | /| / /
+     / _, _// ___ |/ /_/ // __/  / // /_/ /| |/ |/ /
+    /_/ |_|/_/  |_|\____//_/    /_/ \____/ |__/|__/
+
+    
+2026-08-07 14:48:19,957 INFO     36 RAGFlow version: v0.26.4
+2026-08-07 14:48:19,957 INFO     36 project base: /ragflow
+2026-08-07 14:48:19,957 INFO     36 Current configs, from /ragflow/conf/service_conf.yaml:
+	ragflow: {'host': '0.0.0.0', 'http_port': 9380}
+	admin: {'host': '0.0.0.0', 'http_port': 9381}
+	mysql: {'name': 'rag_flow', 'user': 'root', 'password': '********', 'host': 'mysql', 'port': 3306, 'max_connections': 900, 'stale_timeout': 300, 'max_allowed_packet': 1073741824}
+	minio: {'user': 'rag_flow', 'password': '********', 'host': 'minio:9000', 'bucket': '', 'prefix_path': ''}
+	es: {'hosts': 'http://es01:9200', 'username': 'elastic', 'password': '********'}
+	os: {'hosts': 'http://opensearch01:9201', 'username': 'admin', 'password': '********'}
+	infinity: {'uri': 'infinity:23817', 'postgres_port': 5432, 'db_name': 'default_db'}
+	oceanbase: {'scheme': 'oceanbase', 'config': {'db_name': 'test', 'user': 'root@ragflow', 'password': 'infini_rag_flow', 'host': 'oceanbase', 'port': 2881}}
+	seekdb: {'scheme': 'oceanbase', 'config': {'db_name': 'ragflow_doc', 'user': 'root', 'password': 'infini_rag_flow', 'host': 'seekdb', 'port': 2881}}
+	redis: {'db': 1, 'username': '', 'password': '********', 'host': 'redis:6379'}
+	nats: {'host': '0.0.0.0', 'port': 4222}
+	task_executor: {'message_queue_type': 'nats'}
+	file_syncer: {'max_concurrent_syncs': 4, 'sync_interval': 3}
+	user_default_llm: {'default_models': {'embedding_model': {'api_key': 'xxx', 'base_url': 'http://:80'}}}
+2026-08-07 14:48:19,961 WARNING  36 Load term.freq FAIL!
+2026-08-07 14:48:19,970 WARNING  36 Load term.freq FAIL!
+2026-08-07 14:48:19,974 INFO     36 MAX_CONTENT_LENGTH: 134217728
+2026-08-07 14:48:19,975 INFO     36 MAX_FILE_COUNT_PER_USER: 0
+2026-08-07 14:48:20,122 INFO     36 UNIQUE index on user.email already exists, skipping migration
+2026-08-07 14:48:20,130 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/advanced_ingestion_pipeline.json
+2026-08-07 14:48:20,137 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/cajal_scientific_paper_agent.json
+2026-08-07 14:48:20,142 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/chunk_summary.json
+2026-08-07 14:48:20,148 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/customer_feedback_dispatcher.json
+2026-08-07 14:48:20,154 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/cv_analysis_and_candidate_evaluation.json
+2026-08-07 14:48:20,160 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/data_analysis_beginner_assistant.json
+2026-08-07 14:48:20,170 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/deep_research.json
+2026-08-07 14:48:20,188 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/ingestion_pipeline_book.json
+2026-08-07 14:48:20,195 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/ingestion_pipeline_general.json
+2026-08-07 14:48:20,203 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/ingestion_pipeline_laws.json
+2026-08-07 14:48:20,212 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/ingestion_pipeline_manual.json
+2026-08-07 14:48:20,219 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/ingestion_pipeline_one.json
+2026-08-07 14:48:20,225 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/ingestion_pipeline_paper.json
+2026-08-07 14:48:20,238 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/ingestion_pipeline_resume.json
+2026-08-07 14:48:20,246 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/market_seo_article_writer.json
+2026-08-07 14:48:20,250 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/photo_text_translator.json
+2026-08-07 14:48:20,255 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/reflective_academic_paper_generator.json
+2026-08-07 14:48:20,259 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/seo_article_writer.json
+2026-08-07 14:48:20,277 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/smart_customer_service_specialist.json
+2026-08-07 14:48:20,284 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/stock_market_research_assistant.json
+2026-08-07 14:48:20,291 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/text2sql_data_expert.json
+2026-08-07 14:48:20,295 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/title_chunker.json
+2026-08-07 14:48:20,304 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/trip_planner.json
+2026-08-07 14:48:20,308 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/user_interaction.json
+2026-08-07 14:48:20,313 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/web_search_assistant.json
+2026-08-07 14:48:20,317 INFO     36 Loaded and normalized template file: /ragflow/agent/templates/your_starter_dataset_chatbot.json
+2026-08-07 14:48:20,386 INFO     36 Init message_id sequence done, current max id is 1.
+2026-08-07 14:48:20,387 INFO     36 No memory found, no need to init memory size.
+2026-08-07 14:48:20,388 INFO     36 No memory found, no need to fix missing tokenized memory.
+2026-08-07 14:48:20,389 INFO     36 init web data success:0.2660527229309082
+2026-08-07 14:48:20,389 INFO     36 Recursively importing plugins from path `/ragflow/agent/plugin/embedded_plugins`
+2026-08-07 14:48:20,391 INFO     36 Loaded llm_tools plugin BadCalculatorPlugin version 1.0.0
+2026-08-07 14:48:20,394 INFO     36 Starting chat channel server thread
+2026-08-07 14:48:20,395 INFO     36 RAGFlow server is ready after 18.951863765716553s initialization.
+2026-08-07 14:48:20,397 INFO     36 Running on http://0.0.0.0:9380 (CTRL + C to quit)
+2026-08-07 14:48:21,394 INFO     36 Starting update_progress thread (delayed)
+2026-08-07 14:48:21,396 INFO     36 update_progress lock_value: 63fb9cdf-25a5-4ca1-9a1c-1284ddc0d859
+2026-08-07 14:48:25,326 ERROR    36 Unhandled exception during request
+Traceback (most recent call last):
+  File "/ragflow/.venv/lib/python3.13/site-packages/quart/app.py", line 1500, in full_dispatch_request
+    result = await self.dispatch_request(request_context)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/quart/app.py", line 1591, in dispatch_request
+    self.raise_routing_exception(request_)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/quart/app.py", line 1578, in raise_routing_exception
+    raise request.routing_exception
+  File "/ragflow/.venv/lib/python3.13/site-packages/quart/ctx.py", line 73, in match_request
+    ) = self.url_adapter.match(  # type: ignore
+        ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+        return_rule=True
+        ^^^^^^^^^^^^^^^^
+    )  # noqa
+    ^
+  File "/ragflow/.venv/lib/python3.13/site-packages/werkzeug/routing/map.py", line 624, in match
+    raise MethodNotAllowed(valid_methods=list(e.have_match_for)) from None
+werkzeug.exceptions.MethodNotAllowed: 405 Method Not Allowed: The method is not allowed for the requested URL.
+2026-08-07 14:49:40,567 WARNING  36 Model instance fallback applied for legacy default instance name
+2026-08-07 14:49:48,524 INFO     36 HEAD http://es01:9200/ragflow_doc_meta_01454acc922c11f1813e7f35ba040327 [status:404 duration:0.009s]
+2026-08-07 14:49:48,526 INFO     36 HEAD http://es01:9200/ragflow_doc_meta_01454acc922c11f1813e7f35ba040327 [status:404 duration:0.001s]
+2026-08-07 14:49:48,651 INFO     36 PUT http://es01:9200/ragflow_doc_meta_01454acc922c11f1813e7f35ba040327 [status:200 duration:0.124s]
+2026-08-07 14:49:48,917 INFO     36 POST http://es01:9200/ragflow_doc_meta_01454acc922c11f1813e7f35ba040327/_search [status:200 duration:0.040s]
+2026-08-07 14:49:48,929 ERROR    36 Unhandled exception during request
+Traceback (most recent call last):
+  File "/ragflow/.venv/lib/python3.13/site-packages/quart/app.py", line 1500, in full_dispatch_request
+    result = await self.dispatch_request(request_context)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/quart/app.py", line 1591, in dispatch_request
+    self.raise_routing_exception(request_)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/quart/app.py", line 1578, in raise_routing_exception
+    raise request.routing_exception
+  File "/ragflow/.venv/lib/python3.13/site-packages/quart/ctx.py", line 73, in match_request
+    ) = self.url_adapter.match(  # type: ignore
+        ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+        return_rule=True
+        ^^^^^^^^^^^^^^^^
+    )  # noqa
+    ^
+  File "/ragflow/.venv/lib/python3.13/site-packages/werkzeug/routing/map.py", line 624, in match
+    raise MethodNotAllowed(valid_methods=list(e.have_match_for)) from None
+werkzeug.exceptions.MethodNotAllowed: 405 Method Not Allowed: The method is not allowed for the requested URL.
+2026-08-07 14:49:52,832 INFO     36 HEAD http://es01:9200/ragflow_doc_meta_01454acc922c11f1813e7f35ba040327 [status:200 duration:0.003s]
+2026-08-07 14:49:52,837 INFO     36 POST http://es01:9200/ragflow_doc_meta_01454acc922c11f1813e7f35ba040327/_search [status:200 duration:0.003s]
+2026-08-07 14:49:56,699 INFO     36 HEAD http://es01:9200/ragflow_doc_meta_01454acc922c11f1813e7f35ba040327 [status:200 duration:0.008s]
+2026-08-07 14:49:56,712 INFO     36 POST http://es01:9200/ragflow_doc_meta_01454acc922c11f1813e7f35ba040327/_search [status:200 duration:0.010s]
+2026-08-07 14:49:57,286 WARNING  36 Model instance fallback applied for legacy default instance name
+2026-08-07 14:49:59,081 INFO     36 PUT http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327/_bulk?refresh=wait_for&timeout=60s [status:200 duration:1.145s]
+2026-08-07 14:50:03,945 INFO     36 HEAD http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327 [status:200 duration:0.003s]
+2026-08-07 14:50:04,009 INFO     36 POST http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327/_search [status:200 duration:0.060s]
+2026-08-07 14:50:08,489 WARNING  36 Model instance fallback applied for legacy default instance name
+2026-08-07 14:50:08,847 INFO     36 LLMBundle.encode_queries used_tokens: 25
+2026-08-07 14:50:08,912 INFO     36 POST http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327/_search [status:200 duration:0.062s]
+2026-08-07 14:50:08,930 INFO     36 POST http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327/_search [status:200 duration:0.014s]
+2026-08-07 14:51:01,194 INFO     36 HEAD http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327 [status:200 duration:0.002s]
+2026-08-07 14:51:01,195 INFO     36 Cancelled all tasks for document 2c310816922c11f1813e7f35ba040327
+2026-08-07 14:51:01,201 INFO     36 POST http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327/_search [status:200 duration:0.005s]
+2026-08-07 14:51:01,212 INFO     36 POST http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327/_search [status:200 duration:0.004s]
+2026-08-07 14:51:01,274 INFO     36 POST http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327/_delete_by_query?refresh=true [status:200 duration:0.061s]
+2026-08-07 14:51:01,278 INFO     36 HEAD http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327 [status:200 duration:0.002s]
+2026-08-07 14:51:01,283 INFO     36 GET http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327/_doc/55250f5760c6d201?_source=true [status:404 duration:0.005s]
+2026-08-07 14:51:01,285 INFO     36 HEAD http://es01:9200/ragflow_doc_meta_01454acc922c11f1813e7f35ba040327 [status:200 duration:0.001s]
+2026-08-07 14:51:01,287 INFO     36 GET http://es01:9200/ragflow_doc_meta_01454acc922c11f1813e7f35ba040327/_doc/2c310816922c11f1813e7f35ba040327?_source=true [status:404 duration:0.002s]
+2026-08-07 14:51:01,291 INFO     36 POST http://es01:9200/ragflow_01454acc922c11f1813e7f35ba040327/_search [status:200 duration:0.003s]
+2026-08-07 14:51:09,566 ERROR    36 update_progress exception
+Traceback (most recent call last):
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 1116, in get_connection
+    if connection.can_read() and connection.client_cache is None:
+       ~~~~~~~~~~~~~~~~~~~^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 524, in can_read
+    return self._parser.can_read(timeout)
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/_parsers/base.py", line 128, in can_read
+    return self._buffer and self._buffer.can_read(timeout)
+                            ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/_parsers/socket.py", line 95, in can_read
+    return bool(self.unread_bytes()) or self._read_from_socket(
+                                        ~~~~~~~~~~~~~~~~~~~~~~^
+        timeout=timeout, raise_on_timeout=False
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/_parsers/socket.py", line 68, in _read_from_socket
+    raise ConnectionError(SERVER_CLOSED_CONNECTION_ERROR)
+valkey.exceptions.ConnectionError: Connection closed by server.
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 302, in connect
+    sock = self.retry.call_with_retry(
+        lambda: self._connect(), lambda error: self.disconnect(error)
+    )
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/retry.py", line 62, in call_with_retry
+    return do()
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 303, in <lambda>
+    lambda: self._connect(), lambda error: self.disconnect(error)
+            ~~~~~~~~~~~~~^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 696, in _connect
+    for res in socket.getaddrinfo(
+               ~~~~~~~~~~~~~~~~~~^
+        self.host, self.port, self.socket_type, socket.SOCK_STREAM
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ):
+    ^
+  File "/ragflow/common/ssrf_guard.py", line 57, in _getaddrinfo_with_pins
+    return _orig_getaddrinfo(host, port, *args, **kwargs)
+  File "/root/.local/share/uv/python/cpython-3.13.11-linux-aarch64-gnu/lib/python3.13/socket.py", line 977, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno -2] Name or service not known
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/ragflow/api/ragflow_server.py", line 61, in update_progress
+    if redis_lock.acquire():
+       ~~~~~~~~~~~~~~~~~~^^
+  File "/ragflow/rag/utils/redis_conn.py", line 543, in acquire
+    REDIS_CONN.delete_if_equal(self.lock_key, self.lock_value)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/rag/utils/redis_conn.py", line 517, in delete_if_equal
+    return bool(self.lua_delete_if_equal(keys=[key], args=[expected_value], client=self.REDIS))
+                ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/commands/core.py", line 6356, in __call__
+    return client.evalsha(self.sha, len(keys), *args)
+           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/commands/core.py", line 5730, in evalsha
+    return self._evalsha("EVALSHA", sha, numkeys, *keys_and_args)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/commands/core.py", line 5714, in _evalsha
+    return self.execute_command(command, sha, numkeys, *keys_and_args)
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/client.py", line 564, in execute_command
+    conn = self.connection or pool.get_connection(command_name, **options)
+                              ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 1120, in get_connection
+    connection.connect()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 308, in connect
+    raise ConnectionError(self._error_message(e))
+valkey.exceptions.ConnectionError: Error -2 connecting to redis:6379. Name or service not known.
+2026-08-07 14:51:09,572 ERROR    36 update_progress exception
+Traceback (most recent call last):
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 302, in connect
+    sock = self.retry.call_with_retry(
+        lambda: self._connect(), lambda error: self.disconnect(error)
+    )
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/retry.py", line 62, in call_with_retry
+    return do()
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 303, in <lambda>
+    lambda: self._connect(), lambda error: self.disconnect(error)
+            ~~~~~~~~~~~~~^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 696, in _connect
+    for res in socket.getaddrinfo(
+               ~~~~~~~~~~~~~~~~~~^
+        self.host, self.port, self.socket_type, socket.SOCK_STREAM
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ):
+    ^
+  File "/ragflow/common/ssrf_guard.py", line 57, in _getaddrinfo_with_pins
+    return _orig_getaddrinfo(host, port, *args, **kwargs)
+  File "/root/.local/share/uv/python/cpython-3.13.11-linux-aarch64-gnu/lib/python3.13/socket.py", line 977, in getaddrinfo
+    for res in _socket.getaddrinfo(host, port, family, type, proto, flags):
+               ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+socket.gaierror: [Errno -2] Name or service not known
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/ragflow/api/ragflow_server.py", line 68, in update_progress
+    redis_lock.release()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/ragflow/rag/utils/redis_conn.py", line 554, in release
+    REDIS_CONN.delete_if_equal(self.lock_key, self.lock_value)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/rag/utils/redis_conn.py", line 517, in delete_if_equal
+    return bool(self.lua_delete_if_equal(keys=[key], args=[expected_value], client=self.REDIS))
+                ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/commands/core.py", line 6356, in __call__
+    return client.evalsha(self.sha, len(keys), *args)
+           ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/commands/core.py", line 5730, in evalsha
+    return self._evalsha("EVALSHA", sha, numkeys, *keys_and_args)
+           ~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/commands/core.py", line 5714, in _evalsha
+    return self.execute_command(command, sha, numkeys, *keys_and_args)
+           ~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/client.py", line 564, in execute_command
+    conn = self.connection or pool.get_connection(command_name, **options)
+                              ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 1107, in get_connection
+    connection.connect()
+    ~~~~~~~~~~~~~~~~~~^^
+  File "/ragflow/.venv/lib/python3.13/site-packages/valkey/connection.py", line 308, in connect
+    raise ConnectionError(self._error_message(e))
+valkey.exceptions.ConnectionError: Error -2 connecting to redis:6379. Name or service not known.

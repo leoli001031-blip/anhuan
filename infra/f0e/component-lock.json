@@ -1,0 +1,109 @@
+{
+  "schema": "f0e-component-lock-v1",
+  "candidate_status": "LOCAL_FIXTURE_BASELINE_ONLY",
+  "platform": {
+    "architecture": "arm64",
+    "base_image": "docker.io/library/python:3.11.9-slim-bookworm",
+    "base_image_index_digest": "sha256:8fb099199b9f2d70342674bd9dbccd3ed03a258f26bbd1d556822c6dfc60c317",
+    "base_image_linux_arm64_manifest_digest": "sha256:9def7f10e7ab48aa9773d286e957f0732253fc3c9658cc7affa7a5a5540fda78",
+    "operating_system": "linux",
+    "python_version": "3.11.9"
+  },
+  "renderer": {
+    "component": "pypdfium2",
+    "libpdfium_sha256": "f5c8d54a498e2112fbcf53e866c4a5635e9839db3a36d88c4772e5384dabeac6",
+    "pdfium_version": "152.0.7947.0",
+    "pypdfium2_version": "5.12.1",
+    "wheel_sha256": "6eabf028ad8e7bc7811c9acf3a72718c180569b624b844d2c6cc974609784275"
+  },
+  "ocr": {
+    "component": "rapidocr-onnxruntime",
+    "model_archive": "RapidAI/RapidOCR release v1.1.0 required_for_whl_v1.3.0.zip",
+    "model_archive_sha256": "51f8df7ab9092e5c71345d2ce3b6c4c12d6954714000402bf2f5bbc864d8d760",
+    "model_bundle_sha256": "1172ff461a28fd7eab044d28c6459191971ac53955f8595f09685deb6059709e",
+    "models": [
+      {
+        "filename": "ch_PP-OCRv4_det_infer.onnx",
+        "role": "text_detection",
+        "bytes": 4745517,
+        "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+      },
+      {
+        "filename": "ch_PP-OCRv4_rec_infer.onnx",
+        "role": "chinese_english_text_recognition_with_embedded_dictionary",
+        "bytes": 10857958,
+        "sha256": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b"
+      },
+      {
+        "filename": "ch_ppocr_mobile_v2.0_cls_infer.onnx",
+        "role": "text_orientation_classification",
+        "bytes": 585532,
+        "sha256": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c"
+      }
+    ],
+    "normalization_rule": "ocr-text-nfc-lf-v1",
+    "normalization_rule_sha256": "2bdd5fa88fb268bb8f2d3334f441699fb461f897a5b04d7680d6a7dfc310d3cc",
+    "onnxruntime_version": "1.28.0",
+    "opencv_distribution": "opencv-python-headless",
+    "opencv_version": "5.0.0.93",
+    "opencv_wheel_sha256": "840bd717c21e5c11cadadc022a823315ea417f961213d06b4df010e019eb16f4",
+    "rapidocr_opencv_dependency_substitution": "same-version headless cv2 API; GUI wheel failed offline import due missing libxcb.so.1",
+    "rapidocr_source_commit": "86ae3f5079df3422c1829cd84baf19bc8a7a9453",
+    "rapidocr_version": "1.4.4",
+    "wheel_sha256": "971d7d5f223a7a808662229df1ef69893809d8457d834e6373d3854bc1782cbf"
+  },
+  "profile": {
+    "cap_drop_all": true,
+    "concurrency": 1,
+    "container_name_pattern": "^anhuan-f0e-[0-9a-f]{32}$",
+    "cpu_limit_millis": 1000,
+    "ipc_mode": "none",
+    "log_driver": "none",
+    "manual_review_confidence_floor_ppm": 0,
+    "memory_limit_bytes": 1073741824,
+    "memory_swap_limit_bytes": 1073741824,
+    "max_header_bytes": 4096,
+    "max_ocr_blocks_per_page": 1024,
+    "max_ocr_chars_per_page": 1000000,
+    "max_output_bytes": 262144,
+    "max_pages_per_document_job": 16,
+    "max_pdf_pages": 128,
+    "max_pixels_per_page": 16000000,
+    "max_source_bytes": 67108864,
+    "network_mode": "none",
+    "no_new_privileges": true,
+    "pids_limit": 64,
+    "pull_policy": "never",
+    "read_only_rootfs": true,
+    "render_dpi": 250,
+    "run_as_user": "65532:65532",
+    "seccomp_sha256": "69744374970bce06b93756aa93c18e9a4a4abe95ff8f35fe7fbf67a79223092c",
+    "shm_bytes": 67108864,
+    "timeout_cleanup": "KILL_CLI_THEN_DOCKER_KILL_RM_INSPECT_NOT_FOUND_V1",
+    "timeout_seconds": 120,
+    "tmpfs_tmp_bytes": 16777216,
+    "tmpfs_work_bytes": 268435456,
+    "units_per_execution": 1
+  },
+  "profile_sha256": "8b79ddd2e30708f15f72493bbba937a005ffe61d39c0da9baade89e264b674b6",
+  "integrity": {
+    "libpdfium_sha256": "f5c8d54a498e2112fbcf53e866c4a5635e9839db3a36d88c4772e5384dabeac6",
+    "rapidocr_config_sha256": "bf94a1da4cba828e67b1d61e27cee14d9e7da27c9f272e04048a17e41ae97332",
+    "requirements_lock_sha256": "080779c62e3598835d51a035d72327b3de2f3ce62e0968e8bce9a893fd17740e",
+    "runner_sha256": "a876401a40376de1ca5ec9280f3633821776679b6a584af189c7acfe665a1e11"
+  },
+  "license_evidence": {
+    "pypdfium2_wheel_includes_build_licenses": true,
+    "rapidocr_license": "Apache-2.0",
+    "rapidocr_license_sha256": "3e0af25fdd06aa9586ae97adb00ea927ebe5a3805ac77d2d3a81ce5f55693333",
+    "rapidocr_model_injection_workflow_sha256": "067d85e4fadcffbe8b1b3e718a8f19c763b537e04367ee5bb815c22f41b30a46",
+    "review_status": "ENGINEERING_INVENTORY_ONLY_NOT_LEGAL_APPROVAL"
+  },
+  "runtime_policy": {
+    "external_processing": "DENY",
+    "network": "NONE",
+    "raw_text_emitted": false,
+    "raw_text_persisted": false,
+    "runtime_downloads": false
+  }
+}

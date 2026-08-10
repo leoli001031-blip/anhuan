@@ -1,0 +1,45 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+
+# Fixtures and real data
+fixtures/
+artifacts/*/v0.1/*.json
+artifacts/*/v0.1/*.html
+artifacts/*/v0.1/*.md
+!artifacts/f0d-upload-foundation/v0.1/.gitkeep
+!artifacts/f0e-local-ocr/v0.1/.gitkeep
+!artifacts/f0f-controlled-body/v0.1/.gitkeep
+!artifacts/f0g-annotation-workflow/v0.1/.gitkeep
+!artifacts/f0h-ppocrv6-runtime/v0.1/.gitkeep
+!artifacts/f0i-canonical-chunks/v0.1/.gitkeep
+!artifacts/f0j0-retrieval-selection/v0.1/.gitkeep
+!artifacts/f0j1-retrieval/v0.1/.gitkeep
+
+# Runtime secrets and local state
+/private/tmp/anhuan-*
+*.key
+*.env.local
+secrets/
+
+# Render temp directories
+.render-docx/
+.render-docx2/
+.render-final/
+.render-final2/
+.render-final3/
+
+# IDE
+.vscode/
+.idea/
+infra/f0j1/ragflow-logs/
+
+# F1 platform shell: local env with injected dev secrets
+infra/f1/.env
+/private/tmp/anhuan-f1-secrets/
+infra/f1/otel/logs/
+infra/f1/ragflow/logs/

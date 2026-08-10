@@ -1,0 +1,113 @@
+{
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "creationInfo": {
+    "created": "2026-08-06T00:00:00Z",
+    "creators": [
+      "Tool: anhuan-f0h-locker-v1"
+    ]
+  },
+  "dataLicense": "CC0-1.0",
+  "documentNamespace": "urn:uuid:36df7473-a250-4d9a-bc32-c4ffcf246f1c",
+  "name": "anhuan-f0h-ppocrv6-small-runtime",
+  "packages": [
+    {
+      "SPDXID": "SPDXRef-Package-RapidOCR",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "04d6b8d151f823d930bd91910555f57bea897c0c44fa6794267b94cf9c1ef9a0"}],
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "RapidOCR",
+      "versionInfo": "3.9.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-ONNXRuntime",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "onnxruntime",
+      "versionInfo": "1.28.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-OmegaConf",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "3d701d14e9a8828f1edd28bb70b725908b34277cdd72cf7d6a83f94dadc6b6a0"}],
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "name": "omegaconf",
+      "versionInfo": "2.3.1"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-ANTLR",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "386e2a095c4bc4f0f491bc53908db079fccdaeb57b6a3d5c2765b25ea61ae816"}],
+      "comment": "Reproducible derived wheel from official sdist f224469b4168294902bb1efa80a8bf7855f24c99aef99cbefc1bcd3cce77881b",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "name": "antlr4-python3-runtime",
+      "versionInfo": "4.9.3"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-colorlog",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "30d392604e9110045a2c2aeefc27d7a017abbab63f3a8aee594eac0801df784e"}],
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "name": "colorlog",
+      "versionInfo": "6.12.0"
+    },
+    {
+      "SPDXID": "SPDXRef-Package-Requests",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0"}],
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "requests",
+      "versionInfo": "2.34.2"
+    },
+    {
+      "SPDXID": "SPDXRef-Model-Det",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "090f04abcd9d9a7498bc4ebf677e4cb9bdce1fe4197ddb7e529f1ef44e1ff94f"}],
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "PP-OCRv6_det_small.onnx",
+      "versionInfo": "PP-OCRv6-small"
+    },
+    {
+      "SPDXID": "SPDXRef-Model-Rec",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "6f327246b50388f3c176ae304bd95767ea6dc0c9ae92153ef8cbe210b3c14884"}],
+      "comment": "Embedded character metadata SHA256 f7aa897ca828a4c7c9e2739c30f9161a33306d532f020bcdb91dcfb664a5507e",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "PP-OCRv6_rec_small.onnx",
+      "versionInfo": "PP-OCRv6-small"
+    },
+    {
+      "SPDXID": "SPDXRef-Model-Cls",
+      "checksums": [{"algorithm": "SHA256", "checksumValue": "e47acedf663230f8863ff1ab0e64dd2d82b838fceb5957146dab185a89d6215c"}],
+      "comment": "Orientation classifier is a separately disclosed legacy mobile component, not PP-OCRv6",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "Apache-2.0",
+      "licenseDeclared": "Apache-2.0",
+      "name": "ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+      "versionInfo": "PP-OCRv2-compatible-mobile"
+    }
+  ],
+  "relationships": [
+    {"relatedSpdxElement": "SPDXRef-Package-RapidOCR", "relationshipType": "DESCRIBES", "spdxElementId": "SPDXRef-DOCUMENT"},
+    {"relatedSpdxElement": "SPDXRef-Model-Det", "relationshipType": "CONTAINS", "spdxElementId": "SPDXRef-Package-RapidOCR"},
+    {"relatedSpdxElement": "SPDXRef-Model-Rec", "relationshipType": "CONTAINS", "spdxElementId": "SPDXRef-Package-RapidOCR"},
+    {"relatedSpdxElement": "SPDXRef-Model-Cls", "relationshipType": "CONTAINS", "spdxElementId": "SPDXRef-Package-RapidOCR"}
+  ],
+  "spdxVersion": "SPDX-2.3"
+}

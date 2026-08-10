@@ -1,0 +1,36 @@
+2026-08-07 14:48:13,785 INFO     40 data_sync_0 log path: /ragflow/logs/data_sync_0.log, log levels: {'peewee': 'WARNING', 'pdfminer': 'WARNING', 'root': 'INFO'}
+2026-08-07 14:48:13,785 INFO     40 
+  _____        _           _____
+ |  __ \      | |         / ____|
+ | |  | | __ _| |_ __ _  | (___  _   _ _ __   ___
+ | |  | |/ _` | __/ _` |  \___ \| | | | '_ \ / __|
+ | |__| | (_| | || (_| |  ____) | |_| | | | | (__
+ |_____/ \__,_|\__\__,_| |_____/ \__, |_| |_|\___|
+                                  __/ |
+                                 |___/
+    
+2026-08-07 14:48:13,785 INFO     40 RAGFlow data sync version: v0.26.4
+2026-08-07 14:48:13,785 INFO     40 Current configs, from /ragflow/conf/service_conf.yaml:
+	ragflow: {'host': '0.0.0.0', 'http_port': 9380}
+	admin: {'host': '0.0.0.0', 'http_port': 9381}
+	mysql: {'name': 'rag_flow', 'user': 'root', 'password': '********', 'host': 'mysql', 'port': 3306, 'max_connections': 900, 'stale_timeout': 300, 'max_allowed_packet': 1073741824}
+	minio: {'user': 'rag_flow', 'password': '********', 'host': 'minio:9000', 'bucket': '', 'prefix_path': ''}
+	es: {'hosts': 'http://es01:9200', 'username': 'elastic', 'password': '********'}
+	os: {'hosts': 'http://opensearch01:9201', 'username': 'admin', 'password': '********'}
+	infinity: {'uri': 'infinity:23817', 'postgres_port': 5432, 'db_name': 'default_db'}
+	oceanbase: {'scheme': 'oceanbase', 'config': {'db_name': 'test', 'user': 'root@ragflow', 'password': 'infini_rag_flow', 'host': 'oceanbase', 'port': 2881}}
+	seekdb: {'scheme': 'oceanbase', 'config': {'db_name': 'ragflow_doc', 'user': 'root', 'password': 'infini_rag_flow', 'host': 'seekdb', 'port': 2881}}
+	redis: {'db': 1, 'username': '', 'password': '********', 'host': 'redis:6379'}
+	nats: {'host': '0.0.0.0', 'port': 4222}
+	task_executor: {'message_queue_type': 'nats'}
+	file_syncer: {'max_concurrent_syncs': 4, 'sync_interval': 3}
+	user_default_llm: {'default_models': {'embedding_model': {'api_key': 'xxx', 'base_url': 'http://:80'}}}
+2026-08-07 14:48:13,790 INFO     40 GET http://es01:9200/ [status:200 duration:0.003s]
+2026-08-07 14:48:13,792 INFO     40 HEAD http://es01:9200/ [status:200 duration:0.001s]
+2026-08-07 14:48:13,792 INFO     40 Use Elasticsearch http://es01:9200 as the doc engine.
+2026-08-07 14:48:13,792 INFO     40 Elasticsearch http://es01:9200 is healthy.
+2026-08-07 14:48:13,792 INFO     40 Use Elasticsearch http://es01:9200 as the doc engine.
+2026-08-07 14:48:13,792 INFO     40 Elasticsearch http://es01:9200 is healthy.
+2026-08-07 14:48:13,794 WARNING  40 Load term.freq FAIL!
+2026-08-07 14:48:14,012 WARNING  40 Load term.freq FAIL!
+2026-08-07 14:48:14,015 INFO     40 RAGFlow data sync is ready after 12.5605011729931s initialization.

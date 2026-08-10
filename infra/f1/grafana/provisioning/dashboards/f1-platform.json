@@ -1,0 +1,34 @@
+{
+  "title": "F1 Platform Shell",
+  "uid": "f1-platform",
+  "schemaVersion": 39,
+  "version": 1,
+  "timezone": "browser",
+  "panels": [
+    {
+      "type": "stat",
+      "title": "QA 调用次数",
+      "gridPos": {"h": 6, "w": 6, "x": 0, "y": 0},
+      "targets": [
+        {
+          "expr": "sum(rate(otelcol_exporter_sent_spans_total[5m]))",
+          "legendFormat": "traces/s"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Trace 导出速率",
+      "gridPos": {"h": 6, "w": 12, "x": 6, "y": 0},
+      "targets": [
+        {
+          "expr": "rate(otelcol_exporter_sent_spans_total[1m])",
+          "legendFormat": "{{job}}"
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "templating": {"list": []},
+  "annotations": {"list": []}
+}

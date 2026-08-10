@@ -1,0 +1,45 @@
+name: anhuan-f0h
+
+services:
+  executor:
+    image: sha256:02e6300f52463818de7ceaf447bfb0765e5f8466251177006131dec4e55a27f5
+    pull_policy: never
+    platform: linux/arm64
+    restart: "no"
+    network_mode: none
+    ipc: none
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./seccomp.json
+    pids_limit: 64
+    mem_limit: 1024m
+    memswap_limit: 1024m
+    cpus: 1.0
+    shm_size: 64m
+    ulimits:
+      core: 0
+      nofile:
+        soft: 64
+        hard: 64
+      nproc:
+        soft: 64
+        hard: 64
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m,uid=65532,gid=65532,mode=0700
+      - /work:rw,nosuid,nodev,noexec,size=256m,uid=65532,gid=65532,mode=0700
+    stdin_open: true
+    tty: false
+    stop_grace_period: 1s
+    logging:
+      driver: none
+    labels:
+      io.anhuan.f0h.profile.sha256: 9c320d4d978fe2d0d5a69f6411b58744a203600909d1171a49aed700de8a4440
+      io.anhuan.f0h.provider: ppocrv6-small
+      io.anhuan.f0h.external-processing: DENY
+      io.anhuan.f0h.runtime-downloads: "false"
+      io.anhuan.f0h.accuracy-status: NOT_EVALUATED
+      io.anhuan.f0h.production-allowed: "false"

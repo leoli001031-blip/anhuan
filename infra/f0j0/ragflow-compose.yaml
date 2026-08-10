@@ -1,0 +1,145 @@
+# F0-J0 Route B: RAGFlow v0.26.4 probe compose.
+#
+# All service ports are bound to 127.0.0.1 only; the compose project is
+# `anhuan-f0j0-ragflow` and every container/volume/network uses that prefix
+# (Compose already prefixes by project).  No external LLM/embedding provider
+# is configured; RAGFlow's own built-in local models are allowed.
+#
+# The ragflow service image is built locally (infiniflow/ragflow:nightly)
+# from the pinned v0.26.4 source on darwin/arm64.
+services:
+  mysql:
+    image: mysql:8.0.39
+    environment:
+      - MYSQL_ROOT_PASSWORD=infini_rag_flow
+    command:
+      --max_connections=1000
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
+      --default-authentication-plugin=mysql_native_password
+      --init-file /data/application/init.sql
+      --binlog_expire_logs_seconds=604800
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/data/application/init.sql
+    networks:
+      - ragflow
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-pinfini_rag_flow"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  minio:
+    image: pgsty/minio:RELEASE.2026-03-25T00-00-00Z
+    command: ["server", "--console-address", ":9001", "/data"]
+    ports:
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+    environment:
+      - MINIO_ROOT_USER=rag_flow
+      - MINIO_ROOT_PASSWORD=infini_rag_flow
+    volumes:
+      - minio_data:/data
+    networks:
+      - ragflow
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  redis:
+    image: valkey/valkey:8
+    command:
+      [
+        "redis-server",
+        "--requirepass",
+        "infini_rag_flow",
+        "--maxmemory",
+        "128mb",
+        "--maxmemory-policy",
+        "allkeys-lru",
+      ]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ragflow
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "infini_rag_flow", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  es01:
+    image: elasticsearch:8.11.3
+    volumes:
+      - esdata01:/usr/share/elasticsearch/data
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+    ports:
+      - "127.0.0.1:1200:9200"
+    environment:
+      - node.name=es01
+      - ELASTIC_PASSWORD=infini_rag_flow
+      - bootstrap.memory_lock=false
+      - discovery.type=single-node
+      - xpack.security.enabled=true
+      - xpack.security.http.ssl.enabled=false
+      - xpack.security.transport.ssl.enabled=false
+      - cluster.routing.allocation.disk.watermark.low=5gb
+      - cluster.routing.allocation.disk.watermark.high=3gb
+      - cluster.routing.allocation.disk.watermark.flood_stage=2gb
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+    mem_limit: 2147483648
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    networks:
+      - ragflow
+    healthcheck:
+      test: ["CMD-SHELL", "curl http://localhost:9200"]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  ragflow:
+    image: infiniflow/ragflow:nightly
+    platform: linux/arm64
+    depends_on:
+      mysql:
+        condition: service_healthy
+      es01:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:9380:9380"
+      - "127.0.0.1:80:80"
+    volumes:
+      - ./ragflow-logs:/ragflow/logs
+    env_file: .env
+    networks:
+      - ragflow
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+networks:
+  ragflow:
+    driver: bridge
+
+volumes:
+  esdata01:
+    driver: local
+  mysql_data:
+    driver: local
+  minio_data:
+    driver: local
+  redis_data:
+    driver: local
