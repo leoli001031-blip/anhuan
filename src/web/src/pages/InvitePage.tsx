@@ -11,7 +11,7 @@ export default function InvitePage() {
 
   const create = async (values: { email: string; role: string }) => {
     try {
-      const resp = await api<{ token: string }>("/api/v1/invitations", {
+      const resp = await api<{ token: string }>("/v1/invitations", {
         method: "POST",
         token: getAccessToken(),
         body: { email: values.email, role: values.role },
@@ -25,7 +25,7 @@ export default function InvitePage() {
 
   const consume = async (values: { token: string }) => {
     try {
-      await api("/api/v1/invitations/consume", {
+      await api("/v1/invitations/consume", {
         method: "POST",
         token: getAccessToken(),
         body: {

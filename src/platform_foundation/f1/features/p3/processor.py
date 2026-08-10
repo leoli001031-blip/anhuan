@@ -449,7 +449,11 @@ async def _finish_failure(
 
 
 async def process_controlled_ingestion(
-    tenant: Tenant, version_id: uuid.UUID
+    tenant: Tenant,
+    version_id: uuid.UUID,
+    *,
+    scanner_host: str = "clamd",
+    scanner_port: int = 3310,
 ) -> None:
     """Process one held version; failures become durable, body-free states."""
     claim = await _claim_process(tenant, version_id)
@@ -463,6 +467,8 @@ async def process_controlled_ingestion(
                 source_file,
                 expected_size=claim.source_size,
                 expected_sha256=claim.content_sha256,
+                host=scanner_host,
+                port=scanner_port,
             )
             if scan_result.verdict == "infected":
                 raise _ProcessOutcome(

@@ -66,7 +66,11 @@ def _get_factory(role: str) -> async_sessionmaker[AsyncSession]:
         raise ValueError("F1_ROLE_INVALID")
     if role not in _factories:
         dsn = _api_dsn() if role == "f1_api" else _worker_dsn()
-        engine = create_async_engine(dsn, pool_pre_ping=True)
+        engine = create_async_engine(
+            dsn,
+            pool_pre_ping=True,
+            hide_parameters=True,
+        )
         _engines[role] = engine
         _factories[role] = async_sessionmaker(engine, expire_on_commit=False)
     return _factories[role]  # type: ignore[return-value]

@@ -48,7 +48,7 @@ class P2Wave3MigrationTests(unittest.TestCase):
         script = ScriptDirectory.from_config(
             Config(str(ROOT / "infra/f1/alembic.ini"))
         )
-        self.assertEqual(script.get_heads(), ["f1_0005"])
+        self.assertEqual(script.get_heads(), ["f1_0010"])
         self.assertEqual(script.get_revision("f1_0005").down_revision, "f1_0004")
 
     def test_visit_guard_and_append_only_timeline_contract(self) -> None:

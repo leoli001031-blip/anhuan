@@ -8,6 +8,7 @@ fixture indexing step (Task 2) decides done vs. FIXTURE_ONLY_UNREGISTERED.
 """
 from __future__ import annotations
 
+import os
 import uuid
 
 from sqlalchemy import text
@@ -66,6 +67,20 @@ async def _process_task(task_id: uuid.UUID) -> None:
         return
     if not await renew_upload_lease(claim.task_id, claim.lease_token):
         return
+
+    external_mode = os.environ.get("F1_EXTERNAL_PIPELINES_ENABLED", "").strip().lower()
+    if external_mode:
+        if external_mode not in {"true", "false"}:
+            raise RuntimeError("F1_EXTERNAL_PIPELINES_MODE_INVALID")
+        if external_mode == "false":
+            from . import indexing
+
+            await indexing.finish_claim(
+                claim,
+                status="failed",
+                reason="EXTERNAL_PIPELINE_DISABLED",
+            )
+            return
 
     # Establish the indexing event while the exact token authorizes worker
     # RLS.  The dispatched event is deliberately NOT acked here: if this

@@ -76,6 +76,11 @@ class P8InternalPwaContractTests(unittest.TestCase):
             "getRegistrations()",
             "isOwnedRegistration",
             "reloadOnNextController",
+            'fetch("/api/healthz"',
+            'cache: "no-store"',
+            'credentials: "omit"',
+            "response.status === 200",
+            "navigator.onLine && apiReachable",
         ):
             self.assertIn(token, source)
 
@@ -87,6 +92,9 @@ class P8InternalPwaContractTests(unittest.TestCase):
         self.assertIn('key: "/internal-app"', layout)
         self.assertIn("<OnlineOfflineBadge />", layout)
         self.assertIn("registerInternalPwaServiceWorker", main)
+        page = (FEATURE / "pages/InternalPwaPage.tsx").read_text(encoding="utf-8")
+        self.assertIn('data-testid="pwa-apply-update"', page)
+        self.assertIn('data-testid="pwa-check-update"', page)
         feature_source = "\n".join(path.read_text(encoding="utf-8") for path in sorted(FEATURE.rglob("*.ts*")))
         for boundary in (
             "INTERNAL_PWA_ONLY",

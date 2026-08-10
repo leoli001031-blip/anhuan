@@ -1,6 +1,8 @@
+const PWA_BUILD_ID = "__ANHUAN_PWA_BUILD_ID__";
 const CACHE_PREFIX = "anhuan-internal-pwa-";
-const SHELL_CACHE = CACHE_PREFIX + "shell-v1";
-const STATIC_CACHE = CACHE_PREFIX + "static-v1";
+const BUILD_CACHE_PREFIX = `${CACHE_PREFIX}${PWA_BUILD_ID}-`;
+const SHELL_CACHE = `${BUILD_CACHE_PREFIX}shell`;
+const STATIC_CACHE = `${BUILD_CACHE_PREFIX}static`;
 const CURRENT_CACHES = new Set([SHELL_CACHE, STATIC_CACHE]);
 const SHELL_KEY = "/";
 const FIXED_STATIC_ASSETS = ["/manifest.webmanifest", "/pwa-icon.svg"];
@@ -105,16 +107,17 @@ async function installOfflineShell() {
 }
 
 async function navigationResponse(request) {
+  const shellCache = await caches.open(SHELL_CACHE);
+  const cachedShell = await shellCache.match(SHELL_KEY);
+  if (cachedShell) return cachedShell;
   try {
     const response = await fetch(request);
     if (responseIsCacheable(response, "text/html")) {
-      const cache = await caches.open(SHELL_CACHE);
-      await cache.put(SHELL_KEY, response.clone());
+      await shellCache.put(SHELL_KEY, response.clone());
     }
     return response;
   } catch {
-    const fallback = await caches.match(SHELL_KEY, { cacheName: SHELL_CACHE });
-    return fallback || Response.error();
+    return Response.error();
   }
 }
 
@@ -129,14 +132,14 @@ function isStaticAsset(url) {
 }
 
 async function staticResponse(request) {
-  const cached = await caches.match(request, { cacheName: STATIC_CACHE });
+  const staticCache = await caches.open(STATIC_CACHE);
+  const cached = await staticCache.match(request);
   if (cached) return cached;
   const response = await fetch(request);
   const pathname = new URL(request.url).pathname;
   const type = expectedResponseType(pathname);
   if (responseIsCacheable(response, type)) {
-    const cache = await caches.open(STATIC_CACHE);
-    await cache.put(request, response.clone());
+    await staticCache.put(request, response.clone());
   }
   return response;
 }

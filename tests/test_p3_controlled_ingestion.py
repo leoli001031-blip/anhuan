@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import inspect
 import io
 import json
 import struct
@@ -23,7 +24,7 @@ from pypdf import PdfWriter
 from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
 
 from platform_foundation.f1 import models
-from platform_foundation.f1.features.p3 import contracts, preview, scanner
+from platform_foundation.f1.features.p3 import contracts, preview, processor, scanner
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -318,6 +319,43 @@ class P3MigrationAndTenantContractTests(unittest.TestCase):
 
 
 class P3PipelineBoundaryTests(unittest.TestCase):
+    def test_processor_forwards_a_bounded_real_scanner_endpoint(self) -> None:
+        signature = inspect.signature(processor.process_controlled_ingestion)
+        self.assertEqual(signature.parameters["scanner_host"].default, "clamd")
+        self.assertEqual(signature.parameters["scanner_port"].default, 3310)
+        source = inspect.getsource(processor.process_controlled_ingestion)
+        self.assertIn("scan_stream,", source)
+        self.assertIn("host=scanner_host", source)
+        self.assertIn("port=scanner_port", source)
+        self.assertNotIn("scan_stream =", source)
+
+    def test_retry_post_resets_then_runs_the_real_processor(self) -> None:
+        source = ast.get_source_segment(
+            _source(P3_ROUTER),
+            _definition(P3_ROUTER, "retry_version"),
+        )
+        self.assertIsNotNone(source)
+        assert source is not None
+        reset = source.index(
+            'await act_on_version(tenant, version_id, action="retry")'
+        )
+        process = source.index(
+            "await process_controlled_ingestion(tenant, version_id)"
+        )
+        result = source.index("return await get_version(tenant, version_id)")
+        self.assertLess(reset, process)
+        self.assertLess(process, result)
+
+    def test_document_list_types_every_optional_postgres_bind(self) -> None:
+        literals = " ".join(_string_literals(P3_SERVICE, "list_documents"))
+        for marker in (
+            "CAST(:content_type AS text)",
+            "CAST(:status AS text)",
+            "CAST(:cursor_updated_at AS timestamptz)",
+            "CAST(:cursor_id AS uuid)",
+        ):
+            self.assertIn(marker, literals)
+
     def test_p3_sources_do_not_create_outbox_or_enter_legacy_indexing(self) -> None:
         paths = tuple(sorted(P3_FEATURES.glob("*.py"))) + (P3_ROUTER,)
         forbidden_calls = {

@@ -17,7 +17,7 @@ export default function DocumentList() {
   const [rows, setRows] = useState<Doc[]>([]);
 
   const refresh = () => {
-    api<Doc[]>("/api/v1/documents", { token: getAccessToken() })
+    api<Doc[]>("/v1/documents", { token: getAccessToken() })
       .then(setRows)
       .catch(() => setRows([]));
   };

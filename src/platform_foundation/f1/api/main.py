@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
 from ..observability import init_telemetry
+from ..health import readiness
 from .routers import (
     audit,
     documents,
@@ -87,3 +89,17 @@ app.include_router(
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz() -> JSONResponse:
+    components = await readiness()
+    ready = all(components.values())
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ready" if ready else "unavailable",
+            "components": components,
+        },
+        headers={"Cache-Control": "no-store"},
+    )

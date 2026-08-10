@@ -20,13 +20,13 @@ export default function AdminPage() {
   const [users, setUsers] = useState<UserRow[]>([]);
 
   const refresh = () => {
-    api<Enterprise[]>("/api/v1/enterprises", {
+    api<Enterprise[]>("/v1/enterprises", {
       token: getAccessToken(),
       enterpriseId: null,
     })
       .then(setEnterprises)
       .catch(() => setEnterprises([]));
-    api<UserRow[]>("/api/v1/users", {
+    api<UserRow[]>("/v1/users", {
       token: getAccessToken(),
       enterpriseId: null,
     })
@@ -38,7 +38,7 @@ export default function AdminPage() {
 
   const createEnterprise = async (values: { name: string; license_no: string }) => {
     try {
-      await api("/api/v1/enterprises", {
+      await api("/v1/enterprises", {
         method: "POST",
         token: getAccessToken(),
         enterpriseId: null,

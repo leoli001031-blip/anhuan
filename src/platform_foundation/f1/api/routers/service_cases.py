@@ -567,7 +567,7 @@ async def close_service_case(
             await session.execute(
                 text(
                     f"SELECT {_CASE_COLUMNS} FROM f1.service_case "
-                    "WHERE id = :case_id FOR UPDATE"
+                    "WHERE id = :case_id"
                 ),
                 {"case_id": case_id},
             )

@@ -29,10 +29,17 @@ NOT_PRODUCTION
 7. PostgreSQL 备份恢复、MinIO 对象身份检查、精确 reset、日志泄漏门和三份本地运维文档。
 8. PDF Inspector 仅形成受控集成决策；当前 `0.2.6/lopdf 0.41` 不得进入 API 或任意上传主链。
 
+## PDF Inspector 决策门
+
+- 本轮只交付 [PDF_INSPECTOR_INTEGRATION_DECISION.md](./PDF_INSPECTOR_INTEGRATION_DECISION.md)，状态固定为 `ARCHITECTURE_CONSIDERED / RUNTIME_DISABLED / NOT_PRODUCTION`；不改 requirements、lock、Compose、API、worker、migration 或页面。
+- 旧 PDF Probe 仅作为只读设计证据，不合并源码或历史；其 Fixture shadow 结论不等于准确率或任意上传可用。
+- 未来仅允许 patched pinned build 在 P3 源身份匹配且 ClamAV `clean` 后，以默认 OFF、进程外、无网络、无 secret、资源受限 shadow 运行。
+- `pypdf` 保持权威解析和 fallback；Inspector 结果只能是人工确认前的草稿，不得直接进入证据、索引、报告、法规、RAG/QA、OCR 路由或外部通知。
+- 任一供应链、隔离、跨租户、正文泄漏或权威覆盖门不通过时保持 OFF；启用必须另开任务书并单独授权。
+
 ## 完成门
 
 - 从空状态依次完成 reset → start → migrate 两次 → seed → health → verify → 重启 → backup → reset → restore → health → 浏览器 E2E → stop。
 - P2–P8 定向测试不少于 137 项，失败 0、跳过 0；唯一 F1 head 为 `f1_0010`。
 - 31 张业务表全部 ENABLE + FORCE RLS；跨租户 API 泄漏、RLS 读写泄漏、事务缺口、对象假状态、缓存泄漏、secret/log 泄漏、共享资源变更和本轮残留全部为 0。
 - 每项保留真实命令输出与故障反测的红→绿证据；只报告实际达到的状态。
-

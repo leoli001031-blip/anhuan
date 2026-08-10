@@ -12,5 +12,6 @@ export {
   checkForInternalPwaUpdate,
   clearInternalPwaShellCaches,
   getInternalPwaSnapshot,
+  refreshInternalPwaReachability,
   registerInternalPwaServiceWorker,
 } from "./serviceWorkerRegistration";

@@ -31,7 +31,7 @@ export default function QAPage() {
       if (eid) {
         body.enterprise_id = eid;
       }
-      const resp = await api<QaResult>("/api/v1/qa", {
+      const resp = await api<QaResult>("/v1/qa", {
         method: "POST",
         token: getAccessToken(),
         body,

@@ -31,6 +31,10 @@ def init_telemetry() -> trace.Tracer:
     global _tracer, _initialized
     if _initialized and _tracer is not None:
         return _tracer
+    if _os.environ.get("OTEL_SDK_DISABLED", "").strip().lower() == "true":
+        _tracer = trace.get_tracer(SERVICE_NAME)
+        _initialized = True
+        return _tracer
     # The local OTLP export must not go through the host HTTP proxy
     # (it would try 127.0.0.1:<proxy-port> instead of the collector).
     import os

@@ -1,9 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
-import { UserManager } from "oidc-client-ts";
-import { ConfigProvider } from "antd";
+import { Alert, ConfigProvider, Spin } from "antd";
 import { OidcProvider, useAuth } from "./auth/OidcProvider";
-import { oidcConfig } from "./auth/oidcConfig";
 import Login from "./pages/Login";
 import Layout from "./pages/Layout";
 import EnterpriseList from "./pages/EnterpriseList";
@@ -51,18 +49,25 @@ import {
 } from "./features/p7";
 import { InternalPwaPage } from "./features/p8";
 
-const userManager = new UserManager(oidcConfig);
-
 function Callback() {
   const navigate = useNavigate();
+  const { completeSigninCallback } = useAuth();
+  const started = useRef(false);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
-    userManager.signinRedirectCallback().then(() => navigate("/workbench"));
-  }, [navigate]);
-  return null;
+    if (started.current) return;
+    started.current = true;
+    completeSigninCallback()
+      .then(() => navigate("/workbench", { replace: true }))
+      .catch(() => setError("OIDC_CALLBACK_FAILED"));
+  }, [completeSigninCallback, navigate]);
+  if (error) return <Alert type="error" message="登录回调失败" description={error} />;
+  return <Spin fullscreen tip="正在完成登录" />;
 }
 
 function Protected({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, isInitializing } = useAuth();
+  if (isInitializing) return <Spin fullscreen tip="正在检查登录状态" />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }

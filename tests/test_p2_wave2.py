@@ -39,11 +39,11 @@ def _foreign_key_pairs(constraint: ForeignKeyConstraint) -> tuple[tuple[str, str
 
 
 class P2Wave2MigrationContractTests(unittest.TestCase):
-    def test_wave2_remains_on_the_single_linear_f1_0005_head(self) -> None:
+    def test_wave2_remains_on_the_single_linear_f1_head(self) -> None:
         config = Config(str(ROOT / "infra/f1/alembic.ini"))
         script = ScriptDirectory.from_config(config)
 
-        self.assertEqual(script.get_heads(), ["f1_0005"])
+        self.assertEqual(script.get_heads(), ["f1_0010"])
         revision = script.get_revision("f1_0005")
         self.assertIsNotNone(revision)
         self.assertEqual(revision.down_revision, "f1_0004")

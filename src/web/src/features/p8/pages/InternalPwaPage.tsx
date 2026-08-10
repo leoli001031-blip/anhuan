@@ -63,7 +63,7 @@ export default function InternalPwaPage() {
 
       <P8BoundaryBanner />
       {!pwa.online && <Alert type="error" showIcon message="当前离线：业务数据不可用" description="静态应用壳可以打开，但不会展示缓存的租户、任务、通知、报告或用户数据。恢复联网后再访问业务页面。" style={{ marginBottom: 16 }} />}
-      {pwa.waiting && <Alert type="info" showIcon message="检测到 waiting update" description="更新不会后台强制刷新；请在保存当前表单后主动点击“应用更新”。" action={<Button type="primary" onClick={() => void applyUpdate()} loading={pwa.busy}>应用更新</Button>} style={{ marginBottom: 16 }} />}
+      {pwa.waiting && <Alert type="info" showIcon message="检测到 waiting update" description="更新不会后台强制刷新；请在保存当前表单后主动点击“应用更新”。" action={<Button data-testid="pwa-apply-update" type="primary" onClick={() => void applyUpdate()} loading={pwa.busy}>应用更新</Button>} style={{ marginBottom: 16 }} />}
       {pwa.errorCode && <Alert type="error" showIcon message="PWA 操作未完成" description={ERROR_COPY[pwa.errorCode] ?? ERROR_COPY.PWA_OPERATION_FAILED} style={{ marginBottom: 16 }} />}
       {notice && <Alert type="success" showIcon message={notice} closable onClose={() => setNotice(null)} style={{ marginBottom: 16 }} />}
 
@@ -86,7 +86,7 @@ export default function InternalPwaPage() {
         <Typography.Title id="p8-actions-heading" level={4}>用户操作</Typography.Title>
         <Space wrap>
           {pwa.installable && !pwa.installed && <Button type="primary" loading={pwa.busy} onClick={() => void install()}>安装内部应用</Button>}
-          <Button disabled={!pwa.serviceWorkerSupported || pwa.busy} onClick={() => void checkUpdate()}>检查静态壳更新</Button>
+          <Button data-testid="pwa-check-update" disabled={!pwa.serviceWorkerSupported || pwa.busy} onClick={() => void checkUpdate()}>检查静态壳更新</Button>
           {pwa.waiting && <Button type="primary" loading={pwa.busy} onClick={() => void applyUpdate()}>应用更新</Button>}
           <Button danger disabled={!pwa.serviceWorkerSupported || pwa.busy} onClick={() => setClearOpen(true)}>清除本应用静态缓存</Button>
           <Button disabled={pwa.busy} onClick={() => void pwa.refresh()}>刷新状态</Button>
