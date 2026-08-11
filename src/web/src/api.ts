@@ -56,17 +56,60 @@ async function responseError(response: Response): Promise<ApiError> {
 }
 
 const ENTERPRISE_KEY = "f1-selected-enterprise";
+export const ENTERPRISE_CHANGED_EVENT = "f1-enterprise-changed";
+let tenantRequestController = new AbortController();
+let tenantRequestGeneration = 0;
+
+interface MergedAbortSignal {
+  signal: AbortSignal;
+  dispose: () => void;
+}
+
+function mergeAbortSignals(...signals: Array<AbortSignal | undefined>): MergedAbortSignal {
+  const activeSignals = signals.filter((signal): signal is AbortSignal => Boolean(signal));
+  if (activeSignals.length === 1) {
+    return { signal: activeSignals[0], dispose: () => undefined };
+  }
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  for (const signal of activeSignals) {
+    if (signal.aborted) {
+      controller.abort();
+      break;
+    }
+    signal.addEventListener("abort", abort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      for (const signal of activeSignals) signal.removeEventListener("abort", abort);
+    },
+  };
+}
+
+function assertTenantRequestCurrent(signal: AbortSignal, generation: number): void {
+  if (signal.aborted || generation !== tenantRequestGeneration) {
+    throw new ApiError(0, "REQUEST_ABORTED", false);
+  }
+}
 
 export function getSelectedEnterprise(): string | null {
   return localStorage.getItem(ENTERPRISE_KEY);
 }
 
 export function setSelectedEnterprise(id: string | null): void {
+  const current = getSelectedEnterprise();
+  if (current === id) return;
+  const previousController = tenantRequestController;
+  tenantRequestController = new AbortController();
+  tenantRequestGeneration += 1;
+  previousController.abort();
   if (id) {
     localStorage.setItem(ENTERPRISE_KEY, id);
   } else {
     localStorage.removeItem(ENTERPRISE_KEY);
   }
+  window.dispatchEvent(new Event(ENTERPRISE_CHANGED_EVENT));
 }
 
 export async function api<T = any>(
@@ -96,25 +139,40 @@ export async function api<T = any>(
   if (options.body !== undefined) {
     headers["Content-Type"] = "application/json";
   }
-  let resp: Response;
+  const requestGeneration = tenantRequestGeneration;
+  const mergedSignal = mergeAbortSignals(options.signal, tenantRequestController.signal);
   try {
-    resp = await fetch(`${API}${path}`, {
-      method: options.method ?? "GET",
-      headers,
-      body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-      signal: options.signal,
-    });
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new ApiError(0, "REQUEST_ABORTED", false);
+    let resp: Response;
+    try {
+      resp = await fetch(`${API}${path}`, {
+        method: options.method ?? "GET",
+        headers,
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
+        signal: mergedSignal.signal,
+      });
+    } catch (error) {
+      if (
+        mergedSignal.signal.aborted ||
+        (error instanceof DOMException && error.name === "AbortError")
+      ) {
+        throw new ApiError(0, "REQUEST_ABORTED", false);
+      }
+      throw new ApiError(0, "NETWORK_ERROR", true);
     }
-    throw new ApiError(0, "NETWORK_ERROR", true);
+    assertTenantRequestCurrent(mergedSignal.signal, requestGeneration);
+    if (!resp.ok) {
+      const failure = await responseError(resp);
+      assertTenantRequestCurrent(mergedSignal.signal, requestGeneration);
+      throw failure;
+    }
+    if (resp.status === 204) {
+      assertTenantRequestCurrent(mergedSignal.signal, requestGeneration);
+      return undefined as T;
+    }
+    const payload = (await resp.json()) as T;
+    assertTenantRequestCurrent(mergedSignal.signal, requestGeneration);
+    return payload;
+  } finally {
+    mergedSignal.dispose();
   }
-  if (!resp.ok) {
-    throw await responseError(resp);
-  }
-  if (resp.status === 204) {
-    return undefined as T;
-  }
-  return (await resp.json()) as T;
 }

@@ -5,12 +5,16 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
+import plistlib
+import pwd
 import re
 import secrets
 import selectors
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -28,7 +32,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from infra.f1 import local_backup, local_log_verify
+from infra.f1 import (
+    local_backup,
+    local_browser_compose_supervisor,
+    local_log_verify,
+)
+from infra.f1.local_verify import P2_P7_TABLES
 
 
 STATE_DIR = ROOT / ".local"
@@ -39,9 +48,20 @@ BACKUPS_DIR = STATE_DIR / "backups"
 HOME_DIR = STATE_DIR / "home"
 TMP_DIR = STATE_DIR / "tmp"
 LOCK_FILE = STATE_DIR / "command.lock"
+REVERSE_JOURNAL = STATE_DIR / "reverse-recovery.json"
+BROWSER_RECOVERY_JOURNAL = STATE_DIR / "browser-recovery.json"
 COMPOSE_FILE = ROOT / "infra/f1/docker-compose.local.yml"
 STATE_SCHEMA = "anhuan-engineering-local-v1"
+REVERSE_JOURNAL_SCHEMA = "anhuan-reverse-recovery-v1"
+BROWSER_RECOVERY_JOURNAL_SCHEMA = "anhuan-browser-recovery-v1"
 SCOPE = "engineering-closeout"
+REVERSE_SENTINEL_IMAGE = (
+    "python:3.11-slim@sha256:"
+    "90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff"
+)
+REVERSE_SENTINEL_IMAGE_ID = (
+    "sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff"
+)
 PROJECT_RE = re.compile(r"anhuan-closeout-[0-9a-f]{12}\Z")
 DATABASE_RE = re.compile(r"anhuan_closeout_[0-9a-f]{24}\Z")
 BACKUP_ID_RE = re.compile(r"[0-9]{8}T[0-9]{6}Z-[0-9a-f]{12}\Z")
@@ -55,13 +75,75 @@ DATA_VOLUME_KEYS = frozenset({"postgres_data", "minio_data"})
 PWA_CONTROL_SIGNAL = b"ready\n"
 PWA_BROWSER_READY = "browser-ready"
 PWA_IMAGE_READY = "image-b-ready"
+MINIO_FAULT_READY = "minio-fault-ready"
+MINIO_STOPPED = "minio-stopped"
+MINIO_503_OBSERVED = "minio-503-observed"
+MINIO_RESTORED = "minio-restored"
+CLAMD_FAULT_READY = "clamd-fault-ready"
+CLAMD_STOPPED = "clamd-stopped"
+CLAMD_UNAVAILABLE_OBSERVED = "clamd-unavailable-observed"
+CLAMD_RESTORED = "clamd-restored"
+PWA_OS_OFFLINE_READY = "pwa-os-offline-ready"
+PWA_OS_WEB_STOPPED = "pwa-os-web-stopped"
+PWA_OS_OFFLINE_OBSERVED = "pwa-os-offline-observed"
+PWA_OS_WEB_RESTORED = "pwa-os-web-restored"
+MINIO_FAULT_ARTIFACT_NAME = "engineering-minio-recovery-canary.pdf"
+BROWSER_ACTIVE_COMMANDS = frozenset({"build_b", "swap_b", "restore_a"})
+BROWSER_STAGES = frozenset(
+    {"all", "business", "faults", "pwa-update", "pwa-os"}
+)
+BROWSER_STAGE_TAGS = {
+    "all": "LOCAL_BROWSER_VERIFY_OK",
+    "business": "LOCAL_BROWSER_BUSINESS_VERIFY_OK",
+    "faults": "LOCAL_BROWSER_FAULTS_VERIFY_OK",
+    "pwa-update": "LOCAL_PWA_UPDATE_VERIFY_OK",
+}
+BROWSER_CONTROL_SIGNALS = frozenset(
+    {
+        PWA_BROWSER_READY,
+        PWA_IMAGE_READY,
+        MINIO_FAULT_READY,
+        MINIO_STOPPED,
+        MINIO_503_OBSERVED,
+        MINIO_RESTORED,
+        CLAMD_FAULT_READY,
+        CLAMD_STOPPED,
+        CLAMD_UNAVAILABLE_OBSERVED,
+        CLAMD_RESTORED,
+        PWA_OS_OFFLINE_READY,
+        PWA_OS_WEB_STOPPED,
+        PWA_OS_OFFLINE_OBSERVED,
+        PWA_OS_WEB_RESTORED,
+    }
+)
 PWA_BROWSER_RUNNER = ROOT / "src/web/scripts/engineering-browser-verify.mjs"
+BROWSER_COMPOSE_SUPERVISOR = (
+    ROOT / "infra/f1/local_browser_compose_supervisor.py"
+)
 BROWSER_FAILURE_REASONS = frozenset(
     {
         "ADMIN_API_NON_2XX",
         "ADMIN_PAGE_API_EVIDENCE_MISSING",
         "ADMIN_TENANT_CONTEXT_MISSING",
+        "ADMIN_SERVICE_CASE_CREATE_VISIBLE_ACTION_MISSING",
+        "ADMIN_UNEXPECTED_API_NON_2XX",
         "APPLICATION_SHELL_MISSING",
+        "ASSIGNMENT_CANARY_REFRESH_FAILED",
+        "ASSIGNMENT_CANDIDATE_API_MISSING",
+        "ASSIGNMENT_CANDIDATE_OPTION_MISSING",
+        "ASSIGNMENT_CANDIDATE_SELECT_MISSING",
+        "ASSIGNMENT_CAPACITY_OPTION_MISSING",
+        "ASSIGNMENT_CAPACITY_SELECT_DISABLED",
+        "ASSIGNMENT_CAPACITY_SELECT_MISSING",
+        "ASSIGNMENT_DRAWER_MISSING",
+        "ASSIGNMENT_DRAWER_TRIGGER_MISSING",
+        "ASSIGNMENT_FORM_MISSING",
+        "ASSIGNMENT_ILLEGAL_STATE_409_MISSING",
+        "ASSIGNMENT_ILLEGAL_STATE_UI_MISSING",
+        "ASSIGNMENT_SUBMIT_API_INVALID",
+        "ASSIGNMENT_SUBMIT_API_MISSING",
+        "ASSIGNMENT_SUBMIT_DISABLED",
+        "ASSIGNMENT_SUBMIT_MISSING",
         "BROWSER_API_IDLE_TIMEOUT",
         "BROWSER_CONTEXT_CLEANUP_FAILED",
         "BROWSER_CONTEXT_CREATE_FAILED",
@@ -73,6 +155,9 @@ BROWSER_FAILURE_REASONS = frozenset(
         "BROWSER_SECRET_CHANGED",
         "BROWSER_SECRET_DIRECTORY_INVALID",
         "BROWSER_SECRET_INVALID",
+        "BROWSER_STAGE_CONTROL_REQUIRED",
+        "BROWSER_STAGE_INVALID",
+        "BROWSER_STAGE_OPTION_INVALID",
         "BROWSER_STAGE_BOOTSTRAP_UNEXPECTED",
         "BROWSER_STAGE_EXECUTE_UNEXPECTED",
         "BROWSER_STAGE_LAUNCH_UNEXPECTED",
@@ -84,12 +169,74 @@ BROWSER_FAILURE_REASONS = frozenset(
         "CDP_CONNECTION_CLOSED",
         "CDP_CONNECT_FAILED",
         "CDP_CONNECT_TIMEOUT",
+        "CLAMD_FAULT_CONTROL_SIGNAL_INVALID",
+        "CLAMD_FAULT_INITIAL_CAPABILITIES_API_INVALID",
+        "CLAMD_FAULT_INITIAL_CAPABILITIES_API_MISSING",
+        "CLAMD_FAULT_INITIAL_READY_UI_MISSING",
+        "CLAMD_FAULT_RECOVERY_API_INVALID",
+        "CLAMD_FAULT_RECOVERY_API_MISSING",
+        "CLAMD_FAULT_RECOVERY_REFRESH_MISSING",
+        "CLAMD_FAULT_RECOVERY_UI_MISSING",
+        "CLAMD_FAULT_RESTORE_TIMEOUT",
+        "CLAMD_FAULT_STOP_TIMEOUT",
+        "CLAMD_FAULT_UNAVAILABLE_API_INVALID",
+        "CLAMD_FAULT_UNAVAILABLE_API_MISSING",
+        "CLAMD_FAULT_UNAVAILABLE_REFRESH_MISSING",
+        "CLAMD_FAULT_UNAVAILABLE_UI_MISSING",
         "CHROME_DEBUG_ENDPOINT_TIMEOUT",
         "CHROME_EARLY_EXIT",
         "CHROME_EXIT_TIMEOUT",
         "CHROME_PROCESS_CLEANUP_FAILED",
         "CHROME_PROFILE_BOUNDARY_INVALID",
+        "CONSULTANT_SERVICE_CASE_CREATE_API_401",
+        "CONSULTANT_SERVICE_CASE_CREATE_API_403",
+        "CONSULTANT_SERVICE_CASE_CREATE_API_404",
+        "CONSULTANT_SERVICE_CASE_CREATE_API_409",
+        "CONSULTANT_SERVICE_CASE_CREATE_API_422",
+        "CONSULTANT_SERVICE_CASE_CREATE_API_500",
+        "CONSULTANT_SERVICE_CASE_CREATE_API_503",
+        "CONSULTANT_SERVICE_CASE_CREATE_API_EVIDENCE_MISSING",
+        "CONSULTANT_SERVICE_CASE_CREATE_API_NON_2XX",
+        "CONSULTANT_SERVICE_CASE_CREATE_HIDDEN_ACTION_VISIBLE",
+        "CROSS_TENANT_DETAIL_404_INVALID",
+        "CROSS_TENANT_DETAIL_404_LOADING_STUCK",
+        "CROSS_TENANT_DETAIL_404_MESSAGE_MISSING",
+        "CROSS_TENANT_DETAIL_404_MISSING",
+        "CROSS_TENANT_DETAIL_404_OLD_CONTENT_RETAINED",
+        "CROSS_TENANT_DETAIL_404_RETRY_MISSING",
+        "CROSS_TENANT_DETAIL_404_ROUTE_MISMATCH",
+        "CROSS_TENANT_DETAIL_404_SHELL_MISSING",
+        "CROSS_TENANT_DETAIL_404_UI_STATE_INVALID",
+        "CROSS_TENANT_DETAIL_404_UI_MISSING",
         "IDENTITY_TENANT_CONTEXT_MISSING",
+        "LOCAL_DURABILITY_CASE_API_INVALID",
+        "LOCAL_DURABILITY_CASE_DETAIL_MISSING",
+        "LOCAL_DURABILITY_CASE_MISSING",
+        "LOCAL_DURABILITY_CASE_OPEN_FAILED",
+        "LOCAL_DURABILITY_CASE_ROUTE_INVALID",
+        "MINIO_FAULT_503_API_INVALID",
+        "MINIO_FAULT_503_API_MISSING",
+        "MINIO_FAULT_503_RETRY_UI_MISSING",
+        "MINIO_FAULT_CONTROL_SIGNAL_INVALID",
+        "MINIO_FAULT_DISPLAY_NAME_INPUT_MISSING",
+        "MINIO_FAULT_DOCUMENT_LIBRARY_MISSING",
+        "MINIO_FAULT_FILE_INPUT_MISSING",
+        "MINIO_FAULT_FILE_STATE_INVALID",
+        "MINIO_FAULT_IDEMPOTENCY_MISMATCH",
+        "MINIO_FAULT_PDF_CLEANUP_FAILED",
+        "MINIO_FAULT_PDF_CREATE_FAILED",
+        "MINIO_FAULT_RESTORE_TIMEOUT",
+        "MINIO_FAULT_RETRY_API_INVALID",
+        "MINIO_FAULT_RETRY_API_MISSING",
+        "MINIO_FAULT_RETRY_BUTTON_MISSING",
+        "MINIO_FAULT_RETRY_UI_FAILED",
+        "MINIO_FAULT_STOP_TIMEOUT",
+        "MINIO_FAULT_TENANT_A_REQUIRED",
+        "MINIO_FAULT_UPLOAD_BUTTON_DISABLED",
+        "MINIO_FAULT_UPLOAD_BUTTON_MISSING",
+        "MINIO_FAULT_UPLOAD_MODAL_MISSING",
+        "MINIO_FAULT_UPLOAD_LIST_INVALID",
+        "MINIO_FAULT_UPLOAD_TRIGGER_MISSING",
         "OIDC_ADMIN_CREDENTIAL_REJECTED",
         "OIDC_AUDITOR_CREDENTIAL_REJECTED",
         "OIDC_CALLBACK_FAILED",
@@ -125,6 +272,25 @@ BROWSER_FAILURE_REASONS = frozenset(
         "PWA_INSTALL_CLEANUP_FAILED",
         "PWA_INSTALL_FAILED",
         "PWA_INSTALL_LAUNCH_FAILED",
+        "PWA_OS_CONTROL_REQUIRED",
+        "PWA_OS_CONTROL_SIGNAL_INVALID",
+        "PWA_OS_HOME_INVALID",
+        "PWA_OS_INSTALL_REQUIRED",
+        "PWA_OS_INSTALL_UNSUPPORTED",
+        "PWA_OS_PROFILE_UNAVAILABLE",
+        "PWA_OS_OFFLINE_NOT_SERVICE_WORKER",
+        "PWA_OS_OFFLINE_REOPEN_FAILED",
+        "PWA_OS_ONLINE_LAUNCH_FAILED",
+        "PWA_OS_SHIM_CLEANUP_FAILED",
+        "PWA_OS_SHIM_DIRECTORY_INVALID",
+        "PWA_OS_SHIM_IDENTITY_INVALID",
+        "PWA_OS_SHIM_MISSING",
+        "PWA_OS_SHIM_PREEXISTING",
+        "PWA_OS_SHIM_RESIDUAL",
+        "PWA_OS_UNINSTALL_FAILED",
+        "PWA_OS_UNINSTALL_PROBE_FAILED",
+        "PWA_OS_WEB_RESTORE_TIMEOUT",
+        "PWA_OS_WEB_STOP_TIMEOUT",
         "PWA_MANIFEST_AUDIT_UNAVAILABLE",
         "PWA_MANIFEST_ID_INVALID",
         "PWA_MANIFEST_INVALID",
@@ -142,15 +308,21 @@ BROWSER_FAILURE_REASONS = frozenset(
         "PWA_STAGE_WAITING_UNEXPECTED",
         "PWA_STAGE_WAIT_B_UNEXPECTED",
         "PWA_UPDATE_ACTIVATION_INVALID",
+        "PWA_UPDATE_APPLY_NOT_TRIGGERED",
         "PWA_UPDATE_BASELINE_INVALID",
         "PWA_UPDATE_CONFIRMATION_MISSING",
+        "PWA_UPDATE_CONFIRMATION_NOT_READY",
         "PWA_UPDATE_CONTROLLER_CHANGE_MISSING",
+        "PWA_UPDATE_CONTROLLER_CHANGE_COUNT_INVALID",
+        "PWA_UPDATE_CONTROLLER_PROBE_MISSED",
         "PWA_UPDATE_CONTROL_DIRECTORY_INVALID",
         "PWA_UPDATE_CONTROL_SIGNAL_INVALID",
         "PWA_UPDATE_CONTROL_TIMEOUT",
         "PWA_UPDATE_REQUEST_FAILED",
+        "PWA_UPDATE_RELOAD_MISSING",
         "PWA_WAITING_UPDATE_INVALID",
         "PWA_WAITING_UPDATE_MISSING",
+        "ROLE_IDENTITY_CONTRACT_INVALID",
         "SYSTEM_CHROME_MISSING",
         "TENANT_HEADER_INITIAL_MISSING",
         "TENANT_HEADER_SWITCH_FAILED",
@@ -163,6 +335,7 @@ BROWSER_FAILURE_REASONS = frozenset(
 )
 
 VERIFIER_FAILURE_REASONS = {
+    "targeted-tests": frozenset({"LOCAL_TARGETED_TESTS_FAILED"}),
     "verifier": frozenset(
         {
             "LOCAL_VERIFY_CONNECTION_FAILED",
@@ -280,6 +453,20 @@ TEXT_SECRET_NAMES = (
     "f1_qa_key",
 )
 ALL_SECRET_NAMES = (*TEXT_SECRET_NAMES, "f0i_key")
+EXPECTED_VERIFICATION_METRICS = {
+    "database_identity_mismatch_count": 0,
+    "migration_head_count": 2,
+    "migration_head_mismatch_count": 0,
+    "rls_mismatch_count": 0,
+    "rls_table_count": 31,
+    "runtime_role_count": 2,
+    "runtime_role_membership_count": 0,
+    "runtime_role_mismatch_count": 0,
+    "seed_binding_count": 7,
+    "seed_binding_mismatch_count": 0,
+    "seed_enterprise_count": 2,
+    "seed_enterprise_mismatch_count": 0,
+}
 
 
 class LocalError(RuntimeError):
@@ -445,6 +632,28 @@ def _write_secrets(state: dict[str, object]) -> None:
         _exclusive_write(f0i_path, secrets.token_bytes(32))
 
 
+def _validate_secret_set(directory: Path | None = None) -> None:
+    if directory is None:
+        directory = SECRETS_DIR
+    _directory(directory)
+    try:
+        entries = {entry.name for entry in os.scandir(directory)}
+    except OSError:
+        raise LocalError("LOCAL_SECRET_SET_INVALID") from None
+    if entries != set(ALL_SECRET_NAMES):
+        raise LocalError("LOCAL_SECRET_SET_INVALID")
+    for name in ALL_SECRET_NAMES:
+        expected = 32 if name == "f0i_key" else 1
+        maximum = 32 if name == "f0i_key" else 16384
+        _secure_file(directory / name, minimum=expected, maximum=maximum)
+
+
+def _validate_existing_layout() -> None:
+    for directory in (SECRETS_DIR, BACKUPS_DIR, HOME_DIR, TMP_DIR):
+        _directory(directory)
+    _validate_secret_set()
+
+
 def _docker_plugin_directory() -> str | None:
     candidate = Path(
         "/Applications/Docker.app/Contents/Resources/cli-plugins"
@@ -538,10 +747,7 @@ def _initialize() -> dict[str, object]:
         ).encode("ascii")
         _exclusive_write(STATE_FILE, payload)
     _write_secrets(state)
-    for name in ALL_SECRET_NAMES:
-        expected = 32 if name == "f0i_key" else 1
-        maximum = 32 if name == "f0i_key" else 16384
-        _secure_file(SECRETS_DIR / name, minimum=expected, maximum=maximum)
+    _validate_secret_set()
     _write_docker_config()
     _write_compose_env(state)
     return state
@@ -700,6 +906,28 @@ def _node() -> str:
     return str(resolved)
 
 
+def _python() -> str:
+    candidates = (Path(sys.executable), Path("/usr/bin/python3"))
+    observed = False
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+            info = resolved.stat()
+        except OSError:
+            continue
+        observed = True
+        if (
+            stat.S_ISREG(info.st_mode)
+            and info.st_uid in {0, os.geteuid()}
+            and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            and os.access(resolved, os.X_OK)
+        ):
+            return str(resolved)
+    raise LocalError(
+        "LOCAL_PYTHON_UNTRUSTED" if observed else "LOCAL_PYTHON_UNAVAILABLE"
+    )
+
+
 def _git() -> str:
     raw = shutil.which("git", path=_environment()["PATH"])
     if raw is None:
@@ -716,7 +944,7 @@ def _git() -> str:
 
 
 def _control_signal_present(directory: Path, name: str) -> bool:
-    if name not in {PWA_BROWSER_READY, PWA_IMAGE_READY}:
+    if name not in BROWSER_CONTROL_SIGNALS:
         raise LocalError("LOCAL_PWA_CONTROL_SIGNAL_INVALID")
     path = directory / name
     flags = os.O_RDONLY
@@ -816,18 +1044,1069 @@ def _cleanup_control_directory(directory: Path) -> None:
         raise LocalError("LOCAL_PWA_CONTROL_DIRECTORY_INVALID")
     _directory(directory)
     entries = list(directory.iterdir())
-    if any(entry.name not in {PWA_BROWSER_READY, PWA_IMAGE_READY} for entry in entries):
+    if any(entry.name not in BROWSER_CONTROL_SIGNALS for entry in entries):
         raise LocalError("LOCAL_PWA_CONTROL_RESIDUAL")
     for entry in entries:
         _secure_file(
             entry,
-            minimum=len(PWA_CONTROL_SIGNAL),
+            minimum=0,
             maximum=len(PWA_CONTROL_SIGNAL),
         )
-        if entry.read_bytes() != PWA_CONTROL_SIGNAL:
+        body = entry.read_bytes()
+        if len(body) == len(PWA_CONTROL_SIGNAL) and body != PWA_CONTROL_SIGNAL:
             raise LocalError("LOCAL_PWA_CONTROL_SIGNAL_INVALID")
         entry.unlink()
     directory.rmdir()
+
+
+def _cleanup_browser_fault_artifact(control_directory: Path) -> None:
+    if (
+        control_directory.parent != TMP_DIR
+        or not re.fullmatch(r"pwa-update-[0-9a-f]{24}", control_directory.name)
+    ):
+        raise LocalError("LOCAL_BROWSER_FAULT_ARTIFACT_INVALID")
+    probe = control_directory.name.removeprefix("pwa-update-")
+    directory = TMP_DIR / f"anhuan-minio-fault-{probe}"
+    try:
+        info = directory.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_FAULT_ARTIFACT_INVALID") from None
+    if (
+        directory.parent != TMP_DIR
+        or not stat.S_ISDIR(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o700
+        or info.st_uid != os.geteuid()
+    ):
+        raise LocalError("LOCAL_BROWSER_FAULT_ARTIFACT_INVALID")
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_FAULT_ARTIFACT_INVALID") from None
+    if any(entry.name != MINIO_FAULT_ARTIFACT_NAME for entry in entries):
+        raise LocalError("LOCAL_BROWSER_FAULT_ARTIFACT_INVALID")
+    artifact = directory / MINIO_FAULT_ARTIFACT_NAME
+    if entries:
+        _secure_file(artifact, minimum=0, maximum=4096)
+        try:
+            artifact.unlink()
+        except OSError:
+            raise LocalError("LOCAL_BROWSER_FAULT_ARTIFACT_CLEANUP_FAILED") from None
+    try:
+        directory.rmdir()
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_FAULT_ARTIFACT_CLEANUP_FAILED") from None
+    try:
+        directory.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_FAULT_ARTIFACT_CLEANUP_FAILED") from None
+    raise LocalError("LOCAL_BROWSER_FAULT_ARTIFACT_CLEANUP_FAILED")
+
+
+def _browser_control_directory(probe: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{24}", probe):
+        raise LocalError("LOCAL_BROWSER_RECOVERY_INVALID")
+    return TMP_DIR / f"pwa-update-{probe}"
+
+
+def _browser_compose_receipt(
+    state: dict[str, object],
+    probe: str,
+    *,
+    expected_kind: str | None,
+    consume: bool,
+) -> tuple[str, int] | None:
+    if expected_kind is not None and expected_kind not in BROWSER_ACTIVE_COMMANDS:
+        raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID")
+    control_directory = _browser_control_directory(probe)
+    _directory(control_directory)
+    staging = (
+        control_directory
+        / local_browser_compose_supervisor.RECEIPT_STAGING_BASENAME
+    )
+    try:
+        staging.lstat()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID") from None
+    else:
+        raise LocalError("LOCAL_BROWSER_COMMAND_COMPLETION_UNPROVEN")
+
+    directory_flags = os.O_RDONLY
+    if hasattr(os, "O_DIRECTORY"):
+        directory_flags |= os.O_DIRECTORY
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    try:
+        directory_descriptor = os.open(control_directory, directory_flags)
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID") from None
+    receipt_descriptor: int | None = None
+    try:
+        file_flags = os.O_RDONLY
+        if hasattr(os, "O_CLOEXEC"):
+            file_flags |= os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            file_flags |= os.O_NOFOLLOW
+        try:
+            receipt_descriptor = os.open(
+                local_browser_compose_supervisor.RECEIPT_BASENAME,
+                file_flags,
+                dir_fd=directory_descriptor,
+            )
+        except FileNotFoundError:
+            return None
+        except OSError:
+            raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID") from None
+        before = os.fstat(receipt_descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_uid != os.geteuid()
+            or stat.S_IMODE(before.st_mode) != 0o600
+            or before.st_size < 1
+            or before.st_size > 4096
+        ):
+            raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID")
+        body = os.read(receipt_descriptor, before.st_size + 1)
+        after = os.fstat(receipt_descriptor)
+        identity = lambda info: (
+            info.st_dev,
+            info.st_ino,
+            info.st_size,
+            info.st_mtime_ns,
+            info.st_ctime_ns,
+            info.st_mode,
+            info.st_uid,
+            info.st_nlink,
+        )
+        if len(body) != before.st_size or identity(before) != identity(after):
+            raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID")
+
+        def unique_pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+            result: dict[str, object] = {}
+            for key, value in items:
+                if key in result:
+                    raise ValueError("duplicate")
+                result[key] = value
+            return result
+
+        try:
+            document = json.loads(
+                body.decode("ascii"), object_pairs_hook=unique_pairs
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID") from None
+        kind = document.get("kind") if isinstance(document, dict) else None
+        exit_code = (
+            document.get("exit_code") if isinstance(document, dict) else None
+        )
+        state_body = (
+            json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("ascii")
+        expected = {
+            "schema": local_browser_compose_supervisor.SCHEMA,
+            "probe": probe,
+            "kind": kind,
+            "project_id": state["project_id"],
+            "compose_project": state["compose_project"],
+            "state_sha256": hashlib.sha256(state_body).hexdigest(),
+            "service": "web",
+            "exit_code": exit_code,
+        }
+        if (
+            not isinstance(document, dict)
+            or set(document) != local_browser_compose_supervisor.RECEIPT_FIELDS
+            or document != expected
+            or kind not in BROWSER_ACTIVE_COMMANDS
+            or (expected_kind is not None and kind != expected_kind)
+            or type(exit_code) is not int
+            or not 0 <= exit_code <= 255
+        ):
+            raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID")
+        if consume:
+            try:
+                named = os.stat(
+                    local_browser_compose_supervisor.RECEIPT_BASENAME,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError:
+                raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID") from None
+            if identity(named) != identity(before):
+                raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID")
+            try:
+                os.unlink(
+                    local_browser_compose_supervisor.RECEIPT_BASENAME,
+                    dir_fd=directory_descriptor,
+                )
+                os.fsync(directory_descriptor)
+            except OSError:
+                raise LocalError("LOCAL_BROWSER_RECEIPT_CLEANUP_FAILED") from None
+        return str(kind), int(exit_code)
+    finally:
+        if receipt_descriptor is not None:
+            os.close(receipt_descriptor)
+        os.close(directory_descriptor)
+
+
+def _browser_recovery_payload(
+    state: dict[str, object],
+    probe: str,
+    browser_pid: int | None,
+    active_command_kind: str | None = None,
+    active_command_pid: int | None = None,
+) -> dict[str, object]:
+    image_a = str(state["web_image"])
+    return {
+        "schema": BROWSER_RECOVERY_JOURNAL_SCHEMA,
+        "project_id": state["project_id"],
+        "compose_project": state["compose_project"],
+        "probe": probe,
+        "image_a": image_a,
+        "image_b": f"{image_a}-pwa-update-{probe}",
+        "browser_pid": browser_pid,
+        "active_command_kind": active_command_kind,
+        "active_command_pid": active_command_pid,
+    }
+
+
+def _write_browser_recovery_journal(
+    state: dict[str, object], probe: str
+) -> None:
+    _reconcile_browser_recovery_staging(state)
+    staging = BROWSER_RECOVERY_JOURNAL.with_name(
+        BROWSER_RECOVERY_JOURNAL.name + ".new"
+    )
+    if BROWSER_RECOVERY_JOURNAL.exists() or staging.exists():
+        raise LocalError("LOCAL_BROWSER_RECOVERY_PENDING")
+    body = (
+        json.dumps(
+            _browser_recovery_payload(state, probe, None),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("ascii")
+    _exclusive_write(staging, body)
+    os.replace(staging, BROWSER_RECOVERY_JOURNAL)
+    _secure_file(BROWSER_RECOVERY_JOURNAL, maximum=4096)
+
+
+def _validate_browser_recovery_payload(
+    state: dict[str, object], payload: object
+) -> dict[str, object]:
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema",
+        "project_id",
+        "compose_project",
+        "probe",
+        "image_a",
+        "image_b",
+        "browser_pid",
+        "active_command_kind",
+        "active_command_pid",
+    }:
+        raise LocalError("LOCAL_BROWSER_RECOVERY_INVALID")
+    probe = str(payload.get("probe"))
+    browser_pid = payload.get("browser_pid")
+    active_kind = payload.get("active_command_kind")
+    active_pid = payload.get("active_command_pid")
+    expected = _browser_recovery_payload(
+        state, probe, browser_pid, active_kind, active_pid
+    )
+    if (
+        payload != expected
+        or (
+            browser_pid is not None
+            and (
+                type(browser_pid) is not int
+                or browser_pid < 2
+                or browser_pid > 2_147_483_647
+            )
+        )
+        or (active_kind is None and active_pid is not None)
+        or (active_kind is not None and active_kind not in BROWSER_ACTIVE_COMMANDS)
+        or (
+            active_pid is not None
+            and (
+                type(active_pid) is not int
+                or active_pid < 2
+                or active_pid > 2_147_483_647
+            )
+        )
+        or not PWA_UPDATE_IMAGE_RE.fullmatch(str(payload.get("image_b")))
+    ):
+        raise LocalError("LOCAL_BROWSER_RECOVERY_INVALID")
+    return payload
+
+
+def _browser_recovery_payload_from_file(
+    path: Path, state: dict[str, object]
+) -> dict[str, object]:
+    _secure_file(path, maximum=4096)
+    try:
+        payload = json.loads(path.read_text(encoding="ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise LocalError("LOCAL_BROWSER_RECOVERY_INVALID") from None
+    return _validate_browser_recovery_payload(state, payload)
+
+
+def _reconcile_browser_recovery_staging(state: dict[str, object]) -> None:
+    staging = BROWSER_RECOVERY_JOURNAL.with_name(
+        BROWSER_RECOVERY_JOURNAL.name + ".new"
+    )
+    try:
+        info = staging.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_RECOVERY_INVALID") from None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or info.st_nlink != 1
+        or info.st_uid != os.geteuid()
+        or stat.S_IMODE(info.st_mode) != 0o600
+        or info.st_size > 4096
+    ):
+        raise LocalError("LOCAL_BROWSER_RECOVERY_INVALID")
+    try:
+        staged_payload = json.loads(staging.read_text(encoding="ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        try:
+            staging.unlink()
+        except OSError:
+            raise LocalError("LOCAL_BROWSER_RECOVERY_CLEANUP_FAILED") from None
+        return
+    _validate_browser_recovery_payload(state, staged_payload)
+    os.replace(staging, BROWSER_RECOVERY_JOURNAL)
+    _secure_file(BROWSER_RECOVERY_JOURNAL, maximum=4096)
+
+
+def _read_browser_recovery_journal(
+    state: dict[str, object],
+) -> dict[str, object] | None:
+    _reconcile_browser_recovery_staging(state)
+    if not BROWSER_RECOVERY_JOURNAL.exists():
+        return None
+    return _browser_recovery_payload_from_file(BROWSER_RECOVERY_JOURNAL, state)
+
+
+def _replace_browser_recovery_journal(
+    state: dict[str, object], body: bytes
+) -> None:
+    staging = BROWSER_RECOVERY_JOURNAL.with_name(
+        BROWSER_RECOVERY_JOURNAL.name + ".new"
+    )
+    _reconcile_browser_recovery_staging(state)
+    if staging.exists():
+        raise LocalError("LOCAL_BROWSER_RECOVERY_PENDING")
+    _exclusive_write(staging, body)
+    os.replace(staging, BROWSER_RECOVERY_JOURNAL)
+    _secure_file(BROWSER_RECOVERY_JOURNAL, maximum=4096)
+
+
+def _update_browser_recovery_pid(
+    state: dict[str, object], probe: str, browser_pid: int
+) -> None:
+    payload = _read_browser_recovery_journal(state)
+    if payload is None or payload.get("probe") != probe:
+        raise LocalError("LOCAL_BROWSER_RECOVERY_INVALID")
+    body = (
+        json.dumps(
+            _browser_recovery_payload(
+                state,
+                probe,
+                browser_pid,
+                payload.get("active_command_kind"),
+                payload.get("active_command_pid"),
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("ascii")
+    _replace_browser_recovery_journal(state, body)
+
+
+def _update_browser_recovery_active_command(
+    state: dict[str, object],
+    probe: str,
+    kind: str | None,
+    process_pid: int | None,
+) -> None:
+    payload = _read_browser_recovery_journal(state)
+    if (
+        payload is None
+        or payload.get("probe") != probe
+        or (kind is None and process_pid is not None)
+        or (kind is not None and kind not in BROWSER_ACTIVE_COMMANDS)
+    ):
+        raise LocalError("LOCAL_BROWSER_RECOVERY_INVALID")
+    body = (
+        json.dumps(
+            _browser_recovery_payload(
+                state,
+                probe,
+                payload.get("browser_pid"),
+                kind,
+                process_pid,
+            ),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("ascii")
+    _replace_browser_recovery_journal(state, body)
+
+
+def _remove_browser_recovery_journal() -> None:
+    staging = BROWSER_RECOVERY_JOURNAL.with_name(
+        BROWSER_RECOVERY_JOURNAL.name + ".new"
+    )
+    if staging.exists():
+        raise LocalError("LOCAL_BROWSER_RECOVERY_CLEANUP_FAILED")
+    _secure_file(BROWSER_RECOVERY_JOURNAL, maximum=4096)
+    try:
+        BROWSER_RECOVERY_JOURNAL.unlink()
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_RECOVERY_CLEANUP_FAILED") from None
+    if BROWSER_RECOVERY_JOURNAL.exists():
+        raise LocalError("LOCAL_BROWSER_RECOVERY_CLEANUP_FAILED")
+
+
+def _browser_process_candidate(
+    payload: dict[str, object], control_directory: Path
+) -> int | None:
+    result = _run(
+        ["/bin/ps", "-ww", "-axo", "uid=,pid=,pgid=,command="],
+        capture=True,
+        check=False,
+    )
+    if result.returncode != 0 or len(result.stdout.encode("utf-8")) > 4 * 1024 * 1024:
+        raise LocalError("LOCAL_BROWSER_PROCESS_IDENTITY_INVALID")
+    observed_pids: set[int] = set()
+    observed_groups: dict[int, list[tuple[int, str]]] = {}
+    candidates: list[int] = []
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r"\s*(\d+)\s+(\d+)\s+(\d+)\s+(.+)", line)
+        if match is None:
+            continue
+        uid, pid, pgid = (int(match.group(index)) for index in (1, 2, 3))
+        command = match.group(4)
+        observed_pids.add(pid)
+        observed_groups.setdefault(pgid, []).append((uid, command))
+        if (
+            uid == os.geteuid()
+            and pid == pgid
+            and pid not in {os.getpid(), os.getpgrp()}
+            and str(PWA_BROWSER_RUNNER) in command
+            and str(control_directory) in command
+            and "--pwa-update-control" in command
+        ):
+            candidates.append(pid)
+    recorded = payload.get("browser_pid")
+    if recorded is not None:
+        if recorded not in observed_pids:
+            members = observed_groups.get(int(recorded), [])
+            if not members:
+                return None
+            profile = str(
+                TMP_DIR
+                / f"anhuan-engineering-browser-{control_directory.name.removeprefix('pwa-update-')}"
+            )
+            chrome_markers = ("google chrome", "chromium", "chrome for testing")
+            if (
+                any(uid != os.geteuid() for uid, _command in members)
+                or not any(profile in command for _uid, command in members)
+                or any(
+                    not any(marker in command.lower() for marker in chrome_markers)
+                    for _uid, command in members
+                )
+            ):
+                raise LocalError("LOCAL_BROWSER_PROCESS_IDENTITY_INVALID")
+            return int(recorded)
+        if candidates != [recorded]:
+            raise LocalError("LOCAL_BROWSER_PROCESS_IDENTITY_INVALID")
+        return int(recorded)
+    if len(candidates) > 1:
+        raise LocalError("LOCAL_BROWSER_PROCESS_IDENTITY_INVALID")
+    return candidates[0] if candidates else None
+
+
+def _browser_compose_supervisor_command(
+    state: dict[str, object], probe: str, kind: str
+) -> tuple[list[str], dict[str, str]]:
+    if kind not in BROWSER_ACTIVE_COMMANDS:
+        raise LocalError("LOCAL_BROWSER_COMMAND_IDENTITY_INVALID")
+    try:
+        source = BROWSER_COMPOSE_SUPERVISOR.resolve(strict=True)
+        source_info = source.lstat()
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_SUPERVISOR_INVALID") from None
+    if (
+        source != BROWSER_COMPOSE_SUPERVISOR
+        or not stat.S_ISREG(source_info.st_mode)
+        or stat.S_ISLNK(source_info.st_mode)
+        or source_info.st_uid != os.geteuid()
+        or source_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise LocalError("LOCAL_BROWSER_SUPERVISOR_INVALID")
+    image_a = str(state["web_image"])
+    image_b = f"{image_a}-pwa-update-{probe}"
+    environment = _environment()
+    if kind == "build_b":
+        environment["LOCAL_PWA_UPDATE_PROBE"] = probe
+        environment["LOCAL_WEB_IMAGE"] = image_b
+    elif kind == "swap_b":
+        environment["LOCAL_WEB_IMAGE"] = image_b
+    else:
+        environment["LOCAL_WEB_IMAGE"] = image_a
+    command = [
+        _python(),
+        "-B",
+        str(source),
+        "--kind",
+        kind,
+        "--probe",
+        probe,
+        "--project-id",
+        str(state["project_id"]),
+        "--compose-project",
+        str(state["compose_project"]),
+        "--state-file",
+        str(STATE_FILE),
+        "--compose-file",
+        str(COMPOSE_FILE),
+        "--env-file",
+        str(ENV_FILE),
+        "--control-directory",
+        str(_browser_control_directory(probe)),
+        "--docker",
+        _docker(),
+    ]
+    return command, environment
+
+
+def _browser_supervisor_command_matches(
+    command: str, payload: dict[str, object], kind: str
+) -> bool:
+    probe = str(payload["probe"])
+    required = (
+        str(BROWSER_COMPOSE_SUPERVISOR),
+        f"--kind {kind}",
+        f"--probe {probe}",
+        f"--project-id {payload['project_id']}",
+        f"--compose-project {payload['compose_project']}",
+        f"--state-file {STATE_FILE}",
+        f"--compose-file {COMPOSE_FILE}",
+        f"--env-file {ENV_FILE}",
+        f"--control-directory {_browser_control_directory(probe)}",
+    )
+    return all(marker in command for marker in required)
+
+
+def _browser_compose_child_matches(
+    command: str, payload: dict[str, object], kind: str
+) -> bool:
+    expected_verb = "build" if kind == "build_b" else "up"
+    required = (
+        " compose ",
+        f"--project-name {payload['compose_project']}",
+        f"--env-file {ENV_FILE}",
+        f"-f {COMPOSE_FILE}",
+        "--profile ops",
+    )
+    return (
+        all(marker in command for marker in required)
+        and re.search(rf"\s{expected_verb}(?:\s|$)", command) is not None
+        and re.search(r"\sweb(?:\s|$)", command) is not None
+    )
+
+
+def _browser_active_command_candidate(payload: dict[str, object]) -> int | None:
+    kind = payload.get("active_command_kind")
+    recorded = payload.get("active_command_pid")
+    if kind is None:
+        return None
+    if kind not in BROWSER_ACTIVE_COMMANDS:
+        raise LocalError("LOCAL_BROWSER_COMMAND_IDENTITY_INVALID")
+    result = _run(
+        ["/bin/ps", "-ww", "-axo", "uid=,pid=,pgid=,sid=,command="],
+        capture=True,
+        check=False,
+    )
+    if result.returncode != 0 or len(result.stdout.encode("utf-8")) > 4 * 1024 * 1024:
+        raise LocalError("LOCAL_BROWSER_COMMAND_IDENTITY_INVALID")
+    observed_pids: set[int] = set()
+    observed_groups: dict[int, list[tuple[int, int, str]]] = {}
+    candidates: list[int] = []
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(
+            r"\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+)", line
+        )
+        if match is None:
+            continue
+        uid, pid, pgid, sid = (
+            int(match.group(index)) for index in (1, 2, 3, 4)
+        )
+        command = match.group(5)
+        observed_pids.add(pid)
+        observed_groups.setdefault(pgid, []).append((uid, sid, command))
+        if (
+            uid == os.geteuid()
+            and pid == pgid
+            and pid == sid
+            and pid not in {os.getpid(), os.getpgrp()}
+            and _browser_supervisor_command_matches(command, payload, str(kind))
+        ):
+            candidates.append(pid)
+
+    def trusted_group(pgid: int) -> bool:
+        members = observed_groups.get(pgid, [])
+        if not members:
+            return False
+        return all(
+            uid == os.geteuid()
+            and sid == pgid
+            and (
+                _browser_supervisor_command_matches(command, payload, str(kind))
+                or _browser_compose_child_matches(command, payload, str(kind))
+            )
+            for uid, sid, command in members
+        )
+
+    if recorded is not None:
+        if recorded not in observed_pids:
+            if trusted_group(int(recorded)):
+                return int(recorded)
+            if observed_groups.get(int(recorded)):
+                raise LocalError("LOCAL_BROWSER_COMMAND_IDENTITY_INVALID")
+            return None
+        if candidates != [recorded]:
+            raise LocalError("LOCAL_BROWSER_COMMAND_IDENTITY_INVALID")
+        if not trusted_group(int(recorded)):
+            raise LocalError("LOCAL_BROWSER_COMMAND_IDENTITY_INVALID")
+        return int(recorded)
+    trusted_candidates = sorted(
+        pgid for pgid in observed_groups if trusted_group(pgid)
+    )
+    if len(candidates) > 1 or len(trusted_candidates) > 1:
+        raise LocalError("LOCAL_BROWSER_COMMAND_IDENTITY_INVALID")
+    if candidates and trusted_candidates not in ([candidates[0]], []):
+        raise LocalError("LOCAL_BROWSER_COMMAND_IDENTITY_INVALID")
+    return (
+        candidates[0]
+        if candidates
+        else trusted_candidates[0]
+        if trusted_candidates
+        else None
+    )
+
+
+def _complete_recovered_browser_active_command(
+    state: dict[str, object], payload: dict[str, object]
+) -> None:
+    kind = payload.get("active_command_kind")
+    if kind is None:
+        return
+    if kind not in BROWSER_ACTIVE_COMMANDS:
+        raise LocalError("LOCAL_BROWSER_COMMAND_IDENTITY_INVALID")
+    deadline = time.monotonic() + 60
+    while _browser_active_command_candidate(payload) is not None:
+        if time.monotonic() >= deadline:
+            raise LocalError("LOCAL_BROWSER_RECOVERY_PENDING")
+        time.sleep(0.1)
+    receipt = _browser_compose_receipt(
+        state,
+        str(payload["probe"]),
+        expected_kind=str(kind),
+        consume=False,
+    )
+    if receipt is None:
+        raise LocalError("LOCAL_BROWSER_COMMAND_COMPLETION_UNPROVEN")
+    _update_browser_recovery_active_command(
+        state, str(payload["probe"]), None, None
+    )
+    _browser_compose_receipt(
+        state,
+        str(payload["probe"]),
+        expected_kind=str(kind),
+        consume=True,
+    )
+
+
+def _browser_compose(
+    state: dict[str, object],
+    probe: str,
+    kind: str,
+    timeout: int,
+) -> None:
+    if kind not in BROWSER_ACTIVE_COMMANDS:
+        raise LocalError("LOCAL_BROWSER_COMMAND_IDENTITY_INVALID")
+    existing = _browser_compose_receipt(
+        state, probe, expected_kind=None, consume=False
+    )
+    if existing is not None:
+        raise LocalError("LOCAL_BROWSER_RECEIPT_PENDING")
+    command, environment = _browser_compose_supervisor_command(
+        state, probe, kind
+    )
+    _update_browser_recovery_active_command(state, probe, kind, None)
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=ROOT,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        _update_browser_recovery_active_command(state, probe, None, None)
+        raise LocalError("LOCAL_COMMAND_FAILED") from None
+    try:
+        _update_browser_recovery_active_command(state, probe, kind, process.pid)
+        try:
+            returncode = process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            raise LocalError("LOCAL_BROWSER_RECOVERY_PENDING") from None
+    except LocalError:
+        raise
+    except (OSError, subprocess.SubprocessError):
+        raise LocalError("LOCAL_COMMAND_FAILED")
+    if returncode != 0:
+        raise LocalError("LOCAL_BROWSER_SUPERVISOR_FAILED")
+    receipt = _browser_compose_receipt(
+        state, probe, expected_kind=kind, consume=False
+    )
+    if receipt is None:
+        raise LocalError("LOCAL_BROWSER_COMMAND_COMPLETION_UNPROVEN")
+    _update_browser_recovery_active_command(state, probe, None, None)
+    consumed = _browser_compose_receipt(
+        state, probe, expected_kind=kind, consume=True
+    )
+    if consumed is None or consumed != receipt:
+        raise LocalError("LOCAL_BROWSER_RECEIPT_INVALID")
+    if receipt[1] != 0:
+        raise LocalError("LOCAL_COMMAND_FAILED")
+
+
+def _terminate_recovered_browser_process(
+    payload: dict[str, object], control_directory: Path
+) -> None:
+    browser_pid = _browser_process_candidate(payload, control_directory)
+    if browser_pid is None:
+        return
+    try:
+        os.killpg(browser_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PROCESS_CLEANUP_FAILED") from None
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if _browser_process_candidate(payload, control_directory) is None:
+            return
+        time.sleep(0.1)
+    try:
+        os.killpg(browser_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PROCESS_CLEANUP_FAILED") from None
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if _browser_process_candidate(payload, control_directory) is None:
+            return
+        time.sleep(0.1)
+    raise LocalError("LOCAL_BROWSER_PROCESS_CLEANUP_FAILED")
+
+
+def _read_browser_pwa_plist(path: Path) -> dict[str, object] | None:
+    try:
+        parent = path.parent.lstat()
+    except OSError:
+        return None
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or stat.S_ISLNK(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or parent.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        return None
+    flags = os.O_RDONLY
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        return None
+    try:
+        before = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_uid != os.geteuid()
+            or before.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+            or not 1 <= before.st_size <= 1024 * 1024
+        ):
+            return None
+        body = bytearray()
+        while len(body) <= 1024 * 1024:
+            chunk = os.read(descriptor, min(65536, 1024 * 1024 + 1 - len(body)))
+            if not chunk:
+                break
+            body.extend(chunk)
+        after = os.fstat(descriptor)
+        identity = lambda item: (
+            item.st_dev,
+            item.st_ino,
+            item.st_size,
+            item.st_mtime_ns,
+            item.st_ctime_ns,
+            item.st_mode,
+            item.st_uid,
+            item.st_nlink,
+        )
+        if len(body) != before.st_size or identity(before) != identity(after):
+            return None
+        try:
+            document = plistlib.loads(bytes(body))
+        except (plistlib.InvalidFileException, ValueError):
+            return None
+        return document if isinstance(document, dict) else None
+    finally:
+        os.close(descriptor)
+
+
+def _cleanup_browser_pwa_shim(
+    state: dict[str, object], control_directory: Path
+) -> None:
+    if sys.platform != "darwin":
+        return
+    if (
+        control_directory.parent != TMP_DIR
+        or not re.fullmatch(r"pwa-update-[0-9a-f]{24}", control_directory.name)
+    ):
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID")
+    try:
+        account = pwd.getpwuid(os.geteuid())
+        home = Path(account.pw_dir)
+        home_info = home.lstat()
+        resolved_home = home.resolve(strict=True)
+    except (KeyError, OSError):
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID") from None
+    if (
+        not home.is_absolute()
+        or resolved_home != home
+        or not stat.S_ISDIR(home_info.st_mode)
+        or stat.S_ISLNK(home_info.st_mode)
+        or home_info.st_uid != os.geteuid()
+        or home_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID")
+    applications_parent = home / "Applications"
+    try:
+        applications_parent_info = applications_parent.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID") from None
+    if (
+        not stat.S_ISDIR(applications_parent_info.st_mode)
+        or stat.S_ISLNK(applications_parent_info.st_mode)
+        or applications_parent_info.st_uid != os.geteuid()
+        or applications_parent_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID")
+    applications = applications_parent / "Chrome Apps.localized"
+    try:
+        applications_info = applications.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID") from None
+    if (
+        not stat.S_ISDIR(applications_info.st_mode)
+        or stat.S_ISLNK(applications_info.st_mode)
+        or applications_info.st_uid != os.geteuid()
+        or applications_info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID")
+    probe = control_directory.name.removeprefix("pwa-update-")
+    expected_profile = TMP_DIR / f"anhuan-engineering-browser-{probe}"
+    expected_url = (
+        f"http://127.0.0.1:{int(state['web_port'])}/internal-app"
+    )
+    expected_urls = {expected_url, expected_url + "/"}
+    matches: list[tuple[Path, tuple[int, int, int, int], dict[str, object]]] = []
+    try:
+        entries = list(applications.iterdir())
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID") from None
+    if len(entries) > 256:
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID")
+    for entry in entries:
+        if entry.suffix != ".app":
+            continue
+        try:
+            info = entry.lstat()
+        except OSError:
+            continue
+        if (
+            not stat.S_ISDIR(info.st_mode)
+            or stat.S_ISLNK(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            continue
+        document = _read_browser_pwa_plist(entry / "Contents/Info.plist")
+        if document is None:
+            continue
+        profile = document.get("CrAppModeUserDataDir")
+        shortcut_url = document.get("CrAppModeShortcutURL")
+        shortcut_id = document.get("CrAppModeShortcutID")
+        bundle_id = document.get("CFBundleIdentifier")
+        if not isinstance(profile, str) or "\x00" in profile:
+            continue
+        profile_path = Path(profile)
+        if (
+            not profile_path.is_absolute()
+            or ".." in profile_path.parts
+            or str(profile_path) != os.path.normpath(profile)
+            or profile_path == expected_profile
+            or not profile_path.is_relative_to(expected_profile)
+        ):
+            continue
+        if shortcut_url not in expected_urls:
+            raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID")
+        if (
+            not isinstance(shortcut_id, str)
+            or re.fullmatch(r"[a-p]{32}", shortcut_id) is None
+            or profile_path.name != f"_crx_{shortcut_id}"
+            or not isinstance(bundle_id, str)
+            or not bundle_id.endswith("." + shortcut_id)
+        ):
+            raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID")
+        matches.append(
+            (
+                entry,
+                (info.st_dev, info.st_ino, info.st_mode, info.st_uid),
+                document,
+            )
+        )
+    if len(matches) > 1:
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID")
+    if not matches:
+        return
+    bundle, expected_identity, expected_document = matches[0]
+    try:
+        current = bundle.lstat()
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID") from None
+    if (
+        (current.st_dev, current.st_ino, current.st_mode, current.st_uid)
+        != expected_identity
+        or _read_browser_pwa_plist(bundle / "Contents/Info.plist")
+        != expected_document
+    ):
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_INVALID")
+    try:
+        shutil.rmtree(bundle)
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_CLEANUP_FAILED") from None
+    try:
+        bundle.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_CLEANUP_FAILED") from None
+    else:
+        raise LocalError("LOCAL_BROWSER_PWA_SHIM_CLEANUP_FAILED")
+
+
+def _cleanup_browser_profile(control_directory: Path) -> None:
+    if (
+        control_directory.parent != TMP_DIR
+        or not re.fullmatch(r"pwa-update-[0-9a-f]{24}", control_directory.name)
+    ):
+        raise LocalError("LOCAL_BROWSER_PROFILE_INVALID")
+    probe = control_directory.name.removeprefix("pwa-update-")
+    profile = TMP_DIR / f"anhuan-engineering-browser-{probe}"
+    try:
+        info = profile.lstat()
+    except FileNotFoundError:
+        return
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PROFILE_INVALID") from None
+    if (
+        profile.parent != TMP_DIR
+        or not stat.S_ISDIR(info.st_mode)
+        or stat.S_ISLNK(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o700
+        or info.st_uid != os.geteuid()
+    ):
+        raise LocalError("LOCAL_BROWSER_PROFILE_INVALID")
+    try:
+        shutil.rmtree(profile)
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PROFILE_CLEANUP_FAILED") from None
+    if profile.exists():
+        raise LocalError("LOCAL_BROWSER_PROFILE_CLEANUP_FAILED")
+
+
+def _recover_browser_recovery_journal(state: dict[str, object]) -> None:
+    payload = _read_browser_recovery_journal(state)
+    if payload is None:
+        return
+    probe = str(payload["probe"])
+    control_directory = _browser_control_directory(probe)
+    _complete_recovered_browser_active_command(state, payload)
+    if payload.get("active_command_kind") is not None:
+        payload = _read_browser_recovery_journal(state)
+        if payload is None:
+            raise LocalError("LOCAL_BROWSER_RECOVERY_INVALID")
+    _browser_compose_receipt(
+        state, probe, expected_kind=None, consume=True
+    )
+    _terminate_recovered_browser_process(payload, control_directory)
+    _assert_resource_labels(state)
+    try:
+        _assert_web_uses_image(state, str(payload["image_a"]))
+    except LocalError:
+        _browser_compose(
+            state,
+            probe,
+            "restore_a",
+            timeout=240,
+        )
+        _assert_web_uses_image(state, str(payload["image_a"]))
+    observed_id = _inspect_probe_image(state, str(payload["image_b"]), probe)
+    if observed_id is not None:
+        _run([_docker(), "image", "rm", str(payload["image_b"])], capture=True)
+        if _inspect_probe_image(state, str(payload["image_b"]), probe) is not None:
+            raise LocalError("LOCAL_PWA_IMAGE_RESIDUAL")
+    if _inspect_probe_image(state, str(payload["image_b"]), probe) is not None:
+        raise LocalError("LOCAL_PWA_IMAGE_RESIDUAL")
+    _cleanup_browser_fault_artifact(control_directory)
+    _cleanup_browser_pwa_shim(state, control_directory)
+    _cleanup_browser_profile(control_directory)
+    if control_directory.exists():
+        _cleanup_control_directory(control_directory)
+    _assert_web_uses_image(state, str(payload["image_a"]))
+    _remove_browser_recovery_journal()
 
 
 def _inspect_probe_image(
@@ -865,17 +2144,28 @@ def _inspect_probe_image(
     return image_id
 
 
-def _assert_web_uses_image(state: dict[str, object], image: str) -> None:
+def _web_container_payload(
+    state: dict[str, object], image: str, *, require_healthy: bool
+) -> tuple[str, dict[str, object]]:
     image_result = _run(
         [_docker(), "image", "inspect", image], capture=True
     )
     try:
-        expected_id = json.loads(image_result.stdout)[0]["Id"]
+        image_payload = json.loads(image_result.stdout)
+        expected_id = image_payload[0]["Id"]
     except (IndexError, KeyError, TypeError, json.JSONDecodeError):
         raise LocalError("LOCAL_PWA_RESTORE_INVALID") from None
-    container = _compose(state, "ps", "-q", "web", capture=True)
+    if (
+        len(image_payload) != 1
+        or not isinstance(expected_id, str)
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", expected_id) is None
+    ):
+        raise LocalError("LOCAL_PWA_RESTORE_INVALID")
+    container = _compose(state, "ps", "-a", "-q", "web", capture=True)
     container_ids = container.stdout.splitlines()
-    if len(container_ids) != 1:
+    if len(container_ids) != 1 or not re.fullmatch(
+        r"[0-9a-f]{64}", container_ids[0]
+    ):
         raise LocalError("LOCAL_PWA_RESTORE_INVALID")
     inspected = _run(
         [_docker(), "inspect", container_ids[0]], capture=True
@@ -884,6 +2174,8 @@ def _assert_web_uses_image(state: dict[str, object], image: str) -> None:
         payload = json.loads(inspected.stdout)[0]
         observed_id = payload["Image"]
         labels = payload["Config"]["Labels"]
+        status = payload["State"]["Status"]
+        health = payload["State"].get("Health", {}).get("Status", "")
     except (IndexError, KeyError, TypeError, json.JSONDecodeError):
         raise LocalError("LOCAL_PWA_RESTORE_INVALID") from None
     if (
@@ -892,51 +2184,80 @@ def _assert_web_uses_image(state: dict[str, object], image: str) -> None:
         != str(state["compose_project"])
         or labels.get("com.docker.compose.service") != "web"
         or labels.get("io.anhuan.project-id") != str(state["project_id"])
+        or labels.get("io.anhuan.scope") != SCOPE
+        or str(labels.get("com.docker.compose.oneoff", "False")).lower()
+        == "true"
+        or (
+            require_healthy
+            and (status != "running" or health != "healthy")
+        )
     ):
         raise LocalError("LOCAL_PWA_RESTORE_INVALID")
+    return container_ids[0], payload
+
+
+def _assert_web_uses_image(state: dict[str, object], image: str) -> None:
+    _web_container_payload(state, image, require_healthy=True)
 
 
 def _terminate_browser_process(process: subprocess.Popen[str] | None) -> None:
     if process is None or process.poll() is not None:
         return
-    process.terminate()
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        raise LocalError("LOCAL_BROWSER_PROCESS_CLEANUP_FAILED") from None
     try:
         process.wait(timeout=15)
     except subprocess.TimeoutExpired:
-        process.kill()
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            raise LocalError("LOCAL_BROWSER_PROCESS_CLEANUP_FAILED") from None
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             raise LocalError("LOCAL_BROWSER_PROCESS_CLEANUP_FAILED") from None
 
 
-def _validate_browser_summary(stdout: str, returncode: int) -> dict[str, object]:
-    lines = stdout.splitlines()
-    if returncode != 0:
-        raise LocalError("LOCAL_BROWSER_EXIT_WITHOUT_REASON")
-    if len(lines) != 2 or lines[1] != "LOCAL_BROWSER_VERIFY_OK":
-        raise LocalError("LOCAL_BROWSER_OUTPUT_SHAPE_INVALID")
-    try:
-        summary = json.loads(lines[0])
-    except json.JSONDecodeError:
-        raise LocalError("LOCAL_BROWSER_OUTPUT_INVALID") from None
-    expected_exact: dict[str, int | str] = {
+def _browser_summary_contract(
+    stage: str,
+) -> tuple[dict[str, int | str], str | None, int]:
+    if stage not in BROWSER_STAGES:
+        raise LocalError("LOCAL_BROWSER_STAGE_INVALID")
+    business: dict[str, int | str] = {
         "identities_authenticated": 3,
         "admin_pages_visited": 17,
         "admin_api_non_2xx": 0,
         "consultant_pages_visited": 2,
         "enterprise_pages_visited": 2,
         "role_api_non_2xx": 0,
+        "role_allowed_action_ui_checks": 2,
+        "cross_tenant_404_ui_count": 1,
+        "illegal_state_409_ui_count": 1,
         "tenant_header_changes": 1,
         "tenant_state_clears": 1,
+    }
+    faults: dict[str, int | str] = {
+        "expected_fault_api_non_2xx": 1,
+        "service_unavailable_503_ui_count": 1,
+        "service_unavailable_503_ui_status": "PASSED",
+        "clamd_unavailable_ui_count": 1,
+        "clamd_recovery_ui_count": 1,
+    }
+    pwa_runtime: dict[str, int | str] = {
         "pwa_registrations": 1,
         "pwa_controlled_clients": 1,
         "pwa_owned_caches": 2,
         "pwa_sensitive_cache_entries": 0,
-        "pwa_installability_errors": 0,
         "pwa_offline_shell": 1,
-        "pwa_installations": 0,
-        "pwa_os_install_status": "PWA_OS_INSTALL_NOT_TESTED",
+    }
+    pwa_update: dict[str, int | str] = {
+        **pwa_runtime,
         "pwa_waiting_updates": 1,
         "pwa_controller_changes": 1,
         "pwa_old_caches_removed": 2,
@@ -945,90 +2266,279 @@ def _validate_browser_summary(stdout: str, returncode: int) -> dict[str, object]
         "pwa_login_states_preserved": 1,
         "pwa_update_status": "PWA_WAITING_UPDATE_PASSED",
     }
+    pwa_os: dict[str, int | str] = {
+        **pwa_runtime,
+        "pwa_installability_errors": 0,
+        "pwa_installations": 0,
+        "pwa_os_offline_reopens": 0,
+        "pwa_os_online_launches": 0,
+        "pwa_os_shim_residuals": 0,
+        "pwa_os_shims_created": 0,
+        "pwa_os_install_status": "PWA_OS_INSTALL_NOT_TESTED",
+        "pwa_os_uninstall_probe": 0,
+        "pwa_os_uninstallations": 0,
+    }
+    if stage == "business":
+        return {**business, "stage": "business"}, "admin_api_responses", 17
+    if stage == "faults":
+        return {**faults, "stage": "faults"}, None, 0
+    if stage == "pwa-update":
+        return {
+            **pwa_update,
+            "pwa_apply_clicks": 1,
+            "stage": "pwa-update",
+        }, None, 0
+    if stage == "pwa-os":
+        return {**pwa_os, "stage": "pwa-os"}, None, 0
+    return (
+        {
+            **business,
+            **faults,
+            **pwa_update,
+            **pwa_os,
+            "expected_fault_api_non_2xx": 3,
+            "pwa_apply_clicks": 1,
+            "stage": "all",
+        },
+        "admin_api_responses",
+        17,
+    )
+
+
+def _validate_browser_summary(
+    stdout: str, returncode: int, *, stage: str = "all"
+) -> dict[str, object]:
+    lines = stdout.splitlines()
+    if returncode != 0:
+        raise LocalError("LOCAL_BROWSER_EXIT_WITHOUT_REASON")
+    if stage not in BROWSER_STAGE_TAGS:
+        raise LocalError("LOCAL_BROWSER_STAGE_INVALID")
+    if len(lines) != 2 or lines[1] != BROWSER_STAGE_TAGS[stage]:
+        raise LocalError("LOCAL_BROWSER_OUTPUT_SHAPE_INVALID")
+    try:
+        summary = json.loads(lines[0])
+    except json.JSONDecodeError:
+        raise LocalError("LOCAL_BROWSER_OUTPUT_INVALID") from None
+    expected_exact, ranged_key, ranged_minimum = _browser_summary_contract(stage)
+    expected_keys = set(expected_exact)
+    if ranged_key is not None:
+        expected_keys.add(ranged_key)
     if (
         not isinstance(summary, dict)
-        or set(summary) != {*expected_exact, "admin_api_responses"}
+        or set(summary) != expected_keys
         or any(summary.get(key) != value for key, value in expected_exact.items())
-        or type(summary.get("admin_api_responses")) is not int
-        or int(summary["admin_api_responses"]) < 17
+        or (
+            ranged_key is not None
+            and (
+                type(summary.get(ranged_key)) is not int
+                or int(summary[ranged_key]) < ranged_minimum
+            )
+        )
     ):
         raise LocalError("LOCAL_BROWSER_OUTPUT_INVALID")
     return summary
 
 
-def _browser_verify(state: dict[str, object]) -> None:
+def _orchestrate_browser_dependency_fault(
+    state: dict[str, object],
+    control_directory: Path,
+    browser: subprocess.Popen[str],
+    *,
+    service: str,
+    ready_signal: str,
+    stopped_signal: str,
+    observed_signal: str,
+    restored_signal: str,
+) -> None:
+    if service not in {"minio", "clamd"}:
+        raise LocalError("LOCAL_REVERSE_SERVICE_INVALID")
+    _wait_for_control_signal(control_directory, ready_signal, browser)
+    container_id, _payload = _service_container_payload(
+        state, service, require_healthy=True
+    )
+    _write_reverse_journal(
+        {
+            "kind": "dependency",
+            "project_id": state["project_id"],
+            "compose_project": state["compose_project"],
+            "service": service,
+            "container_id": container_id,
+        }
+    )
+    _run(
+        [_docker(), "stop", "--time", "30", container_id],
+        capture=True,
+        timeout=45,
+    )
+    observed_id, observed = _service_container_payload(
+        state, service, require_healthy=False
+    )
+    if observed_id != container_id or observed.get("State", {}).get("Running") is not False:
+        raise LocalError("LOCAL_BROWSER_DEPENDENCY_STOP_FAILED")
+    _exclusive_write(control_directory / stopped_signal, PWA_CONTROL_SIGNAL)
+    _wait_for_control_signal(control_directory, observed_signal, browser)
+    _recover_reverse_journal(state)
+    _exclusive_write(control_directory / restored_signal, PWA_CONTROL_SIGNAL)
+
+
+def _orchestrate_browser_pwa_offline_reopen(
+    state: dict[str, object],
+    control_directory: Path,
+    browser: subprocess.Popen[str],
+    *,
+    image_b: str,
+) -> None:
+    _wait_for_control_signal(
+        control_directory, PWA_OS_OFFLINE_READY, browser
+    )
+    container_id, _payload = _web_container_payload(
+        state, image_b, require_healthy=True
+    )
+    _run(
+        [_docker(), "stop", "--time", "30", container_id],
+        capture=True,
+        timeout=45,
+    )
+    observed_id, observed = _web_container_payload(
+        state, image_b, require_healthy=False
+    )
+    if (
+        observed_id != container_id
+        or observed.get("State", {}).get("Running") is not False
+        or observed.get("State", {}).get("Status") != "exited"
+    ):
+        raise LocalError("LOCAL_BROWSER_PWA_WEB_STOP_FAILED")
+    _exclusive_write(
+        control_directory / PWA_OS_WEB_STOPPED, PWA_CONTROL_SIGNAL
+    )
+    _wait_for_control_signal(
+        control_directory, PWA_OS_OFFLINE_OBSERVED, browser
+    )
+    _run([_docker(), "start", container_id], capture=True, timeout=45)
+    deadline = time.monotonic() + 180
+    while True:
+        restored_id, restored = _web_container_payload(
+            state, image_b, require_healthy=False
+        )
+        restored_state = restored.get("State", {})
+        if (
+            restored_id == container_id
+            and restored_state.get("Status") == "running"
+            and restored_state.get("Health", {}).get("Status") == "healthy"
+        ):
+            break
+        if time.monotonic() >= deadline:
+            raise LocalError("LOCAL_BROWSER_PWA_WEB_RESTORE_FAILED")
+        time.sleep(0.25)
+    _assert_web_uses_image(state, image_b)
+    _exclusive_write(
+        control_directory / PWA_OS_WEB_RESTORED, PWA_CONTROL_SIGNAL
+    )
+
+
+def _browser_verify(state: dict[str, object], *, stage: str = "all") -> None:
+    if stage not in BROWSER_STAGES:
+        raise LocalError("LOCAL_BROWSER_STAGE_INVALID")
+    if stage == "pwa-os":
+        raise LocalError(
+            "LOCAL_PWA_OS_BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY"
+        )
     _health(state, as_json=False, silent=True)
     _directory(TMP_DIR)
     probe = secrets.token_hex(12)
-    control_directory = TMP_DIR / f"pwa-update-{probe}"
-    control_directory.mkdir(mode=0o700)
-    _directory(control_directory)
+    control_directory = _browser_control_directory(probe)
     image_a = str(state["web_image"])
     image_b = f"{image_a}-pwa-update-{probe}"
     browser: subprocess.Popen[str] | None = None
     probe_image_id: str | None = None
-    swap_attempted = False
     summary: dict[str, object] | None = None
     primary_error: LocalError | None = None
     cleanup_error: LocalError | None = None
-    overrides = {
-        "LOCAL_PWA_UPDATE_PROBE": probe,
-        "LOCAL_WEB_IMAGE": image_b,
-    }
+    _write_browser_recovery_journal(state, probe)
     try:
-        if _inspect_probe_image(state, image_b, probe) is not None:
-            raise LocalError("LOCAL_PWA_IMAGE_ALREADY_EXISTS")
-        _compose(
-            state,
-            "build",
-            "web",
-            timeout=1800,
-            environment_overrides=overrides,
-        )
-        probe_image_id = _inspect_probe_image(state, image_b, probe)
-        if probe_image_id is None:
-            raise LocalError("LOCAL_PWA_IMAGE_BUILD_MISSING")
+        try:
+            control_directory.mkdir(mode=0o700)
+            _directory(control_directory)
+        except OSError:
+            raise LocalError("LOCAL_PWA_CONTROL_DIRECTORY_INVALID") from None
+        if stage in {"all", "pwa-update"}:
+            if _inspect_probe_image(state, image_b, probe) is not None:
+                raise LocalError("LOCAL_PWA_IMAGE_ALREADY_EXISTS")
+            _browser_compose(
+                state,
+                probe,
+                "build_b",
+                timeout=1800,
+            )
+            probe_image_id = _inspect_probe_image(state, image_b, probe)
+            if probe_image_id is None:
+                raise LocalError("LOCAL_PWA_IMAGE_BUILD_MISSING")
+        browser_command = [
+            _node(),
+            str(PWA_BROWSER_RUNNER),
+            f"http://127.0.0.1:{int(state['web_port'])}",
+            str(SECRETS_DIR),
+            "--stage",
+            stage,
+            "--pwa-update-control",
+            str(control_directory),
+        ]
         browser = subprocess.Popen(
-            [
-                _node(),
-                str(PWA_BROWSER_RUNNER),
-                f"http://127.0.0.1:{int(state['web_port'])}",
-                str(SECRETS_DIR),
-                "--pwa-update-control",
-                str(control_directory),
-            ],
+            browser_command,
             cwd=ROOT,
             env=_environment(),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            start_new_session=True,
         )
-        _wait_for_control_signal(control_directory, PWA_BROWSER_READY, browser)
-        swap_attempted = True
-        _compose(
-            state,
-            "up",
-            "-d",
-            "--no-deps",
-            "--force-recreate",
-            "--wait",
-            "--wait-timeout",
-            "180",
-            "web",
-            timeout=240,
-            environment_overrides=overrides,
-        )
-        _assert_web_uses_image(state, image_b)
-        _exclusive_write(control_directory / PWA_IMAGE_READY, PWA_CONTROL_SIGNAL)
+        _update_browser_recovery_pid(state, probe, browser.pid)
+        if stage in {"all", "faults"}:
+            _orchestrate_browser_dependency_fault(
+                state,
+                control_directory,
+                browser,
+                service="minio",
+                ready_signal=MINIO_FAULT_READY,
+                stopped_signal=MINIO_STOPPED,
+                observed_signal=MINIO_503_OBSERVED,
+                restored_signal=MINIO_RESTORED,
+            )
+            _orchestrate_browser_dependency_fault(
+                state,
+                control_directory,
+                browser,
+                service="clamd",
+                ready_signal=CLAMD_FAULT_READY,
+                stopped_signal=CLAMD_STOPPED,
+                observed_signal=CLAMD_UNAVAILABLE_OBSERVED,
+                restored_signal=CLAMD_RESTORED,
+            )
+        if stage in {"all", "pwa-update"}:
+            _wait_for_control_signal(
+                control_directory, PWA_BROWSER_READY, browser
+            )
+            _browser_compose(
+                state,
+                probe,
+                "swap_b",
+                timeout=240,
+            )
+            _assert_web_uses_image(state, image_b)
+            _exclusive_write(
+                control_directory / PWA_IMAGE_READY, PWA_CONTROL_SIGNAL
+            )
         try:
-            stdout, browser_stderr = browser.communicate(timeout=360)
+            stdout, browser_stderr = browser.communicate(timeout=600)
         except subprocess.TimeoutExpired:
             raise LocalError("LOCAL_BROWSER_VERIFY_TIMEOUT") from None
         browser_failure = _browser_failure(browser_stderr)
         if browser_failure is not None:
             raise browser_failure
-        summary = _validate_browser_summary(stdout, int(browser.returncode))
+        summary = _validate_browser_summary(
+            stdout, int(browser.returncode), stage=stage
+        )
     except LocalError as error:
         primary_error = error
     except (OSError, subprocess.SubprocessError):
@@ -1040,49 +2550,25 @@ def _browser_verify(state: dict[str, object]) -> None:
         except LocalError as error:
             cleanup_failures.append(error)
         try:
-            if swap_attempted:
-                _compose(
-                    state,
-                    "up",
-                    "-d",
-                    "--no-deps",
-                    "--force-recreate",
-                    "--wait",
-                    "--wait-timeout",
-                    "180",
-                    "web",
-                    timeout=240,
-                    environment_overrides={"LOCAL_WEB_IMAGE": image_a},
-                )
-                _assert_web_uses_image(state, image_a)
-                _health(state, as_json=False, silent=True)
+            _recover_reverse_journal(state)
         except LocalError as error:
             cleanup_failures.append(error)
         try:
-            observed_id = _inspect_probe_image(state, image_b, probe)
-            if observed_id is not None:
-                if probe_image_id is not None and observed_id != probe_image_id:
-                    raise LocalError("LOCAL_PWA_IMAGE_IDENTITY_INVALID")
-                _run([_docker(), "image", "rm", image_b], capture=True)
-                if _inspect_probe_image(state, image_b, probe) is not None:
-                    raise LocalError("LOCAL_PWA_IMAGE_RESIDUAL")
-        except LocalError as error:
-            cleanup_failures.append(error)
-        try:
-            _cleanup_control_directory(control_directory)
+            _recover_browser_recovery_journal(state)
+            _health(state, as_json=False, silent=True)
         except LocalError as error:
             cleanup_failures.append(error)
         if cleanup_failures:
             cleanup_error = cleanup_failures[0]
-    if cleanup_error is not None:
-        raise cleanup_error
     if primary_error is not None:
         raise primary_error
+    if cleanup_error is not None:
+        raise cleanup_error
     if summary is None:
         raise LocalError("LOCAL_BROWSER_OUTPUT_INVALID")
     log_metrics, log_tag = _runtime_log_metrics(state)
     print(json.dumps(summary, sort_keys=True, separators=(",", ":")))
-    print("LOCAL_BROWSER_VERIFY_OK")
+    print(BROWSER_STAGE_TAGS[stage])
     print(log_metrics)
     print(log_tag)
 
@@ -1316,45 +2802,43 @@ def _backup_files_for_log_check(state: dict[str, object]) -> list[Path]:
     backups = _backup_catalog()
     if not backups:
         return []
-    selected = backups[max(backups)]
-    try:
-        local_backup.verify_backup(
-            selected, str(state["project_id"]), str(state["database"])
-        )
-    except local_backup.BackupContractError:
-        raise LocalError("LOCAL_LOG_BACKUP_SCAN_INVALID") from None
     files: list[Path] = []
-    for directory, directory_names, file_names in os.walk(
-        selected, topdown=True, followlinks=False
-    ):
-        directory_names.sort()
-        file_names.sort()
-        directory_path = Path(directory)
-        try:
-            directory_info = directory_path.lstat()
-        except OSError:
-            raise LocalError("LOCAL_LOG_BACKUP_SCAN_INVALID") from None
-        if (
-            not stat.S_ISDIR(directory_info.st_mode)
-            or stat.S_ISLNK(directory_info.st_mode)
-            or directory_info.st_uid != os.geteuid()
-            or stat.S_IMODE(directory_info.st_mode) != 0o700
+    # Scan every recognized private backup, including v1 packages that predate
+    # the current restore identity contract.  Restore still accepts only the
+    # current schema; the log gate's job here is narrower and must not omit an
+    # older package that could contain a copied runtime secret.
+    for selected in (backups[name] for name in sorted(backups)):
+        for directory, directory_names, file_names in os.walk(
+            selected, topdown=True, followlinks=False
         ):
-            raise LocalError("LOCAL_LOG_BACKUP_SCAN_INVALID")
-        for name in file_names:
-            path = directory_path / name
+            directory_names.sort()
+            file_names.sort()
+            directory_path = Path(directory)
             try:
-                info = path.lstat()
+                directory_info = directory_path.lstat()
             except OSError:
                 raise LocalError("LOCAL_LOG_BACKUP_SCAN_INVALID") from None
             if (
-                not stat.S_ISREG(info.st_mode)
-                or stat.S_ISLNK(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) != 0o600
+                not stat.S_ISDIR(directory_info.st_mode)
+                or stat.S_ISLNK(directory_info.st_mode)
+                or directory_info.st_uid != os.geteuid()
+                or stat.S_IMODE(directory_info.st_mode) != 0o700
             ):
                 raise LocalError("LOCAL_LOG_BACKUP_SCAN_INVALID")
-            files.append(path)
+            for name in file_names:
+                path = directory_path / name
+                try:
+                    info = path.lstat()
+                except OSError:
+                    raise LocalError("LOCAL_LOG_BACKUP_SCAN_INVALID") from None
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or stat.S_ISLNK(info.st_mode)
+                    or info.st_uid != os.geteuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600
+                ):
+                    raise LocalError("LOCAL_LOG_BACKUP_SCAN_INVALID")
+                files.append(path)
     return files
 
 
@@ -1425,21 +2909,36 @@ def _runtime_log_metrics(state: dict[str, object]) -> tuple[str, str]:
         raise LocalError(reason) from None
 
 
+def _targeted_test(state: dict[str, object]) -> None:
+    # Python contracts run in the production-equivalent runtime image.  The
+    # pinned Node/npm/typecheck path is exercised by the real Web image build;
+    # it is intentionally not borrowed from the developer's HOME/node_modules.
+    _compose(state, "build", "verifier", "web", capture=True, timeout=1800)
+    _compose(state, "build", "targeted-tests", capture=True, timeout=1800)
+    result = _compose_contract(state, "targeted-tests", timeout=180)
+    lines = result.stdout.splitlines()
+    try:
+        metrics = json.loads(lines[0])
+    except (IndexError, json.JSONDecodeError):
+        raise LocalError("LOCAL_TARGETED_TESTS_OUTPUT_INVALID") from None
+    if (
+        len(lines) != 2
+        or lines[1] != "LOCAL_TARGETED_TESTS_OK"
+        or not isinstance(metrics, dict)
+        or set(metrics) != {"errors", "failures", "skipped", "tests"}
+        or any(type(value) is not int for value in metrics.values())
+        or metrics["errors"] != 0
+        or metrics["failures"] != 0
+        or metrics["skipped"] != 0
+        or metrics["tests"] < 137
+    ):
+        raise LocalError("LOCAL_TARGETED_TESTS_OUTPUT_INVALID")
+    metrics["web_builds"] = 1
+    print(json.dumps(metrics, sort_keys=True, separators=(",", ":")))
+    print("LOCAL_TARGETED_TESTS_OK")
+
+
 def _verify(state: dict[str, object]) -> None:
-    expected_verification = {
-        "database_identity_mismatch_count": 0,
-        "migration_head_count": 2,
-        "migration_head_mismatch_count": 0,
-        "rls_mismatch_count": 0,
-        "rls_table_count": 31,
-        "runtime_role_count": 2,
-        "runtime_role_membership_count": 0,
-        "runtime_role_mismatch_count": 0,
-        "seed_binding_count": 7,
-        "seed_binding_mismatch_count": 0,
-        "seed_enterprise_count": 2,
-        "seed_enterprise_mismatch_count": 0,
-    }
     expected_atomicity = {
         "normal_migration_head_count": 2,
         "rollback_business_relation_count": 0,
@@ -1523,7 +3022,7 @@ def _verify(state: dict[str, object]) -> None:
     if (
         len(lines) != 2
         or lines[1] != "LOCAL_VERIFY_OK"
-        or verification_metrics != expected_verification
+        or verification_metrics != EXPECTED_VERIFICATION_METRICS
         or any(type(value) is not int for value in verification_metrics.values())
     ):
         raise LocalError("LOCAL_VERIFY_OUTPUT_INVALID")
@@ -1701,6 +3200,74 @@ def _http_status(url: str) -> bool:
         return False
 
 
+def _api_readiness_ready(url: str) -> bool:
+    observation = _api_readiness_observation(url)
+    return bool(
+        observation is not None
+        and observation[0] == 200
+        and observation[1].get("status") == "ready"
+        and observation[1].get("components")
+        == {
+            "clamd": True,
+            "database": True,
+            "minio": True,
+            "oidc": True,
+            "redis": True,
+        }
+    )
+
+
+def _api_readiness_observation(
+    url: str, *, timeout_seconds: float = 5
+) -> tuple[int, dict[str, object]] | None:
+    try:
+        request = urllib.request.Request(url, method="GET")
+        try:
+            response = urllib.request.urlopen(request, timeout=timeout_seconds)
+        except urllib.error.HTTPError as error:
+            response = error
+        try:
+            body = response.read(4097)
+            cache_control = response.headers.get("Cache-Control", "")
+            status_code = int(response.status)
+        finally:
+            response.close()
+        payload = json.loads(body)
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return None
+    components = payload.get("components") if isinstance(payload, dict) else None
+    if (
+        status_code not in {200, 503}
+        or len(body) > 4096
+        or "no-store" not in cache_control.lower()
+        or not isinstance(payload, dict)
+        or set(payload) != {"status", "components"}
+        or payload.get("status") not in {"ready", "unavailable"}
+        or not isinstance(components, dict)
+        or set(components) != {"clamd", "database", "minio", "oidc", "redis"}
+        or any(type(value) is not bool for value in components.values())
+        or (status_code == 200) != all(components.values())
+        or (payload.get("status") == "ready") != all(components.values())
+    ):
+        return None
+    return status_code, payload
+
+
+def _catalog_ready(state: dict[str, object]) -> bool:
+    try:
+        result = _compose_contract(state, "verifier", timeout=180)
+        lines = result.stdout.splitlines()
+        metrics = json.loads(lines[0])
+    except (IndexError, json.JSONDecodeError, LocalError):
+        return False
+    return bool(
+        len(lines) == 2
+        and lines[1] == "LOCAL_VERIFY_OK"
+        and metrics == EXPECTED_VERIFICATION_METRICS
+        and all(type(value) is int for value in metrics.values())
+    )
+
+
 def _core_containers_ready(state: dict[str, object]) -> bool:
     expected = {
         "api",
@@ -1739,10 +3306,12 @@ def _health(
 ) -> None:
     _assert_resource_labels(state)
     base = f"http://127.0.0.1:{int(state['web_port'])}"
+    containers_ready = _core_containers_ready(state)
     checks = {
-        "containers": _core_containers_ready(state),
+        "containers": containers_ready,
+        "database_catalog": _catalog_ready(state) if containers_ready else False,
         "api_liveness": _http_status(base + "/api/healthz"),
-        "api_readiness": _http_status(base + "/api/readyz"),
+        "api_readiness": _api_readiness_ready(base + "/api/readyz"),
         "oidc_discovery": _http_status(
             base + "/realms/anhuan/.well-known/openid-configuration"
         ),
@@ -1763,6 +3332,265 @@ def _health(
             print("LOCAL_HEALTH_RED", file=sys.stderr)
     if not healthy:
         raise LocalError("LOCAL_HEALTH_RED")
+
+
+def _service_container_payload(
+    state: dict[str, object], service: str, *, require_healthy: bool
+) -> tuple[str, dict[str, object]]:
+    if service not in {"clamd", "minio", "redis"}:
+        raise LocalError("LOCAL_REVERSE_SERVICE_INVALID")
+    result = _compose(state, "ps", "-a", "-q", service, capture=True)
+    container_ids = result.stdout.splitlines()
+    if len(container_ids) != 1 or not re.fullmatch(
+        r"[0-9a-f]{64}", container_ids[0]
+    ):
+        raise LocalError("LOCAL_REVERSE_CONTAINER_IDENTITY_INVALID")
+    container_id = container_ids[0]
+    inspected = _run([_docker(), "inspect", container_id], capture=True)
+    try:
+        payload = json.loads(inspected.stdout)[0]
+        labels = payload["Config"]["Labels"]
+        status = payload["State"]["Status"]
+        health = payload["State"].get("Health", {}).get("Status", "")
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+        raise LocalError("LOCAL_REVERSE_CONTAINER_IDENTITY_INVALID") from None
+    if (
+        labels.get("com.docker.compose.project")
+        != str(state["compose_project"])
+        or labels.get("com.docker.compose.service") != service
+        or str(labels.get("com.docker.compose.oneoff", "False")).lower()
+        == "true"
+        or labels.get("io.anhuan.scope") != SCOPE
+        or labels.get("io.anhuan.project-id") != str(state["project_id"])
+        or (
+            require_healthy
+            and (status != "running" or health != "healthy")
+        )
+    ):
+        raise LocalError("LOCAL_REVERSE_CONTAINER_IDENTITY_INVALID")
+    return container_id, payload
+
+
+def _write_reverse_journal(payload: dict[str, object]) -> None:
+    if REVERSE_JOURNAL.exists():
+        raise LocalError("LOCAL_REVERSE_RECOVERY_PENDING")
+    body = json.dumps(
+        {"schema": REVERSE_JOURNAL_SCHEMA, **payload},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    _exclusive_write(REVERSE_JOURNAL, body)
+
+
+def _read_reverse_journal(state: dict[str, object]) -> dict[str, object] | None:
+    if not REVERSE_JOURNAL.exists():
+        return None
+    _secure_file(REVERSE_JOURNAL, maximum=4096)
+    try:
+        payload = json.loads(REVERSE_JOURNAL.read_text(encoding="ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise LocalError("LOCAL_REVERSE_RECOVERY_INVALID") from None
+    common = {
+        "schema",
+        "kind",
+        "project_id",
+        "compose_project",
+    }
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != REVERSE_JOURNAL_SCHEMA
+        or payload.get("project_id") != state["project_id"]
+        or payload.get("compose_project") != state["compose_project"]
+    ):
+        raise LocalError("LOCAL_REVERSE_RECOVERY_INVALID")
+    kind = payload.get("kind")
+    if kind == "dependency":
+        expected = common | {"service", "container_id"}
+        if (
+            set(payload) != expected
+            or payload.get("service") not in {"minio", "clamd"}
+            or not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("container_id")))
+        ):
+            raise LocalError("LOCAL_REVERSE_RECOVERY_INVALID")
+    elif kind == "sentinel":
+        expected = common | {
+            "nonce",
+            "container_name",
+            "volume_name",
+            "image_id",
+        }
+        nonce = str(payload.get("nonce"))
+        if (
+            set(payload) != expected
+            or not re.fullmatch(r"[0-9a-f]{24}", nonce)
+            or payload.get("container_name")
+            != f"anhuan-foreign-sentinel-{nonce}"
+            or payload.get("volume_name")
+            != f"anhuan-foreign-sentinel-{nonce}"
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(payload.get("image_id")))
+        ):
+            raise LocalError("LOCAL_REVERSE_RECOVERY_INVALID")
+    else:
+        raise LocalError("LOCAL_REVERSE_RECOVERY_INVALID")
+    return payload
+
+
+def _remove_reverse_journal() -> None:
+    _secure_file(REVERSE_JOURNAL, maximum=4096)
+    try:
+        REVERSE_JOURNAL.unlink()
+    except OSError:
+        raise LocalError("LOCAL_REVERSE_RECOVERY_CLEANUP_FAILED") from None
+    if REVERSE_JOURNAL.exists():
+        raise LocalError("LOCAL_REVERSE_RECOVERY_CLEANUP_FAILED")
+
+
+def _wait_dependency_recovered(
+    state: dict[str, object], service: str, container_id: str
+) -> None:
+    deadline = time.monotonic() + 360
+    while time.monotonic() < deadline:
+        try:
+            observed_id, _payload = _service_container_payload(
+                state, service, require_healthy=True
+            )
+        except LocalError:
+            time.sleep(1)
+            continue
+        if observed_id == container_id:
+            base = f"http://127.0.0.1:{int(state['web_port'])}"
+            if _api_readiness_ready(base + "/api/readyz"):
+                return
+        time.sleep(1)
+    raise LocalError("LOCAL_REVERSE_DEPENDENCY_RECOVERY_FAILED")
+
+
+def _probe_dependency_outage(
+    state: dict[str, object], service: str
+) -> dict[str, int]:
+    container_id, _payload = _service_container_payload(
+        state, service, require_healthy=True
+    )
+    base = f"http://127.0.0.1:{int(state['web_port'])}"
+    primary: LocalError | None = None
+    recovered = False
+    health_red = False
+    component_red = False
+    _write_reverse_journal(
+        {
+            "kind": "dependency",
+            "project_id": state["project_id"],
+            "compose_project": state["compose_project"],
+            "service": service,
+            "container_id": container_id,
+        }
+    )
+    try:
+        _run(
+            [_docker(), "stop", "--time", "30", container_id],
+            capture=True,
+            timeout=45,
+        )
+        try:
+            _health(state, as_json=False, silent=True)
+        except LocalError as error:
+            if str(error) != "LOCAL_HEALTH_RED":
+                raise
+            health_red = True
+        observation = _api_readiness_observation(
+            base + "/api/readyz", timeout_seconds=15
+        )
+        if observation is not None:
+            status_code, payload = observation
+            components = payload.get("components")
+            if isinstance(components, dict):
+                component_red = bool(
+                    status_code == 503
+                    and components.get(service) is False
+                    and all(
+                        value is True
+                        for name, value in components.items()
+                        if name != service
+                    )
+                )
+        if not health_red or not component_red or _core_containers_ready(state):
+            raise LocalError("LOCAL_REVERSE_DEPENDENCY_HEALTH_FAILED")
+    except LocalError as error:
+        primary = error
+    finally:
+        try:
+            _recover_reverse_journal(state)
+            recovered = True
+        except LocalError:
+            recovered = False
+    if not recovered:
+        raise LocalError("LOCAL_REVERSE_DEPENDENCY_RECOVERY_FAILED")
+    if primary is not None:
+        raise primary
+    return {f"{service}_health_red_count": 1, f"{service}_recovery_count": 1}
+
+
+def _synthetic_secret_permission_probe() -> int:
+    _directory(TMP_DIR)
+    nonce = secrets.token_hex(12)
+    probe = TMP_DIR / f"reverse-secrets-{nonce}"
+    probe.mkdir(mode=0o700)
+    _directory(probe)
+    rejected = 0
+    try:
+        for name in ALL_SECRET_NAMES:
+            size = 32 if name == "f0i_key" else 16
+            _exclusive_write(probe / name, secrets.token_bytes(size))
+        target = probe / "f1_qa_key"
+        os.chmod(target, 0o644)
+        try:
+            _validate_secret_set(probe)
+        except LocalError as error:
+            if str(error) != "LOCAL_FILE_PERMISSIONS_INVALID":
+                raise
+            rejected = 1
+        else:
+            raise LocalError("LOCAL_REVERSE_SECRET_REJECTION_FAILED")
+    finally:
+        cleanup_failed = False
+        try:
+            target = probe / "f1_qa_key"
+            if target.exists():
+                os.chmod(target, 0o600)
+            entries = {entry.name for entry in os.scandir(probe)}
+            if entries != set(ALL_SECRET_NAMES):
+                cleanup_failed = True
+            for name in ALL_SECRET_NAMES:
+                path = probe / name
+                if path.exists():
+                    _secure_file(path, minimum=16, maximum=32)
+                    path.unlink()
+            probe.rmdir()
+        except (OSError, LocalError):
+            cleanup_failed = True
+        if cleanup_failed:
+            raise LocalError("LOCAL_REVERSE_SECRET_CLEANUP_FAILED")
+    return rejected
+
+
+def _dependency_verify(state: dict[str, object]) -> None:
+    _health(state, as_json=False, silent=True)
+    secret_rejected = _synthetic_secret_permission_probe()
+    _health(state, as_json=False, silent=True)
+    minio = _probe_dependency_outage(state, "minio")
+    clamd = _probe_dependency_outage(state, "clamd")
+    _health(state, as_json=False, silent=True)
+    metrics = {
+        "clamd_health_red_count": clamd["clamd_health_red_count"],
+        "clamd_recovery_count": clamd["clamd_recovery_count"],
+        "dependency_false_ready_count": 0,
+        "minio_health_red_count": minio["minio_health_red_count"],
+        "minio_recovery_count": minio["minio_recovery_count"],
+        "secret_0644_rejection_count": secret_rejected,
+        "secret_recovery_ready_count": 1,
+    }
+    print(json.dumps(metrics, sort_keys=True, separators=(",", ":")))
+    print("LOCAL_DEPENDENCY_BOUNDARIES_OK")
 
 
 def _reset(state: dict[str, object], *, confirmed: bool) -> None:
@@ -1797,6 +3625,278 @@ def _reset(state: dict[str, object], *, confirmed: bool) -> None:
     print("LOCAL_RESET_OK")
 
 
+def _inspect_foreign_sentinel(
+    container_id: str,
+    volume_name: str,
+    nonce: str,
+    image_id: str,
+) -> bool:
+    container = _run(
+        [_docker(), "inspect", container_id], capture=True, check=False
+    )
+    volume = _run(
+        [_docker(), "volume", "inspect", volume_name],
+        capture=True,
+        check=False,
+    )
+    if container.returncode != 0 or volume.returncode != 0:
+        return False
+    try:
+        container_payload = json.loads(container.stdout)[0]
+        volume_payload = json.loads(volume.stdout)[0]
+        labels = container_payload["Config"]["Labels"]
+        volume_labels = volume_payload["Labels"]
+        mounts = container_payload["Mounts"]
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+    return bool(
+        container_payload.get("Image") == image_id
+        and labels
+        == {
+            "io.anhuan.reverse-sentinel": nonce,
+            "io.anhuan.scope": "foreign-sentinel",
+        }
+        and volume_labels
+        == {
+            "io.anhuan.reverse-sentinel": nonce,
+            "io.anhuan.scope": "foreign-sentinel",
+        }
+        and len(mounts) == 1
+        and mounts[0].get("Type") == "volume"
+        and mounts[0].get("Name") == volume_name
+        and mounts[0].get("Destination") == "/sentinel"
+    )
+
+
+def _sentinel_label_residuals(nonce: str) -> tuple[list[str], list[str]]:
+    container_result = _run(
+        [
+            _docker(),
+            "ps",
+            "-a",
+            "-q",
+            "--filter",
+            f"label=io.anhuan.reverse-sentinel={nonce}",
+        ],
+        capture=True,
+    )
+    volume_result = _run(
+        [
+            _docker(),
+            "volume",
+            "ls",
+            "-q",
+            "--filter",
+            f"label=io.anhuan.reverse-sentinel={nonce}",
+        ],
+        capture=True,
+    )
+    containers = [entry for entry in container_result.stdout.splitlines() if entry]
+    volumes = [entry for entry in volume_result.stdout.splitlines() if entry]
+    if any(not re.fullmatch(r"[0-9a-f]{64}", entry) for entry in containers):
+        raise LocalError("LOCAL_REVERSE_SENTINEL_CLEANUP_FAILED")
+    return containers, volumes
+
+
+def _recover_reverse_journal(state: dict[str, object]) -> None:
+    payload = _read_reverse_journal(state)
+    if payload is None:
+        return
+    if payload["kind"] == "dependency":
+        service = str(payload["service"])
+        expected_id = str(payload["container_id"])
+        observed_id, _container = _service_container_payload(
+            state, service, require_healthy=False
+        )
+        if observed_id != expected_id:
+            raise LocalError("LOCAL_REVERSE_RECOVERY_IDENTITY_MISMATCH")
+        _run([_docker(), "start", expected_id], capture=True, timeout=45)
+        _wait_dependency_recovered(state, service, expected_id)
+        _remove_reverse_journal()
+        return
+
+    nonce = str(payload["nonce"])
+    container_name = str(payload["container_name"])
+    volume_name = str(payload["volume_name"])
+    image_id = str(payload["image_id"])
+    cleanup_failed = False
+    container_id: str | None = None
+    inspected = _run(
+        [_docker(), "inspect", container_name], capture=True, check=False
+    )
+    if inspected.returncode == 0:
+        try:
+            candidate = json.loads(inspected.stdout)[0]
+            candidate_id = candidate["Id"]
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+            raise LocalError("LOCAL_REVERSE_RECOVERY_INVALID") from None
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", str(candidate_id))
+            or not _inspect_foreign_sentinel(
+                str(candidate_id), volume_name, nonce, image_id
+            )
+        ):
+            raise LocalError("LOCAL_REVERSE_RECOVERY_IDENTITY_MISMATCH")
+        container_id = str(candidate_id)
+    if container_id is not None:
+        removed = _run(
+            [_docker(), "rm", "-f", container_id], capture=True, check=False
+        )
+        cleanup_failed = cleanup_failed or removed.returncode != 0
+
+    volume = _run(
+        [_docker(), "volume", "inspect", volume_name],
+        capture=True,
+        check=False,
+    )
+    if volume.returncode == 0:
+        try:
+            labels = json.loads(volume.stdout)[0]["Labels"]
+        except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+            raise LocalError("LOCAL_REVERSE_RECOVERY_INVALID") from None
+        if labels != {
+            "io.anhuan.reverse-sentinel": nonce,
+            "io.anhuan.scope": "foreign-sentinel",
+        }:
+            raise LocalError("LOCAL_REVERSE_RECOVERY_IDENTITY_MISMATCH")
+        removed = _run(
+            [_docker(), "volume", "rm", volume_name],
+            capture=True,
+            check=False,
+        )
+        cleanup_failed = cleanup_failed or removed.returncode != 0
+
+    containers, volumes = _sentinel_label_residuals(nonce)
+    if cleanup_failed or containers or volumes:
+        raise LocalError("LOCAL_REVERSE_SENTINEL_CLEANUP_FAILED")
+    _remove_reverse_journal()
+
+
+def _reset_with_foreign_sentinel(
+    state: dict[str, object], *, confirmed: bool
+) -> None:
+    if not confirmed:
+        raise LocalError("LOCAL_RESET_CONFIRMATION_REQUIRED")
+    _assert_resource_labels(state)
+    inspected_image = _run(
+        [_docker(), "image", "inspect", REVERSE_SENTINEL_IMAGE], capture=True
+    )
+    try:
+        image_payload = json.loads(inspected_image.stdout)[0]
+        image_id = image_payload["Id"]
+        image_digests = image_payload["RepoDigests"]
+        image_labels = image_payload["Config"].get("Labels")
+        declared_volumes = image_payload["Config"].get("Volumes")
+    except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+        raise LocalError("LOCAL_REVERSE_SENTINEL_IMAGE_INVALID") from None
+    if (
+        image_id != REVERSE_SENTINEL_IMAGE_ID
+        or not isinstance(image_digests, list)
+        or REVERSE_SENTINEL_IMAGE.replace("python:3.11-slim@", "python@")
+        not in image_digests
+        or image_labels not in (None, {})
+        or declared_volumes not in (None, {})
+    ):
+        raise LocalError("LOCAL_REVERSE_SENTINEL_IMAGE_INVALID")
+    nonce = secrets.token_hex(12)
+    volume_name = f"anhuan-foreign-sentinel-{nonce}"
+    container_name = f"anhuan-foreign-sentinel-{nonce}"
+    container_id: str | None = None
+    primary: LocalError | None = None
+    survived = False
+    _write_reverse_journal(
+        {
+            "kind": "sentinel",
+            "project_id": state["project_id"],
+            "compose_project": state["compose_project"],
+            "nonce": nonce,
+            "container_name": container_name,
+            "volume_name": volume_name,
+            "image_id": image_id,
+        }
+    )
+    try:
+        if (
+            _run(
+                [_docker(), "inspect", container_name],
+                capture=True,
+                check=False,
+            ).returncode
+            == 0
+            or _run(
+                [_docker(), "volume", "inspect", volume_name],
+                capture=True,
+                check=False,
+            ).returncode
+            == 0
+        ):
+            raise LocalError("LOCAL_REVERSE_SENTINEL_COLLISION")
+        volume = _run(
+            [
+                _docker(),
+                "volume",
+                "create",
+                "--label",
+                f"io.anhuan.reverse-sentinel={nonce}",
+                "--label",
+                "io.anhuan.scope=foreign-sentinel",
+                volume_name,
+            ],
+            capture=True,
+        )
+        if volume.stdout.strip() != volume_name:
+            raise LocalError("LOCAL_REVERSE_SENTINEL_CREATE_FAILED")
+        created = _run(
+            [
+                _docker(),
+                "create",
+                "--name",
+                container_name,
+                "--label",
+                f"io.anhuan.reverse-sentinel={nonce}",
+                "--label",
+                "io.anhuan.scope=foreign-sentinel",
+                "--mount",
+                f"type=volume,src={volume_name},dst=/sentinel",
+                image_id,
+                "sh",
+                "-c",
+                "exit 0",
+            ],
+            capture=True,
+        )
+        candidate = created.stdout.strip()
+        if not re.fullmatch(r"[0-9a-f]{64}", candidate):
+            raise LocalError("LOCAL_REVERSE_SENTINEL_CREATE_FAILED")
+        container_id = candidate
+        if not _inspect_foreign_sentinel(
+            container_id, volume_name, nonce, image_id
+        ):
+            raise LocalError("LOCAL_REVERSE_SENTINEL_IDENTITY_INVALID")
+        _reset(state, confirmed=True)
+        survived = _inspect_foreign_sentinel(
+            container_id, volume_name, nonce, image_id
+        )
+        if not survived:
+            raise LocalError("LOCAL_REVERSE_SENTINEL_SURVIVAL_FAILED")
+    except LocalError as error:
+        primary = error
+    finally:
+        try:
+            _recover_reverse_journal(state)
+        except LocalError:
+            raise LocalError("LOCAL_REVERSE_SENTINEL_CLEANUP_FAILED") from None
+    if primary is not None:
+        raise primary
+    metrics = {
+        "foreign_cleanup_residual_count": 0,
+        "foreign_container_survival_count": int(survived),
+        "foreign_volume_survival_count": int(survived),
+    }
+    print(json.dumps(metrics, sort_keys=True, separators=(",", ":")))
+    print("LOCAL_FOREIGN_SENTINEL_OK")
+
+
 def _stop(state: dict[str, object]) -> None:
     _assert_resource_labels(state)
     _compose(state, "stop", "--timeout", "30", timeout=120)
@@ -1829,6 +3929,65 @@ def _stop(state: dict[str, object]) -> None:
 def _new_backup_id() -> str:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return f"{timestamp}-{secrets.token_hex(6)}"
+
+
+def _business_snapshot(state: dict[str, object]) -> dict[str, object]:
+    selects = [
+        f"SELECT '{name}',count(*)::bigint FROM f1.\"{name}\""
+        for name in P2_P7_TABLES
+    ]
+    result = _compose(
+        state,
+        "exec",
+        "-T",
+        "postgres",
+        "psql",
+        "--no-psqlrc",
+        "--tuples-only",
+        "--no-align",
+        "--field-separator=|",
+        "--set",
+        "ON_ERROR_STOP=1",
+        "--username=f0d_bootstrap",
+        "--dbname",
+        str(state["database"]),
+        "--command",
+        " UNION ALL ".join(selects) + " ORDER BY 1",
+        capture=True,
+        timeout=60,
+    )
+    counts: dict[str, int] = {}
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r"([a-z][a-z0-9_]{0,63})\|([0-9]{1,20})", line)
+        if match is None or match.group(1) in counts:
+            raise LocalError("LOCAL_BUSINESS_SNAPSHOT_INVALID")
+        value = int(match.group(2))
+        if value > 2**63 - 1:
+            raise LocalError("LOCAL_BUSINESS_SNAPSHOT_INVALID")
+        counts[match.group(1)] = value
+    if set(counts) != set(P2_P7_TABLES):
+        raise LocalError("LOCAL_BUSINESS_SNAPSHOT_INVALID")
+    digest = hashlib.sha256(b"ANHUAN_BUSINESS_COUNTS_V1\x00")
+    for name in sorted(counts):
+        encoded = name.encode("ascii")
+        digest.update(len(encoded).to_bytes(2, "big"))
+        digest.update(encoded)
+        digest.update(counts[name].to_bytes(8, "big"))
+    return {
+        "table_count": len(counts),
+        "total_row_count": sum(counts.values()),
+        "nonempty_table_count": sum(value > 0 for value in counts.values()),
+        "count_sha256": digest.hexdigest(),
+    }
+
+
+def _manifest_business_snapshot(manifest: dict[str, object]) -> dict[str, object]:
+    return {
+        "table_count": manifest["business_table_count"],
+        "total_row_count": manifest["business_total_row_count"],
+        "nonempty_table_count": manifest["business_nonempty_table_count"],
+        "count_sha256": manifest["business_count_sha256"],
+    }
 
 
 def _backup_catalog() -> dict[str, Path]:
@@ -1949,6 +4108,9 @@ def _backup(state: dict[str, object]) -> None:
             capture=True,
             timeout=120,
         )
+        # Writers are quiesced before both the row-count commitment and dump,
+        # so the manifest cannot describe a different database moment.
+        business_snapshot = _business_snapshot(state)
         stage_mount = f"{pending}:/backup"
         _compose(
             state,
@@ -1973,7 +4135,10 @@ def _backup(state: dict[str, object]) -> None:
             timeout=600,
         )
         local_backup.create_manifest(
-            pending, str(state["project_id"]), str(state["database"])
+            pending,
+            str(state["project_id"]),
+            str(state["database"]),
+            business_snapshot,
         )
         local_backup.verify_backup(
             pending, str(state["project_id"]), str(state["database"])
@@ -2067,6 +4232,30 @@ def _cleanup_failed_restore(state: dict[str, object]) -> None:
         raise LocalError("LOCAL_RESTORE_CLEANUP_FAILED") from None
 
 
+def _new_restore_check_directory() -> Path:
+    path = TMP_DIR / f"restore-check-{secrets.token_hex(12)}"
+    if path.exists() or path.is_symlink():
+        raise LocalError("LOCAL_RESTORE_CHECK_COLLISION")
+    try:
+        path.mkdir(mode=0o700)
+    except OSError:
+        raise LocalError("LOCAL_RESTORE_CHECK_INVALID") from None
+    _directory(path)
+    return path
+
+
+def _remove_restore_check_directory(path: Path) -> None:
+    if path.parent != TMP_DIR or not re.fullmatch(
+        r"restore-check-[0-9a-f]{24}", path.name
+    ):
+        raise LocalError("LOCAL_RESTORE_CHECK_INVALID")
+    try:
+        _directory(path)
+        shutil.rmtree(path)
+    except (OSError, LocalError):
+        raise LocalError("LOCAL_RESTORE_CHECK_CLEANUP_FAILED") from None
+
+
 def _restore(
     state: dict[str, object], *, backup_id: str | None, confirmed: bool
 ) -> None:
@@ -2074,7 +4263,7 @@ def _restore(
         raise LocalError("LOCAL_RESTORE_CONFIRMATION_REQUIRED")
     selected_id, backup = _resolve_backup(backup_id)
     try:
-        local_backup.verify_backup(
+        manifest = local_backup.verify_backup(
             backup, str(state["project_id"]), str(state["database"])
         )
     except local_backup.BackupContractError:
@@ -2148,13 +4337,44 @@ def _restore(
             capture=True,
             timeout=600,
         )
+        restore_check = _new_restore_check_directory()
+        try:
+            _compose(
+                state,
+                "run",
+                "--rm",
+                "--no-deps",
+                "--volume",
+                f"{restore_check}:/backup",
+                "backup-minio",
+                capture=True,
+                timeout=600,
+            )
+            minio_summary = local_backup.verify_restored_minio(
+                backup, restore_check / local_backup.MINIO_DIRECTORY_NAME
+            )
+            expected_minio = {
+                "minio_tree_sha256": manifest["minio_tree_sha256"],
+                "minio_file_count": manifest["minio_file_count"],
+                "minio_total_size": manifest["minio_total_size"],
+            }
+            if minio_summary != expected_minio:
+                raise LocalError("LOCAL_RESTORE_MINIO_IDENTITY_MISMATCH")
+        finally:
+            _remove_restore_check_directory(restore_check)
         if set(_project_data_volumes(state)) != DATA_VOLUME_KEYS:
             raise LocalError("LOCAL_RESTORE_DATA_VOLUME_INCOMPLETE")
+        _start(state, capture=True, announce=False)
+        if _business_snapshot(state) != _manifest_business_snapshot(manifest):
+            raise LocalError("LOCAL_RESTORE_BUSINESS_IDENTITY_MISMATCH")
+    except local_backup.BackupContractError:
+        if destructive_started:
+            _cleanup_failed_restore(state)
+        raise LocalError("LOCAL_RESTORE_IDENTITY_MISMATCH") from None
     except LocalError:
         if destructive_started:
             _cleanup_failed_restore(state)
         raise
-    _start(state, capture=True, announce=False)
     print(f"LOCAL_RESTORE_OK {selected_id}")
 
 
@@ -2179,19 +4399,27 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="localctl")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("start")
+    subparsers.add_parser("test")
     subparsers.add_parser("stop")
     health = subparsers.add_parser("health")
     health.add_argument("--json", action="store_true")
+    subparsers.add_parser("dependency-verify")
     subparsers.add_parser("migrate")
     subparsers.add_parser("seed")
     reset = subparsers.add_parser("reset")
     reset.add_argument("--confirm-local-data", action="store_true")
+    reset.add_argument("--prove-foreign-sentinel", action="store_true")
     subparsers.add_parser("backup")
     restore = subparsers.add_parser("restore")
     restore.add_argument("--backup-id")
     restore.add_argument("--confirm-local-data", action="store_true")
     subparsers.add_parser("verify")
-    subparsers.add_parser("browser-verify")
+    browser_verify = subparsers.add_parser("browser-verify")
+    browser_verify.add_argument(
+        "--stage",
+        choices=sorted(BROWSER_STAGES),
+        default="all",
+    )
     return parser
 
 
@@ -2201,6 +4429,7 @@ def main() -> int:
         if arguments.command in {
             "stop",
             "health",
+            "dependency-verify",
             "reset",
             "backup",
             "restore",
@@ -2211,17 +4440,25 @@ def main() -> int:
                 raise LocalError("LOCAL_NOT_INITIALIZED")
             _directory(STATE_DIR)
             state = _read_state()
+            if arguments.command not in {"stop", "reset"}:
+                _validate_existing_layout()
             _write_docker_config()
             _write_compose_env(state)
         else:
             state = _initialize()
         with _lock():
+            _recover_browser_recovery_journal(state)
+            _recover_reverse_journal(state)
             if arguments.command == "start":
                 _start(state)
+            elif arguments.command == "test":
+                _targeted_test(state)
             elif arguments.command == "stop":
                 _stop(state)
             elif arguments.command == "health":
                 _health(state, as_json=bool(arguments.json))
+            elif arguments.command == "dependency-verify":
+                _dependency_verify(state)
             elif arguments.command == "migrate":
                 _migrate(state)
                 print("LOCAL_MIGRATE_OK")
@@ -2229,7 +4466,12 @@ def main() -> int:
                 _seed(state)
                 print("LOCAL_SEED_OK")
             elif arguments.command == "reset":
-                _reset(state, confirmed=bool(arguments.confirm_local_data))
+                if bool(arguments.prove_foreign_sentinel):
+                    _reset_with_foreign_sentinel(
+                        state, confirmed=bool(arguments.confirm_local_data)
+                    )
+                else:
+                    _reset(state, confirmed=bool(arguments.confirm_local_data))
             elif arguments.command == "backup":
                 _backup(state)
             elif arguments.command == "restore":
@@ -2241,7 +4483,7 @@ def main() -> int:
             elif arguments.command == "verify":
                 _verify(state)
             elif arguments.command == "browser-verify":
-                _browser_verify(state)
+                _browser_verify(state, stage=arguments.stage)
             else:
                 raise LocalError("LOCAL_COMMAND_PENDING")
         return 0

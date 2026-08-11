@@ -9,6 +9,7 @@ COPY src/ /app/src/
 COPY migrations/ /app/migrations/
 COPY alembic.ini /app/alembic.ini
 COPY infra/f1/ /app/infra/f1/
+COPY scripts/localctl /app/scripts/localctl
 
 ENV PYTHONPATH=/app/src
 

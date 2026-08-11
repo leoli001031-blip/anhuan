@@ -161,6 +161,7 @@ export default function AssignmentDrawer({
                   rules={[{ required: true, message: "请选择执行人员" }]}
                 >
                   <Select
+                    data-testid="assignment-candidate-select"
                     showSearch
                     optionFilterProp="label"
                     placeholder="选择租户内人员"
@@ -177,6 +178,7 @@ export default function AssignmentDrawer({
                   rules={[{ required: true, message: "请选择任务身份" }]}
                 >
                   <Select
+                    data-testid="assignment-capacity-select"
                     disabled={!selectedUserId}
                     placeholder="选择员工、顾问或合作伙伴"
                     options={capacityOptions}

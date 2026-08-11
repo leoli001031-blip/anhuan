@@ -223,7 +223,12 @@ export default function DocumentLibraryPage() {
           </Typography.Text>
         </div>
         <Space wrap>
-          <Button icon={<ReloadOutlined />} onClick={() => void refresh()} disabled={loading}>
+          <Button
+            data-testid="ingestion-refresh"
+            icon={<ReloadOutlined />}
+            onClick={() => void refresh()}
+            disabled={loading}
+          >
             刷新
           </Button>
           {canCreate && (

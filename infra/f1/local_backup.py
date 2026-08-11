@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 
-SCHEMA = "anhuan-engineering-backup-v1"
+SCHEMA = "anhuan-engineering-backup-v2"
 DATABASE_DUMP_NAME = "database.dump"
 MINIO_DIRECTORY_NAME = "minio-data"
 MANIFEST_NAME = "manifest.json"
@@ -29,6 +29,10 @@ _MANIFEST_FIELDS = frozenset(
         "database",
         "db_dump_sha256",
         "db_dump_size",
+        "business_table_count",
+        "business_total_row_count",
+        "business_nonempty_table_count",
+        "business_count_sha256",
         "minio_tree_sha256",
         "minio_file_count",
         "minio_total_size",
@@ -269,6 +273,41 @@ def _validate_nonnegative_integer(value: Any, prefix: str) -> int:
     return value
 
 
+def _validate_business_snapshot(document: Any) -> dict[str, Any]:
+    expected = {
+        "table_count",
+        "total_row_count",
+        "nonempty_table_count",
+        "count_sha256",
+    }
+    if not isinstance(document, dict) or set(document) != expected:
+        _fail("BUSINESS_SNAPSHOT_SCHEMA_INVALID")
+    table_count = _validate_nonnegative_integer(
+        document["table_count"], "BUSINESS_TABLE_COUNT"
+    )
+    total = _validate_nonnegative_integer(
+        document["total_row_count"], "BUSINESS_TOTAL_ROW_COUNT"
+    )
+    nonempty = _validate_nonnegative_integer(
+        document["nonempty_table_count"], "BUSINESS_NONEMPTY_TABLE_COUNT"
+    )
+    digest = document["count_sha256"]
+    if (
+        table_count != 31
+        or nonempty > table_count
+        or total < nonempty
+        or not isinstance(digest, str)
+        or not _SHA256.fullmatch(digest)
+    ):
+        _fail("BUSINESS_SNAPSHOT_VALUE_INVALID")
+    return {
+        "table_count": table_count,
+        "total_row_count": total,
+        "nonempty_table_count": nonempty,
+        "count_sha256": digest,
+    }
+
+
 def _validate_manifest(document: Any) -> dict[str, Any]:
     if not isinstance(document, dict) or set(document) != _MANIFEST_FIELDS:
         _fail("MANIFEST_SCHEMA_INVALID")
@@ -276,13 +315,32 @@ def _validate_manifest(document: Any) -> dict[str, Any]:
         _fail("MANIFEST_SCHEMA_INVALID")
     _validate_identifier(document["project_id"], "MANIFEST_PROJECT_ID")
     _validate_identifier(document["database"], "MANIFEST_DATABASE")
-    for field in ("db_dump_sha256", "minio_tree_sha256"):
+    for field in (
+        "db_dump_sha256",
+        "business_count_sha256",
+        "minio_tree_sha256",
+    ):
         if not isinstance(document[field], str) or not _SHA256.fullmatch(
             document[field]
         ):
             _fail("MANIFEST_DIGEST_INVALID")
-    for field in ("db_dump_size", "minio_file_count", "minio_total_size"):
+    for field in (
+        "db_dump_size",
+        "business_table_count",
+        "business_total_row_count",
+        "business_nonempty_table_count",
+        "minio_file_count",
+        "minio_total_size",
+    ):
         _validate_nonnegative_integer(document[field], "MANIFEST_COUNT")
+    _validate_business_snapshot(
+        {
+            "table_count": document["business_table_count"],
+            "total_row_count": document["business_total_row_count"],
+            "nonempty_table_count": document["business_nonempty_table_count"],
+            "count_sha256": document["business_count_sha256"],
+        }
+    )
     created_at = document["created_at"]
     if not isinstance(created_at, str) or not _UTC_TIMESTAMP.fullmatch(created_at):
         _fail("MANIFEST_CREATED_AT_INVALID")
@@ -370,13 +428,17 @@ def _atomic_write_manifest(root: Path, payload: bytes) -> None:
 
 
 def create_manifest(
-    stage_dir: str | os.PathLike[str], project_id: str, database: str
+    stage_dir: str | os.PathLike[str],
+    project_id: str,
+    database: str,
+    business_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     """Validate a private backup stage and atomically create its manifest."""
 
     root = _validated_root(stage_dir)
     project = _validate_identifier(project_id, "PROJECT_ID")
     database_name = _validate_identifier(database, "DATABASE")
+    business = _validate_business_snapshot(business_snapshot)
     _require_exact_root(root, {DATABASE_DUMP_NAME, MINIO_DIRECTORY_NAME})
 
     db_digest, db_size = _hash_regular_file(
@@ -391,6 +453,10 @@ def create_manifest(
         "database": database_name,
         "db_dump_sha256": db_digest,
         "db_dump_size": db_size,
+        "business_table_count": business["table_count"],
+        "business_total_row_count": business["total_row_count"],
+        "business_nonempty_table_count": business["nonempty_table_count"],
+        "business_count_sha256": business["count_sha256"],
         "minio_tree_sha256": tree_digest,
         "minio_file_count": file_count,
         "minio_total_size": total_size,
@@ -464,9 +530,30 @@ def verify_backup(
     return manifest
 
 
+def verify_restored_minio(
+    backup_dir: str | os.PathLike[str],
+    restored_minio_dir: str | os.PathLike[str],
+) -> dict[str, int | str]:
+    """Compare a private restored-volume copy to the immutable backup tree."""
+
+    backup = _validated_root(backup_dir)
+    restored = _validated_root(restored_minio_dir)
+    expected = _tree_summary(backup / MINIO_DIRECTORY_NAME)
+    observed = _tree_summary(restored)
+    if observed != expected:
+        _fail("RESTORED_MINIO_TREE_MISMATCH")
+    digest, file_count, total_size = observed
+    return {
+        "minio_tree_sha256": digest,
+        "minio_file_count": file_count,
+        "minio_total_size": total_size,
+    }
+
+
 __all__ = [
     "BackupContractError",
     "SCHEMA",
     "create_manifest",
+    "verify_restored_minio",
     "verify_backup",
 ]

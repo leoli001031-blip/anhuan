@@ -15,6 +15,17 @@ from .features.p3.scanner import scanner_version
 from .storage import _client as minio_client
 
 
+_CORE_DATABASE_TABLES = (
+    "f1.enterprise",
+    "f1.service_case",
+    "f1.document_record",
+    "f1.business_report",
+    "f1.policy_source",
+    "f1.quality_run",
+    "f1.rehearsal_run",
+)
+
+
 async def _database_ready() -> bool:
     try:
         async with session_scope(role="f1_api") as session:
@@ -22,11 +33,18 @@ async def _database_ready() -> bool:
                 await session.execute(
                     text(
                         "SELECT current_user,current_database(),"
-                        "to_regclass('f1.rehearsal_run') IS NOT NULL"
+                        + ",".join(
+                            f"to_regclass('{table}') IS NOT NULL"
+                            for table in _CORE_DATABASE_TABLES
+                        )
                     )
                 )
             ).one()
-        return tuple(row) == ("f1_api", pg_database(), True)
+        return tuple(row) == (
+            "f1_api",
+            pg_database(),
+            *(True for _table in _CORE_DATABASE_TABLES),
+        )
     except Exception:  # noqa: BLE001 - dependency details stay out of responses
         return False
 

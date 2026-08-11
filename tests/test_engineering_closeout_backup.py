@@ -18,6 +18,12 @@ from infra.f1 import local_backup
 PROJECT_ID = "anhuan-engineering-1234"
 DATABASE = "anhuan_engineering_1234"
 BACKUP_ID = "20260811T120000Z-123456abcdef"
+BUSINESS_SNAPSHOT = {
+    "table_count": 31,
+    "total_row_count": 2,
+    "nonempty_table_count": 2,
+    "count_sha256": "a" * 64,
+}
 
 
 def load_localctl():
@@ -78,7 +84,9 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
     def test_create_and_verify_aggregate_only_canonical_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = backup_stage(Path(raw))
-            manifest = local_backup.create_manifest(root, PROJECT_ID, DATABASE)
+            manifest = local_backup.create_manifest(
+                root, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+            )
 
             self.assertEqual(set(manifest), local_backup._MANIFEST_FIELDS)
             self.assertEqual(manifest["schema"], local_backup.SCHEMA)
@@ -121,8 +129,12 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
                 second / "minio-data" / "tenant-a" / "renamed-object"
             )
             empty = private_directory(first / "minio-data" / "empty-prefix")
-            first_manifest = local_backup.create_manifest(first, PROJECT_ID, DATABASE)
-            second_manifest = local_backup.create_manifest(second, PROJECT_ID, DATABASE)
+            first_manifest = local_backup.create_manifest(
+                first, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+            )
+            second_manifest = local_backup.create_manifest(
+                second, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+            )
             self.assertNotEqual(
                 first_manifest["minio_tree_sha256"],
                 second_manifest["minio_tree_sha256"],
@@ -136,7 +148,9 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
     def test_verify_rejects_content_sha_and_manifest_tampering(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = backup_stage(Path(raw))
-            manifest = local_backup.create_manifest(root, PROJECT_ID, DATABASE)
+            manifest = local_backup.create_manifest(
+                root, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+            )
             private_file(root / "database.dump", b"tampered-dump")
             with self.assertRaisesRegex(
                 local_backup.BackupContractError, "DATABASE_DUMP_MISMATCH"
@@ -161,7 +175,9 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
     def test_verify_rejects_noncanonical_and_duplicate_manifest_fields(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = backup_stage(Path(raw))
-            manifest = local_backup.create_manifest(root, PROJECT_ID, DATABASE)
+            manifest = local_backup.create_manifest(
+                root, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+            )
             path = root / "manifest.json"
             path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
             path.chmod(0o600)
@@ -191,14 +207,18 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 local_backup.BackupContractError, "BACKUP_ENTRY_MISSING"
             ):
-                local_backup.create_manifest(missing, PROJECT_ID, DATABASE)
+                local_backup.create_manifest(
+                    missing, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+                )
 
             extra = backup_stage(parent / "extra")
             private_file(extra / "extra", b"not-allowed")
             with self.assertRaisesRegex(
                 local_backup.BackupContractError, "BACKUP_ENTRY_EXTRA"
             ):
-                local_backup.create_manifest(extra, PROJECT_ID, DATABASE)
+                local_backup.create_manifest(
+                    extra, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+                )
 
     def test_rejects_symlinks_hardlinks_and_nonregular_entries(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -210,7 +230,9 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 local_backup.BackupContractError, "SYMLINK_REJECTED"
             ):
-                local_backup.create_manifest(symlink_root, PROJECT_ID, DATABASE)
+                local_backup.create_manifest(
+                    symlink_root, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+                )
 
             hardlink_root = backup_stage(parent / "hardlink")
             hardlink = hardlink_root / "minio-data" / "hardlink"
@@ -218,7 +240,9 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 local_backup.BackupContractError, "HARDLINK_REJECTED"
             ):
-                local_backup.create_manifest(hardlink_root, PROJECT_ID, DATABASE)
+                local_backup.create_manifest(
+                    hardlink_root, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+                )
 
             fifo_root = backup_stage(parent / "fifo")
             fifo = fifo_root / "minio-data" / "named-pipe"
@@ -226,7 +250,9 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 local_backup.BackupContractError, "MINIO_ENTRY_TYPE_INVALID"
             ):
-                local_backup.create_manifest(fifo_root, PROJECT_ID, DATABASE)
+                local_backup.create_manifest(
+                    fifo_root, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+                )
 
     def test_rejects_owner_and_mode_violations(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -236,14 +262,18 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
             with self.assertRaisesRegex(
                 local_backup.BackupContractError, "BACKUP_ROOT_MODE_INVALID"
             ):
-                local_backup.create_manifest(root_mode, PROJECT_ID, DATABASE)
+                local_backup.create_manifest(
+                    root_mode, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+                )
 
             file_mode = backup_stage(parent / "file-mode")
             (file_mode / "database.dump").chmod(0o640)
             with self.assertRaisesRegex(
                 local_backup.BackupContractError, "DATABASE_DUMP_MODE_INVALID"
             ):
-                local_backup.create_manifest(file_mode, PROJECT_ID, DATABASE)
+                local_backup.create_manifest(
+                    file_mode, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+                )
 
             owner = backup_stage(parent / "owner")
             with mock.patch.object(
@@ -252,12 +282,16 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     local_backup.BackupContractError, "BACKUP_ROOT_OWNER_INVALID"
                 ):
-                    local_backup.create_manifest(owner, PROJECT_ID, DATABASE)
+                    local_backup.create_manifest(
+                        owner, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+                    )
 
     def test_verify_rejects_path_traversal_and_identity_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = backup_stage(Path(raw))
-            local_backup.create_manifest(root, PROJECT_ID, DATABASE)
+            local_backup.create_manifest(
+                root, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+            )
             traversal = root / "minio-data" / ".." / ".." / "backup"
             with self.assertRaisesRegex(
                 local_backup.BackupContractError, "BACKUP_PATH_TRAVERSAL"
@@ -272,11 +306,28 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
             ):
                 local_backup.verify_backup(root, PROJECT_ID, "another_database")
 
+    def test_restored_minio_tree_must_match_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            backup = backup_stage(parent / "backup")
+            local_backup.create_manifest(
+                backup, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+            )
+            restored = private_directory(parent / "restored")
+            private_file(restored / "different-object", b"different")
+            with self.assertRaisesRegex(
+                local_backup.BackupContractError,
+                "RESTORED_MINIO_TREE_MISMATCH",
+            ):
+                local_backup.verify_restored_minio(backup, restored)
+
     def test_manifest_mode_and_hardlink_are_verified(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             parent = Path(raw)
             mode_root = backup_stage(parent / "mode")
-            local_backup.create_manifest(mode_root, PROJECT_ID, DATABASE)
+            local_backup.create_manifest(
+                mode_root, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+            )
             (mode_root / "manifest.json").chmod(0o644)
             with self.assertRaisesRegex(
                 local_backup.BackupContractError, "MANIFEST_MODE_INVALID"
@@ -284,7 +335,9 @@ class EngineeringCloseoutBackupTests(unittest.TestCase):
                 local_backup.verify_backup(mode_root, PROJECT_ID, DATABASE)
 
             link_root = backup_stage(parent / "link")
-            local_backup.create_manifest(link_root, PROJECT_ID, DATABASE)
+            local_backup.create_manifest(
+                link_root, PROJECT_ID, DATABASE, BUSINESS_SNAPSHOT
+            )
             outside = parent / "manifest-copy"
             os.link(link_root / "manifest.json", outside)
             with self.assertRaisesRegex(
@@ -299,6 +352,40 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
         "compose_project": "anhuan-closeout-123456abcdef",
         "database": "anhuan_closeout_123456abcdef123456abcdef",
     }
+
+    def test_business_snapshot_requires_all_31_exact_tables(self) -> None:
+        counts = {
+            name: (1 if index == 0 else 0)
+            for index, name in enumerate(localctl.P2_P7_TABLES)
+        }
+        output = "\n".join(
+            f"{name}|{counts[name]}" for name in sorted(counts)
+        )
+        with mock.patch.object(
+            localctl,
+            "_compose",
+            return_value=mock.Mock(returncode=0, stdout=output + "\n", stderr=""),
+        ):
+            snapshot = localctl._business_snapshot(self.STATE)
+        self.assertEqual(snapshot["table_count"], 31)
+        self.assertEqual(snapshot["total_row_count"], 1)
+        self.assertEqual(snapshot["nonempty_table_count"], 1)
+        self.assertRegex(str(snapshot["count_sha256"]), r"\A[0-9a-f]{64}\Z")
+
+        incomplete = "\n".join(output.splitlines()[:-1]) + "\n"
+        with (
+            mock.patch.object(
+                localctl,
+                "_compose",
+                return_value=mock.Mock(
+                    returncode=0, stdout=incomplete, stderr=""
+                ),
+            ),
+            self.assertRaisesRegex(
+                localctl.LocalError, "LOCAL_BUSINESS_SNAPSHOT_INVALID"
+            ),
+        ):
+            localctl._business_snapshot(self.STATE)
 
     def test_backup_collects_db_and_minio_before_manifest_finalization(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -319,11 +406,21 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
                 return mock.Mock(returncode=0, stdout="", stderr="")
 
             output = io.StringIO()
+
+            def business_snapshot(_state):
+                calls.append(("business-snapshot",))
+                return BUSINESS_SNAPSHOT
+
             with (
                 mock.patch.object(localctl, "BACKUPS_DIR", backups),
                 mock.patch.object(localctl, "_new_backup_id", return_value=BACKUP_ID),
                 mock.patch.object(
                     localctl, "_core_containers_ready", return_value=True
+                ),
+                mock.patch.object(
+                    localctl,
+                    "_business_snapshot",
+                    side_effect=business_snapshot,
                 ),
                 mock.patch.object(localctl, "_assert_resource_labels"),
                 mock.patch.object(localctl, "_compose", side_effect=compose),
@@ -346,6 +443,7 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
             db_index = next(
                 index for index, call in enumerate(calls) if call[-1:] == ("backup-db",)
             )
+            snapshot_index = calls.index(("business-snapshot",))
             minio_index = next(
                 index
                 for index, call in enumerate(calls)
@@ -355,6 +453,8 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
                 index for index, call in enumerate(calls) if call[:2] == ("up", "-d")
             )
             self.assertLess(stop_index, db_index)
+            self.assertLess(stop_index, snapshot_index)
+            self.assertLess(snapshot_index, db_index)
             self.assertLess(db_index, minio_index)
             self.assertLess(minio_index, resume_index)
 
@@ -383,14 +483,39 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
                 ):
                     localctl._resolve_backup("../../shared")
 
+    def test_log_gate_scans_all_private_backups_including_legacy_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            backups = private_directory(Path(raw) / "backups")
+            legacy = private_directory(
+                backups / "20260810T120000Z-000000000001"
+            )
+            current = private_directory(backups / BACKUP_ID)
+            private_file(legacy / "manifest.json", b'{"schema":"legacy"}\n')
+            private_file(legacy / "database.dump", b"legacy-dump")
+            legacy_minio = private_directory(legacy / "minio-data")
+            private_file(legacy_minio / "legacy-object", b"legacy")
+            private_file(current / "manifest.json", b'{"schema":"current"}\n')
+            private_file(current / "database.dump", b"current-dump")
+            current_minio = private_directory(current / "minio-data")
+            private_file(current_minio / "current-object", b"current")
+
+            with mock.patch.object(localctl, "BACKUPS_DIR", backups):
+                observed = localctl._backup_files_for_log_check(self.STATE)
+
+            self.assertEqual(len(observed), 6)
+            self.assertTrue(any(path.name == "legacy-object" for path in observed))
+            self.assertTrue(any(path.name == "current-object" for path in observed))
+
     def test_restore_verifies_before_exact_data_volume_replacement(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             backups = private_directory(Path(raw) / "backups")
+            restore_tmp = private_directory(Path(raw) / "restore-tmp")
             backup = backup_stage(backups, BACKUP_ID)
             local_backup.create_manifest(
                 backup,
                 str(self.STATE["project_id"]),
                 str(self.STATE["database"]),
+                BUSINESS_SNAPSHOT,
             )
             events: list[str] = []
             original_verify = local_backup.verify_backup
@@ -401,10 +526,18 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
 
             def compose(_state, *arguments, **_kwargs):
                 events.append("compose:" + ":".join(arguments))
+                if arguments[-1] == "backup-minio":
+                    mount = arguments[arguments.index("--volume") + 1]
+                    stage = Path(mount.removesuffix(":/backup"))
+                    minio = private_directory(stage / "minio-data")
+                    tenant = private_directory(minio / "tenant-a")
+                    private_file(tenant / "opaque-object-one", b"first-object")
+                    private_file(minio / "opaque-object-two", b"second-object")
                 return mock.Mock(returncode=0, stdout="", stderr="")
 
             removed: list[list[str]] = []
             output = io.StringIO()
+            original_restored_verify = local_backup.verify_restored_minio
 
             def run(arguments, **_kwargs):
                 removed.append(arguments)
@@ -413,9 +546,20 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
 
             with (
                 mock.patch.object(localctl, "BACKUPS_DIR", backups),
+                mock.patch.object(localctl, "TMP_DIR", restore_tmp),
+                mock.patch.object(
+                    localctl,
+                    "_business_snapshot",
+                    return_value=BUSINESS_SNAPSHOT,
+                ),
                 mock.patch.object(
                     localctl.local_backup, "verify_backup", side_effect=verify
                 ),
+                mock.patch.object(
+                    localctl.local_backup,
+                    "verify_restored_minio",
+                    wraps=original_restored_verify,
+                ) as restored_verify,
                 mock.patch.object(localctl, "_assert_resource_labels"),
                 mock.patch.object(
                     localctl,
@@ -470,6 +614,7 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
             start.assert_called_once_with(
                 self.STATE, capture=True, announce=False
             )
+            restored_verify.assert_called_once()
             self.assertEqual(
                 output.getvalue(), f"LOCAL_RESTORE_OK {BACKUP_ID}\n"
             )
@@ -482,6 +627,7 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
                 backup,
                 str(self.STATE["project_id"]),
                 str(self.STATE["database"]),
+                BUSINESS_SNAPSHOT,
             )
 
             def compose(_state, *arguments, **_kwargs):
@@ -522,6 +668,79 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
                     )
             cleanup.assert_called_once_with(self.STATE)
             start.assert_not_called()
+
+    def test_restore_business_identity_mismatch_cleans_partial_state(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            backups = private_directory(parent / "backups")
+            backup = backup_stage(backups, BACKUP_ID)
+            manifest = local_backup.create_manifest(
+                backup,
+                str(self.STATE["project_id"]),
+                str(self.STATE["database"]),
+                BUSINESS_SNAPSHOT,
+            )
+            observed = dict(BUSINESS_SNAPSHOT)
+            observed["total_row_count"] = 3
+            expected_minio = {
+                "minio_tree_sha256": manifest["minio_tree_sha256"],
+                "minio_file_count": manifest["minio_file_count"],
+                "minio_total_size": manifest["minio_total_size"],
+            }
+            restore_check = private_directory(parent / "restore-check")
+
+            with (
+                mock.patch.object(localctl, "BACKUPS_DIR", backups),
+                mock.patch.object(localctl, "_assert_resource_labels"),
+                mock.patch.object(
+                    localctl,
+                    "_project_data_volumes",
+                    side_effect=[
+                        {
+                            "postgres_data": "old-postgres",
+                            "minio_data": "old-minio",
+                        },
+                        {},
+                        {
+                            "postgres_data": "new-postgres",
+                            "minio_data": "new-minio",
+                        },
+                    ],
+                ),
+                mock.patch.object(localctl, "_docker", return_value="/trusted/docker"),
+                mock.patch.object(
+                    localctl,
+                    "_run",
+                    return_value=mock.Mock(returncode=0, stdout="", stderr=""),
+                ),
+                mock.patch.object(localctl, "_compose"),
+                mock.patch.object(localctl, "_sync_secrets"),
+                mock.patch.object(
+                    localctl,
+                    "_new_restore_check_directory",
+                    return_value=restore_check,
+                ),
+                mock.patch.object(localctl, "_remove_restore_check_directory"),
+                mock.patch.object(
+                    localctl.local_backup,
+                    "verify_restored_minio",
+                    return_value=expected_minio,
+                ),
+                mock.patch.object(localctl, "_start"),
+                mock.patch.object(
+                    localctl, "_business_snapshot", return_value=observed
+                ),
+                mock.patch.object(localctl, "_cleanup_failed_restore") as cleanup,
+                self.assertRaisesRegex(
+                    localctl.LocalError,
+                    "LOCAL_RESTORE_BUSINESS_IDENTITY_MISMATCH",
+                ),
+            ):
+                localctl._restore(
+                    self.STATE, backup_id=BACKUP_ID, confirmed=True
+                )
+
+            cleanup.assert_called_once_with(self.STATE)
 
     def test_failed_restore_cleanup_is_project_scoped(self) -> None:
         resource_calls = {"ps": 0}
@@ -602,6 +821,7 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
                 backup,
                 str(self.STATE["project_id"]),
                 str(self.STATE["database"]),
+                BUSINESS_SNAPSHOT,
             )
             private_file(backup / "database.dump", b"tampered")
             with (

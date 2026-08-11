@@ -254,6 +254,7 @@ def _verify_and_set_password(
     token: str,
     *,
     opener: Open,
+    ensure_profile: bool = False,
 ) -> None:
     if not _USER_ID.fullmatch(identity.user_id):
         raise ProvisionError("IDP_IDENTITY_CONFIG_INVALID")
@@ -285,7 +286,7 @@ def _verify_and_set_password(
         )
     ):
         raise ProvisionError("IDP_USER_MISMATCH")
-    if (
+    if ensure_profile and (
         user.get("firstName") != identity.first_name
         or user.get("lastName") != identity.last_name
     ):
@@ -421,6 +422,7 @@ def provision(*, opener: Open = urllib.request.urlopen) -> None:
         opener=opener,
     )
 
+    ensure_profiles = identities != IDENTITIES
     for identity in identities:
         _verify_and_set_password(
             base_url,
@@ -429,6 +431,7 @@ def provision(*, opener: Open = urllib.request.urlopen) -> None:
             passwords[identity.user_id],
             token,
             opener=opener,
+            ensure_profile=ensure_profiles,
         )
 
 

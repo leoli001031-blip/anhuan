@@ -29,6 +29,44 @@ class EngineeringCloseoutFrontendApiTests(unittest.TestCase):
                 invalid.append(path.relative_to(ROOT).as_posix())
         self.assertEqual(invalid, [])
 
+    def test_tenant_change_aborts_old_requests_and_remounts_outlet(self) -> None:
+        api_source = (WEB_SOURCE / "api.ts").read_text(encoding="utf-8")
+        layout_source = (WEB_SOURCE / "pages" / "Layout.tsx").read_text(encoding="utf-8")
+
+        for token in (
+            "let tenantRequestController = new AbortController()",
+            "let tenantRequestGeneration = 0",
+            "previousController.abort()",
+            "tenantRequestController = new AbortController()",
+            "tenantRequestGeneration += 1",
+            "mergeAbortSignals(options.signal, tenantRequestController.signal)",
+            "signal: mergedSignal.signal",
+            "generation !== tenantRequestGeneration",
+            "assertTenantRequestCurrent(mergedSignal.signal, requestGeneration)",
+            "mergedSignal.dispose()",
+            "window.dispatchEvent(new Event(ENTERPRISE_CHANGED_EVENT))",
+        ):
+            self.assertIn(token, api_source)
+
+        setter = api_source.split("export function setSelectedEnterprise", 1)[1].split(
+            "export async function api", 1
+        )[0]
+        self.assertLess(setter.index("previousController.abort()"), setter.index("window.dispatchEvent"))
+        self.assertLess(setter.index("tenantRequestGeneration += 1"), setter.index("window.dispatchEvent"))
+
+        self.assertIn("window.addEventListener(ENTERPRISE_CHANGED_EVENT", layout_source)
+        self.assertIn("<Outlet key={tenantEpoch} />", layout_source)
+        self.assertNotIn("window.dispatchEvent", layout_source)
+
+        event_emitters: list[str] = []
+        for path in sorted(WEB_SOURCE.rglob("*")):
+            if path.suffix not in {".ts", ".tsx"} or not path.is_file():
+                continue
+            source = path.read_text(encoding="utf-8")
+            if "dispatchEvent(new Event(ENTERPRISE_CHANGED_EVENT))" in source:
+                event_emitters.append(path.relative_to(ROOT).as_posix())
+        self.assertEqual(event_emitters, ["src/web/src/api.ts"])
+
 
 if __name__ == "__main__":
     unittest.main()

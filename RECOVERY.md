@@ -89,7 +89,7 @@ LOCAL_BACKUP_OK <backup-id>
 ./scripts/localctl browser-verify
 ```
 
-它必须认证 3 类身份，访问管理员 17、顾问 2、企业 2 个角色页面，并输出 `LOCAL_BROWSER_VERIFY_OK` 与 `PWA_WAITING_UPDATE_PASSED`。该命令不验证 OS 级应用安装；后者仍为 `DEFERRED_MANUAL_ENVIRONMENT_GATE / NOT_TESTED`。
+它必须认证 3 类身份，访问管理员 17、顾问 2、企业 2 个角色页面，并输出 `LOCAL_BROWSER_VERIFY_OK` 与 `PWA_WAITING_UPDATE_PASSED`。该命令不验证 OS 级应用安装；后者仍为 `BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY / PWA_OS_INSTALL_NOT_TESTED`。
 
 ## 4. 失败后的处置
 
@@ -109,6 +109,10 @@ LOCAL_BACKUP_OK <backup-id>
 
 如果出现 `LOCAL_RESTORE_CLEANUP_FAILED`，说明当前项目无法证明已回到安全空边界。禁止扩大删除范围或绕过双标签核验；在资源身份问题解决前保持停机。
 
+若依赖或外来 sentinel 演练被中断，`.local/reverse-recovery.json` 会以 0600 保留精确项目、服务/nonce 和资源身份。不要删除或编辑它；下一个 `localctl` 命令会在取得排他锁后先验证身份并恢复 MinIO/ClamD，或分别清理精确 sentinel container 与 volume。恢复失败时保留 journal 和固定 reason，不运行通配符、`prune` 或手工改标签。
+
+若 `browser-verify` 被中断，`.local/browser-recovery.json` 会以 0600 保存当前 project、24 位 probe、A/B 镜像合同和 Node 进程组身份；profile、上传 canary 与控制目录均只能由该 probe 派生。下一条 `localctl` 命令先按当前用户、进程组、runner 路径和控制目录复核，终止本轮残余进程，恢复 A 版 Web，再精确清理 B 镜像和本轮私有文件。身份不一致时零信号、零扩大删除并保留 journal；不要手工编辑或按名称通配清理。
+
 ## 5. reset 后恢复
 
 `./scripts/localctl reset --confirm-local-data` 会删除当前双标签项目的全部容器、卷和网络，但保留 `.local` 的 state、secret 与 backups。因此在 reset 明确成功后，可以用上述 `restore` 命令恢复 PostgreSQL/MinIO，再执行统一五门 `verify` 与 `health`。
@@ -122,12 +126,12 @@ LOCAL_BACKUP_OK <backup-id>
 每次恢复只记录：Git commit、所选 backup-id、restore 退出码/固定 reason code、五门 `verify` 聚合计数与 `LOCAL_LOG_VERIFY_OK`、`health --json` 聚合布尔值，以及需要时的 `LOCAL_BROWSER_VERIFY_OK` / `PWA_OS_INSTALL_NOT_TESTED`。不要记录 dump 内容、MinIO 路径、manifest 原文、数据库行、日志原文、secret 或用户资料。
 
 
-## 7. 2026-08-11 最终恢复演练证据
+## 7. 2026-08-11 已保留的技术恢复摘要
 
 - 定向检查：`230/230 OK`。
 - 备份 ID：`20260810T224332Z-2a861bccbba9`。
 - 完整执行 `reset → restore`，恢复成功。
 - 恢复后 health ready，统一 verify 五门全绿。
 - 恢复后 browser-verify 通过：3 类身份，管理员 17 页、顾问 2 页、企业 2 页，管理员 API 92 次且非 2xx 为 0，`PWA_WAITING_UPDATE_PASSED`。
-- OS 级 PWA 安装仍为 `DEFERRED_MANUAL_ENVIRONMENT_GATE / NOT_TESTED`；PDF Inspector 仍为 `ARCHITECTURE_CONSIDERED / RUNTIME_DISABLED / NOT_PRODUCTION`。
-- 最终状态：`INTERNAL_ENGINEERING_READY / NOT_PRODUCTION`。
+- OS 级 PWA 安装仍为 `BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY / PWA_OS_INSTALL_NOT_TESTED`；PDF Inspector 仍为 `ARCHITECTURE_CONSIDERED / RUNTIME_DISABLED / NOT_PRODUCTION`。
+- 上述为已保留的技术摘要，不替代 Taskbook 精确顺序的新证据表。当前状态：`TECHNICAL_ENGINEERING_READY / GOVERNANCE_CLOSEOUT_PENDING / NOT_PRODUCTION`。

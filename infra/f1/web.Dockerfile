@@ -6,11 +6,11 @@ ARG F111_NPM_LOCK_SHA256
 
 # Stage 1: build the Vite React app with a pinned Node base.
 FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
-ARG ANHUAN_PWA_UPDATE_PROBE=""
 WORKDIR /app
 COPY src/web/package.json src/web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY src/web/ ./
+ARG ANHUAN_PWA_UPDATE_PROBE=""
 RUN if [ -n "${ANHUAN_PWA_UPDATE_PROBE}" ]; then \
       test "${#ANHUAN_PWA_UPDATE_PROBE}" -eq 24; \
       case "${ANHUAN_PWA_UPDATE_PROBE}" in *[!0-9a-f]*) exit 64 ;; esac; \

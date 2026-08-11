@@ -316,6 +316,22 @@ services:
     profiles: [ops]
     restart: "no"
 
+  targeted-tests:
+    build:
+      context: ../..
+      dockerfile: infra/f1/local-targeted.Dockerfile
+      args:
+        LOCAL_RUNTIME_IMAGE: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}-targeted
+    command: ["python", "-B", "/app/infra/f1/local_targeted_tests.py"]
+    environment: *runtime_environment
+    volumes:
+      - ../../tests:/app/tests:ro
+    networks: [localnet]
+    labels: *labels
+    profiles: [ops]
+    restart: "no"
+
   backup-db:
     image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
     user: ${LOCAL_UID:?LOCAL_UID_REQUIRED}:${LOCAL_GID:?LOCAL_GID_REQUIRED}

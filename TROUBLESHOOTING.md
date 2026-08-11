@@ -3,7 +3,7 @@
 > **INTERNAL / NOT_PRODUCTION**
 > 只处理当前 `localctl` 初始化的本地工程实例。不得为了排障复制 secret、修改业务数据，或操作没有通过双标签核验的 Docker 资源。
 
-当前基线已通过工程完成门，状态为 `INTERNAL_ENGINEERING_READY / NOT_PRODUCTION`。若本手册中任一固定错误在现役 checkout 重现，应重新打开相应工程门，不得沿用旧成功记录覆盖当前失败。
+当前基线保留已通过的技术摘要，但精确顺序的治理证据尚未重放，状态为 `TECHNICAL_ENGINEERING_READY / GOVERNANCE_CLOSEOUT_PENDING / NOT_PRODUCTION`。若本手册中任一固定错误在现役 checkout 重现，应重新打开相应技术门，不得沿用旧成功记录覆盖当前失败。
 
 ## 1. 排障原则
 
@@ -31,6 +31,8 @@
 | `LOCAL_SECRET_SET_INCOMPLETE` | secret 集合部分缺失，不能自动补齐 | 不从其他实例复制缺项，不重新生成单个 secret。保留现场并通过受审查的工程变更重建整套实例。 |
 | `LOCAL_COMPOSE_ENV_DRIFT` / `LOCAL_DOCKER_CONFIG_DRIFT` | 受管控制文件被修改 | 不手工对照 secret 或覆盖文件；恢复生成这些文件的代码/checkout 一致性后重试。 |
 | `LOCAL_RESOURCE_IDENTITY_INVALID` / `LOCAL_RESOURCE_IDENTITY_MISMATCH` / `LOCAL_DATA_VOLUME_IDENTITY_INVALID` | 资源选择结果缺失双标签、标签冲突或数据卷身份不唯一 | 立即停止。不要改标签、按名称删除或把资源并入当前项目；先查明是谁创建了冲突资源。 |
+| `LOCAL_REVERSE_RECOVERY_PENDING` / `LOCAL_REVERSE_RECOVERY_INVALID` / `LOCAL_REVERSE_RECOVERY_IDENTITY_MISMATCH` | 上次受控依赖停机或 foreign sentinel 演练尚未完成，或恢复 journal 与当前项目身份不符 | 保留 0600 journal，不手工删除或改写。修复 Docker 可用性或 checkout/state 漂移后重跑任一 `localctl` 命令；它会先按精确 ID/nonce 恢复。身份不符时停止并保留现场。 |
+| `LOCAL_REVERSE_DEPENDENCY_RECOVERY_FAILED` / `LOCAL_REVERSE_SENTINEL_CLEANUP_FAILED` | 精确依赖容器或外来 sentinel 未能恢复/清理 | 不运行 daemon 级 prune、名称通配符或裸 `docker rm`。保留固定 reason 与 journal，修复 Docker 后重试同一 `localctl` 命令。 |
 
 ## 4. 健康、迁移、种子与校验
 
@@ -79,8 +81,10 @@
 | reason code / 状态 | 含义与安全处置 |
 |---|---|
 | `LOCAL_BROWSER_*` | 浏览器启动、输出合同、超时或固定失败原因异常；先确认 `health` 全绿，再重跑。不要打印 token、浏览器 stderr 或会话存储。 |
+| `LOCAL_BROWSER_RECOVERY_*` / `LOCAL_BROWSER_PROCESS_*` / `LOCAL_BROWSER_PROFILE_*` | 上一次浏览器验收被中断，或恢复日志、进程组、profile 身份不可信。不要删 journal、不要 `pkill`、不要按目录前缀清理；保持 `.local/browser-recovery.json`，修复明确的权限或 Docker 状态后重跑任一 `localctl` 命令触发精确恢复。 |
+| `MINIO_FAULT_*` / `CLAMD_FAULT_*` | 真实故障握手、503/重试或扫描可用性 UI 不符合合同 | `browser-verify` 会在 finally 先按 recovery journal 恢复精确服务。先运行 `health --json`；若仍红，重跑任一 `localctl` 触发恢复，再重新执行完整 browser-verify。不要 mock 响应或手工改页面状态。 |
 | `LOCAL_PWA_*` | A→B 临时镜像、控制目录、更新信号或 A 版恢复身份异常；停止并用 `start`/`health` 收敛。不手工删 cache、镜像或控制目录扩大范围。 |
-| `PWA_OS_INSTALL_NOT_TESTED` | 这是明确状态，不是失败 reason code。当前命令没有执行 OS 级应用安装，状态保持 `DEFERRED_MANUAL_ENVIRONMENT_GATE / NOT_TESTED`，不得改写为通过。 |
+| `PWA_OS_INSTALL_NOT_TESTED` | 这是明确状态，不是失败 reason code。当前命令没有执行 OS 级应用安装，状态保持 `BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY / PWA_OS_INSTALL_NOT_TESTED`，不得改写为通过。 |
 
 ## 7. 备份、恢复和清理错误
 

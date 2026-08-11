@@ -1,0 +1,8 @@
+#!/bin/sh
+set -eu
+
+exec /opt/anhuan-node/ld-musl.so.1 \
+  --library-path /opt/anhuan-node/lib:/opt/anhuan-node/usr/lib \
+  /opt/anhuan-node/bin/node \
+  /app/src/web/node_modules/typescript/bin/tsc \
+  "$@"

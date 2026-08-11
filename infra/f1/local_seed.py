@@ -81,6 +81,8 @@ BINDINGS = (
     ),
 )
 
+ADMIN_SUB = "d561ffe2-3be8-40cc-a87e-598dd7d84758"
+
 
 def _stable_id(kind: str, *parts: object) -> uuid.UUID:
     value = ":".join((kind, *(str(part) for part in parts)))
@@ -142,6 +144,109 @@ def _ensure_binding(connection: psycopg.Connection, binding: Binding) -> None:
         raise RuntimeError("LOCAL_SEED_MEMBERSHIP_MISMATCH")
 
 
+def _ensure_durability_canary(connection: psycopg.Connection) -> None:
+    actor_id = _stable_id("profile", ADMIN_SUB)
+    case_id = _stable_id("engineering-closeout", "durability-case")
+    audit_id = _stable_id("engineering-closeout", "durability-audit")
+    timeline_id = _stable_id("engineering-closeout", "durability-timeline")
+    connection.execute(
+        "INSERT INTO f1.service_case ("
+        "id,enterprise_id,plant_id,title,description,service_type,status,"
+        "planned_start_at,planned_end_at,created_by_user_id"
+        ") VALUES (%s,%s,NULL,%s,NULL,%s,'planned',NULL,NULL,%s) "
+        "ON CONFLICT (id) DO NOTHING",
+        (
+            case_id,
+            ENTERPRISE_A,
+            "Local durability canary",
+            "engineering_check",
+            actor_id,
+        ),
+    )
+    case = connection.execute(
+        "SELECT enterprise_id,plant_id,title,description,service_type,status,"
+        "planned_start_at,planned_end_at,created_by_user_id "
+        "FROM f1.service_case WHERE id=%s",
+        (case_id,),
+    ).fetchone()
+    expected_case = (
+        ENTERPRISE_A,
+        None,
+        "Local durability canary",
+        None,
+        "engineering_check",
+        "planned",
+        None,
+        None,
+        actor_id,
+    )
+    if case is None or tuple(case) != expected_case:
+        raise RuntimeError("LOCAL_SEED_DURABILITY_CASE_MISMATCH")
+
+    connection.execute(
+        "INSERT INTO f1.audit_log ("
+        "id,enterprise_id,user_sub,action,resource_type,resource_id,result"
+        ") VALUES (%s,%s,%s,%s,%s,%s,'success') "
+        "ON CONFLICT (id) DO NOTHING",
+        (
+            audit_id,
+            ENTERPRISE_A,
+            ADMIN_SUB,
+            "service_case.create",
+            "service_case",
+            str(case_id),
+        ),
+    )
+    audit = connection.execute(
+        "SELECT enterprise_id,user_sub,action,resource_type,resource_id,result "
+        "FROM f1.audit_log WHERE id=%s",
+        (audit_id,),
+    ).fetchone()
+    expected_audit = (
+        ENTERPRISE_A,
+        ADMIN_SUB,
+        "service_case.create",
+        "service_case",
+        str(case_id),
+        "success",
+    )
+    if audit is None or tuple(audit) != expected_audit:
+        raise RuntimeError("LOCAL_SEED_DURABILITY_AUDIT_MISMATCH")
+
+    connection.execute(
+        "INSERT INTO f1.business_timeline ("
+        "id,enterprise_id,service_case_id,event_type,subject_type,subject_id,"
+        "status,actor_user_id"
+        ") VALUES (%s,%s,%s,%s,%s,%s,'planned',%s) "
+        "ON CONFLICT (id) DO NOTHING",
+        (
+            timeline_id,
+            ENTERPRISE_A,
+            case_id,
+            "service_case.created",
+            "service_case",
+            case_id,
+            actor_id,
+        ),
+    )
+    timeline = connection.execute(
+        "SELECT enterprise_id,service_case_id,event_type,subject_type,subject_id,"
+        "status,actor_user_id FROM f1.business_timeline WHERE id=%s",
+        (timeline_id,),
+    ).fetchone()
+    expected_timeline = (
+        ENTERPRISE_A,
+        case_id,
+        "service_case.created",
+        "service_case",
+        case_id,
+        "planned",
+        actor_id,
+    )
+    if timeline is None or tuple(timeline) != expected_timeline:
+        raise RuntimeError("LOCAL_SEED_DURABILITY_TIMELINE_MISMATCH")
+
+
 def main() -> int:
     with psycopg.connect(_bootstrap_dsn(), autocommit=False) as connection:
         head = connection.execute(
@@ -158,6 +263,7 @@ def main() -> int:
         )
         for binding in BINDINGS:
             _ensure_binding(connection, binding)
+        _ensure_durability_canary(connection)
         connection.commit()
     print("LOCAL_SEED_OK")
     return 0

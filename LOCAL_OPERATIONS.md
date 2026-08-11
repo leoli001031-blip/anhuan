@@ -7,7 +7,7 @@
 
 所有生命周期操作都从仓库根目录通过 `./scripts/localctl` 执行。不要绕过它直接运行 `docker compose`、按名称或前缀操作容器/卷/网络，也不要执行任何 daemon 级 `prune`。
 
-当前维护基线是 `/private/tmp/anhuan-codex-engineering-closeout` 的 `codex/engineering-closeout`。旧 repair worktree 只读保留，不得从那里执行本手册命令。
+当前维护基线是仓库根目录的 `codex/engineering-closeout` checkout。旧 repair worktree 只读保留，不得从那里执行本手册命令。
 
 `localctl` 在 `.local/state.json` 中保存本次本地工程实例的身份。它只枚举 `com.docker.compose.project` 等于该实例项目名的资源，并逐个核验以下双标签：
 
@@ -43,6 +43,16 @@
 
 ### 校验工程合同
 
+先运行固定范围的直接检查：
+
+```bash
+./scripts/localctl test
+```
+
+它在与服务相同的固定 Python 镜像中运行仓内冻结的 21 个 P2–P7/工程收口模块，并真实构建固定 Node/Web/P8 镜像；不依赖宿主 `.venv` 或 `node_modules`。成功只输出聚合计数与 `LOCAL_TARGETED_TESTS_OK`；必须 `tests>=137`、`web_builds=1` 且 `errors=failures=skipped=0`。P8 的运行态再由下方真实浏览器门覆盖。
+
+再运行真实依赖与随机数据库合同：
+
 ```bash
 ./scripts/localctl verify
 ```
@@ -57,15 +67,35 @@
 
 成功必须依次包含 `LOCAL_VERIFY_OK`、`LOCAL_MIGRATION_ATOMICITY_OK`、`LOCAL_BUSINESS_VERIFY_OK`、`LOCAL_INGESTION_VERIFY_OK` 和 `LOCAL_LOG_VERIFY_OK`。所有输出只有聚合计数和固定标签。失败时按 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) 处理，不要改数据库“对齐数字”，也不要打印日志或手工清理未通过身份核验的资源。
 
+### 反向依赖与清理边界
+
+```bash
+./scripts/localctl dependency-verify
+```
+
+该命令不会修改现役 secret。它在私有临时目录生成结构相同的 synthetic secret-set，证明任一 0644 文件会被拒绝；随后按当前项目、服务、scope、project-id 和精确容器 ID 依次停止 MinIO 与 ClamD，要求 Docker 健康门和 `/api/readyz` 同时变红，再恢复到全绿。每次停止前先写 0600 恢复 journal；即使进程异常退出，下一个 `localctl` 命令也会先按原身份恢复，身份漂移则拒绝操作。
+
+完整 checkpoint 的第一次 reset 可额外证明外来资源不被误删：
+
+```bash
+./scripts/localctl reset --confirm-local-data --prove-foreign-sentinel
+```
+
+它使用现有固定镜像创建一个随机、无网络、未启动且不带当前项目标签的 container+volume sentinel，再执行当前项目 reset。sentinel 必须存活，随后按 nonce、image、双 label 与 mount 精确清理；失败或中断仍保留 recovery journal 供下一命令收口。该命令和普通 reset 一样会删除当前项目数据卷，只能用于已确认的工程演练。
+
 ### 验证真实浏览器与 PWA 更新
 
 ```bash
-./scripts/localctl browser-verify
+./scripts/localctl browser-verify --stage business
+./scripts/localctl browser-verify --stage faults
+./scripts/localctl browser-verify --stage pwa-update
 ```
 
-`browser-verify` 使用真实 Keycloak 身份访问本地页面和 API：认证 3 类身份，访问管理员 17、顾问 2、企业 2 个角色页面，核对租户切换清空旧状态、Service Worker、应用 cache、敏感数据不缓存和离线静态壳。随后它构建临时 B 版 Web 镜像，在同一 origin 上通过页面的“检查更新”与“应用更新”操作完成 waiting update，再恢复 A 版并删除精确 B 镜像和私有控制目录。
+三个分段命令分别验证真实 Keycloak 角色与权限、MinIO/ClamD 故障链、PWA waiting update。这样调试单段时不再从身份、故障链一路重跑到 PWA。默认不带 `--stage` 的 `browser-verify` 仍用于最终总链收口，但不会执行 macOS OS 安装。
 
-成功输出 `LOCAL_BROWSER_VERIFY_OK` 和 `PWA_WAITING_UPDATE_PASSED`。该命令不验证操作系统级应用安装；`PWA_OS_INSTALL_NOT_TESTED` 对应 `DEFERRED_MANUAL_ENVIRONMENT_GATE / NOT_TESTED`，不是安装成功。它不是日常启动命令，只在前端、OIDC、PWA 或工程 checkpoint 收口时运行。
+命令开始后会先写 0600 的 `.local/browser-recovery.json`。正常失败保留首个业务/浏览器 reason 并完成全部收尾；进程被中断时，下一条 `localctl` 命令会先按 project/probe 和进程组身份恢复 A、清理 B 与本轮私有 profile/canary/control，再进入所请求的操作。不要删除该 journal 或手工清理前缀相似的进程、镜像和目录。
+
+PWA 更新分段成功输出 `LOCAL_PWA_UPDATE_VERIFY_OK` 和 `PWA_WAITING_UPDATE_PASSED`。`browser-verify --stage pwa-os` 当前会固定拒绝，不启动浏览器；OS 安装、在线启动、停站离线重开和卸载保持 `BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY / PWA_OS_INSTALL_NOT_TESTED`。它不是日常启动命令，只在前端、OIDC、PWA 或工程 checkpoint 收口时运行。
 
 ### 迁移与种子数据维护
 
@@ -120,13 +150,27 @@
 工程 checkpoint 的完整收口序列是：
 
 ```bash
+./scripts/localctl test
+./scripts/localctl reset --confirm-local-data
+./scripts/localctl start
+./scripts/localctl migrate
+./scripts/localctl migrate
+./scripts/localctl seed
 ./scripts/localctl health --json
 ./scripts/localctl verify
-./scripts/localctl browser-verify
+./scripts/localctl dependency-verify
 ./scripts/localctl stop
 ./scripts/localctl start
 ./scripts/localctl health --json
 ./scripts/localctl verify
+./scripts/localctl backup
+./scripts/localctl reset --confirm-local-data --prove-foreign-sentinel
+./scripts/localctl restore --backup-id <backup-id> --confirm-local-data
+./scripts/localctl health --json
+./scripts/localctl verify
+./scripts/localctl browser-verify
+./scripts/localctl health --json
+./scripts/localctl stop
 ```
 
-任一步失败都会重新打开工程完成门。最新一次完整收口已通过：定向检查 `230/230 OK`；备份 `20260810T224332Z-2a861bccbba9` 完成 `reset → restore`；恢复后 health ready、verify 五门全绿、browser-verify 通过。当前状态为 `INTERNAL_ENGINEERING_READY / NOT_PRODUCTION`。
+任一步失败都会重新打开工程完成门。旧记录保留的技术摘要为：定向检查 `230/230 OK`，备份 `20260810T224332Z-2a861bccbba9` 完成 `reset → restore`，恢复后 health ready、verify 五门全绿、browser-verify 通过。由于精确顺序的治理证据表尚未重放填写，当前状态为 `TECHNICAL_ENGINEERING_READY / GOVERNANCE_CLOSEOUT_PENDING / NOT_PRODUCTION`。
