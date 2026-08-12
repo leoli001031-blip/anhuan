@@ -13,7 +13,12 @@ from typing import BinaryIO
 from pypdf import PdfReader
 
 from ..p3.contracts import MAX_PDF_PAGES
-from .contracts import FieldCandidate, MaterialAnalysisResult, PageClassification
+from .contracts import (
+    FieldCandidate,
+    MaterialAnalysisResult,
+    MaterialKind,
+    PageClassification,
+)
 
 
 _WHITESPACE_RE = re.compile(r"[\t\r\f\v ]+")
@@ -48,6 +53,36 @@ _DOMAIN_KEYWORDS: dict[str, tuple[str, ...]] = {
     "chemical": ("危险化学品", "化学品", "危化", "易燃", "爆炸物"),
 }
 _REPORT_KEYWORDS = ("报告", "检查", "监测", "评估", "评价", "记录")
+_REPORT_ROUTING_KEYWORDS = (
+    "检测报告",
+    "监测报告",
+    "评估报告",
+    "评价报告",
+    "检查报告",
+    "审计报告",
+    "验收报告",
+    "调查报告",
+    "月度报告",
+    "年度报告",
+    "月报",
+    "年报",
+    "LDAR",
+)
+_POLICY_ROUTING_KEYWORDS = (
+    "法律",
+    "法规",
+    "条例",
+    "规定",
+    "办法",
+    "标准",
+    "指南",
+    "通知",
+    "规范",
+    "规程",
+    "导则",
+    "实施细则",
+    "指导意见",
+)
 
 
 class MaterialAnalysisFailure(RuntimeError):
@@ -453,6 +488,53 @@ def _field_candidates(pages: list[tuple[int, str]]) -> tuple[FieldCandidate, ...
     return tuple(output)
 
 
+def _suggest_material_kind(
+    pages: list[tuple[int, str]],
+    classifications: list[PageClassification],
+) -> tuple[MaterialKind, int]:
+    """Return a deterministic routing hint, never an authoritative type.
+
+    Report evidence intentionally wins over policy words because business
+    reports often quote regulations and standards.  A PDF with no usable text
+    remains unknown and is routed to human review instead of being guessed.
+    """
+    if not pages or not any(
+        page.text_character_count >= 40 for page in classifications
+    ):
+        return "unknown", 0
+
+    title_item = _title_candidate(pages)
+    title = title_item[1] if title_item is not None else ""
+    routing_text = "\n".join(
+        "\n".join(text.splitlines()[:12]) for _, text in pages[:2]
+    )
+    title_folded = title.casefold()
+    text_folded = routing_text.casefold()
+
+    report_hits = sum(
+        text_folded.count(keyword.casefold())
+        for keyword in _REPORT_ROUTING_KEYWORDS
+    )
+    if report_hits:
+        title_bonus = 100_000 if any(
+            keyword.casefold() in title_folded
+            for keyword in _REPORT_ROUTING_KEYWORDS
+        ) else 0
+        return "report", min(900_000, 650_000 + title_bonus + report_hits * 20_000)
+
+    policy_hits = sum(
+        text_folded.count(keyword.casefold())
+        for keyword in _POLICY_ROUTING_KEYWORDS
+    )
+    if policy_hits:
+        title_bonus = 100_000 if any(
+            keyword.casefold() in title_folded
+            for keyword in _POLICY_ROUTING_KEYWORDS
+        ) else 0
+        return "policy", min(880_000, 600_000 + title_bonus + policy_hits * 20_000)
+    return "unknown", 0
+
+
 def analyze_pdf(
     file_obj: BinaryIO,
     *,
@@ -503,14 +585,19 @@ def analyze_pdf(
         profile = next(iter(kinds), "unknown")
 
     candidates = ()
+    nonempty_pages = [(number, text) for number, text in page_texts if text]
     if any(page.text_character_count >= 40 for page in page_outputs):
-        nonempty_pages = [(number, text) for number, text in page_texts if text]
         if nonempty_pages:
             candidates = _field_candidates(nonempty_pages)
+    suggested_kind, suggested_kind_confidence_ppm = _suggest_material_kind(
+        nonempty_pages, page_outputs
+    )
     return MaterialAnalysisResult(
         document_profile=profile,
         pages=tuple(page_outputs),
         candidates=candidates,
+        suggested_kind=suggested_kind,
+        suggested_kind_confidence_ppm=suggested_kind_confidence_ppm,
     )
 
 

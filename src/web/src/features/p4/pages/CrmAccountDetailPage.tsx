@@ -14,6 +14,7 @@ import {
 } from "antd";
 import type { TableColumnsType } from "antd";
 import { useNavigate, useParams } from "react-router-dom";
+import ScopedMaterialUploadButton from "../../p3/components/ScopedMaterialUploadButton";
 import CrmAccountModal from "../components/CrmAccountModal";
 import CrmContactDrawer from "../components/CrmContactDrawer";
 import CrmFollowUpModal from "../components/CrmFollowUpModal";
@@ -143,6 +144,11 @@ export default function CrmAccountDetailPage() {
         ) : null,
     },
   ];
+  const canOpenClientMaterialUpload =
+    Boolean(data.id) &&
+    data.allowed_actions.some((action) =>
+      ["view", "edit", "add_contact", "add_follow_up"].includes(action),
+    );
 
   return (
     <div style={{ textAlign: "left" }}>
@@ -155,6 +161,18 @@ export default function CrmAccountDetailPage() {
           </Space>
         </div>
         <Space wrap>
+          {canOpenClientMaterialUpload && (
+            <ScopedMaterialUploadButton
+              knowledgeScope={{
+                kind: "client",
+                client_account_id: data.id,
+                client_display_name: data.display_name,
+              }}
+              defaultMaterialKind="unknown"
+              label="上传客户材料"
+              scopeHint={`此入口固定归入客户“${data.display_name}”；机器只能建议材料类型，不能更改客户归属。`}
+            />
+          )}
           <Button onClick={() => void reload()} disabled={loading}>刷新</Button>
           {data.allowed_actions.includes("edit") && <Button onClick={() => setEditOpen(true)}>编辑档案</Button>}
           {data.allowed_actions.includes("add_contact") && (

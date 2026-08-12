@@ -30,6 +30,7 @@ P2_P7_TABLES = (
     "quality_disagreement", "rehearsal_plan", "rehearsal_check",
     "rehearsal_run", "rehearsal_check_result", "material_analysis",
     "material_page_classification", "material_field_candidate",
+    "material_knowledge_scope",
 )
 
 
@@ -85,7 +86,7 @@ def _verify_catalog(connection: object) -> None:
             "(SELECT min(version_num) FROM f1.alembic_version)"
         )
     ).one()
-    if tuple(heads) != (1, "f0d_0006", 1, "f1_0011"):
+    if tuple(heads) != (1, "f0d_0006", 1, "f1_0014"):
         raise RuntimeError("LOCAL_MIGRATION_HEAD_MISMATCH")
 
     observed = connection.execute(

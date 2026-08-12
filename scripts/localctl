@@ -427,6 +427,25 @@ VERIFIER_FAILURE_REASONS = {
             "LOCAL_INGESTION_INTERNAL_ERROR",
         }
     ),
+    "material-verifier": frozenset(
+        {
+            "LOCAL_MATERIAL_SOURCE_NOT_READY",
+            "LOCAL_MATERIAL_SCRATCH_CREATE_FAILED",
+            "LOCAL_MATERIAL_PROCESS_FAILED",
+            "LOCAL_MATERIAL_ANALYSIS_FAILED",
+            "LOCAL_MATERIAL_RLS_FAILED",
+            "LOCAL_MATERIAL_RLS_ADMIN_CLIENT_FAILED",
+            "LOCAL_MATERIAL_RLS_OWNER_CLIENT_FAILED",
+            "LOCAL_MATERIAL_RLS_NON_OWNER_FAILED",
+            "LOCAL_MATERIAL_RLS_NON_OWNER_CLIENT_FAILED",
+            "LOCAL_MATERIAL_RLS_NON_OWNER_PROVIDER_FAILED",
+            "LOCAL_MATERIAL_RLS_CROSS_TENANT_FAILED",
+            "LOCAL_MATERIAL_RLS_ADMIN_PROVIDER_FAILED",
+            "LOCAL_MATERIAL_POLICY_GUARD_FAILED",
+            "LOCAL_MATERIAL_CLEANUP_FAILED",
+            "LOCAL_MATERIAL_INTERNAL_ERROR",
+        }
+    ),
 }
 
 TEXT_SECRET_NAMES = (
@@ -458,7 +477,7 @@ EXPECTED_VERIFICATION_METRICS = {
     "migration_head_count": 2,
     "migration_head_mismatch_count": 0,
     "rls_mismatch_count": 0,
-    "rls_table_count": 34,
+    "rls_table_count": 35,
     "runtime_role_count": 2,
     "runtime_role_membership_count": 0,
     "runtime_role_mismatch_count": 0,
@@ -466,6 +485,35 @@ EXPECTED_VERIFICATION_METRICS = {
     "seed_binding_mismatch_count": 0,
     "seed_enterprise_count": 2,
     "seed_enterprise_mismatch_count": 0,
+}
+EXPECTED_MATERIAL_VERIFICATION_METRICS = {
+    "audit_action_count": 8,
+    "authoritative_publication_count": 0,
+    "bucket_residual_count": 0,
+    "clean_scan_count": 2,
+    "client_owner_document_visible_count": 1,
+    "client_owner_low_level_visible_count": 2,
+    "client_policy_api_rejection_count": 1,
+    "client_policy_database_rejection_count": 1,
+    "client_scope_count": 1,
+    "cross_tenant_api_visible_count": 0,
+    "cross_tenant_rls_visible_count": 0,
+    "knowledge_scope_count": 2,
+    "material_analysis_count": 2,
+    "material_candidate_count": 8,
+    "material_page_count": 2,
+    "object_residual_count": 0,
+    "policy_draft_count": 1,
+    "policy_source_count": 1,
+    "preview_unit_count": 2,
+    "released_object_count": 2,
+    "same_tenant_non_owner_rls_visible_count": 0,
+    "scratch_database_residual_count": 0,
+    "scratch_migration_head_count": 2,
+    "service_provider_scope_count": 1,
+    "shadow_runtime_enabled_count": 0,
+    "uncalibrated_candidate_count": 8,
+    "uploaded_version_count": 2,
 }
 
 
@@ -2938,6 +2986,52 @@ def _targeted_test(state: dict[str, object]) -> None:
     print("LOCAL_TARGETED_TESTS_OK")
 
 
+def _material_verify(state: dict[str, object]) -> None:
+    """Run only the isolated material verifier and its required services."""
+    _sync_secrets(state, capture=True)
+    _compose(
+        state,
+        "build",
+        "verifier",
+        capture=True,
+        timeout=1200,
+    )
+    _compose(
+        state,
+        "up",
+        "-d",
+        "--wait",
+        "--wait-timeout",
+        "360",
+        "postgres",
+        "minio",
+        "clamd",
+        capture=True,
+        timeout=420,
+    )
+    result = _compose_contract(state, "material-verifier", timeout=600)
+    lines = result.stdout.splitlines()
+    canonical_summary = json.dumps(
+        EXPECTED_MATERIAL_VERIFICATION_METRICS,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    try:
+        metrics = json.loads(lines[0])
+    except (IndexError, json.JSONDecodeError):
+        raise LocalError("LOCAL_MATERIAL_OUTPUT_INVALID") from None
+    if (
+        len(lines) != 2
+        or lines[0] != canonical_summary
+        or lines[1] != "LOCAL_MATERIAL_VERIFY_OK"
+        or metrics != EXPECTED_MATERIAL_VERIFICATION_METRICS
+        or any(type(value) is not int for value in metrics.values())
+    ):
+        raise LocalError("LOCAL_MATERIAL_OUTPUT_INVALID")
+    print(canonical_summary)
+    print("LOCAL_MATERIAL_VERIFY_OK")
+
+
 def _verify(state: dict[str, object]) -> None:
     expected_atomicity = {
         "normal_migration_head_count": 2,
@@ -4371,11 +4465,7 @@ def _restore(
             raise LocalError("LOCAL_RESTORE_DATA_VOLUME_INCOMPLETE")
         _start(state, capture=True, announce=False)
         manifest_table_count = int(manifest["business_table_count"])
-        snapshot_tables = (
-            P2_P7_TABLES[:31]
-            if manifest_table_count == 31
-            else P2_P7_TABLES
-        )
+        snapshot_tables = P2_P7_TABLES[:manifest_table_count]
         if _business_snapshot(state, snapshot_tables) != _manifest_business_snapshot(manifest):
             raise LocalError("LOCAL_RESTORE_BUSINESS_IDENTITY_MISMATCH")
     except local_backup.BackupContractError:
@@ -4424,6 +4514,7 @@ def _parser() -> argparse.ArgumentParser:
     restore = subparsers.add_parser("restore")
     restore.add_argument("--backup-id")
     restore.add_argument("--confirm-local-data", action="store_true")
+    subparsers.add_parser("material-verify")
     subparsers.add_parser("verify")
     browser_verify = subparsers.add_parser("browser-verify")
     browser_verify.add_argument(
@@ -4444,6 +4535,7 @@ def main() -> int:
             "reset",
             "backup",
             "restore",
+            "material-verify",
             "verify",
             "browser-verify",
         }:
@@ -4491,6 +4583,8 @@ def main() -> int:
                     backup_id=arguments.backup_id,
                     confirmed=bool(arguments.confirm_local_data),
                 )
+            elif arguments.command == "material-verify":
+                _material_verify(state)
             elif arguments.command == "verify":
                 _verify(state)
             elif arguments.command == "browser-verify":

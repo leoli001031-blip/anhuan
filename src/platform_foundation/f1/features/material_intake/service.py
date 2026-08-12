@@ -27,6 +27,9 @@ _ANALYSIS_COLUMNS = (
     "analysis.id,analysis.document_version_id,analysis.source_sha256,"
     "analysis.analysis_version,analysis.parser_backend,analysis.status,"
     "analysis.document_profile,analysis.shadow_status,analysis.reason_code,"
+    "analysis.suggested_kind,analysis.suggested_kind_confidence_ppm,"
+    "analysis.resolved_kind,analysis.classification_source,"
+    "analysis.classification_by_user_id,analysis.classification_at,"
     "analysis.page_count,analysis.candidate_count,analysis.policy_source_id,"
     "analysis.policy_version_id,analysis.confirmed_at,analysis.created_at,"
     "analysis.updated_at"
@@ -72,7 +75,13 @@ async def persist_material_analysis(
                     text(
                         "SELECT task.content_sha256,source.content_type,"
                         "task.object_state,task.scan_verdict,task.preview_status "
+                        ",record.declared_material_kind,"
+                        "record.created_by_user_id AS document_creator_id,"
+                        "record.created_at AS document_created_at "
                         "FROM f1.document_version AS version "
+                        "JOIN f1.document_record AS record ON "
+                        "record.enterprise_id=version.enterprise_id "
+                        "AND record.id=version.document_record_id "
                         "JOIN f1.upload_task AS task ON "
                         "task.enterprise_id=version.enterprise_id "
                         "AND task.id=version.upload_task_id "
@@ -120,15 +129,36 @@ async def persist_material_analysis(
             status = "ready" if result is not None else "failed"
             profile = result.document_profile if result is not None else "unknown"
             candidate_count = len(result.candidates) if result is not None else 0
+            suggested_kind = result.suggested_kind if result is not None else "unknown"
+            suggested_kind_confidence_ppm = (
+                result.suggested_kind_confidence_ppm if result is not None else 0
+            )
+            declared_kind = str(source["declared_material_kind"])
+            if declared_kind in {"policy", "report"}:
+                resolved_kind = declared_kind
+                classification_source = "upload_selection"
+                classification_by_user_id = source["document_creator_id"]
+                classification_at = source["document_created_at"]
+            else:
+                resolved_kind = "unknown"
+                classification_source = "machine_pending"
+                classification_by_user_id = None
+                classification_at = None
             await session.execute(
                 text(
                     "INSERT INTO f1.material_analysis ("
                     "id,enterprise_id,document_version_id,source_sha256,"
                     "analysis_version,parser_backend,status,document_profile,"
-                    "shadow_status,reason_code,page_count,candidate_count) VALUES ("
+                    "shadow_status,reason_code,suggested_kind,"
+                    "suggested_kind_confidence_ppm,resolved_kind,"
+                    "classification_source,classification_by_user_id,"
+                    "classification_at,page_count,candidate_count) VALUES ("
                     ":id,:enterprise_id,:document_version_id,:source_sha256,"
                     ":analysis_version,'pypdf_heuristic',:status,:profile,"
-                    "'disabled',:reason_code,:page_count,:candidate_count)"
+                    "'disabled',:reason_code,:suggested_kind,"
+                    ":suggested_kind_confidence_ppm,:resolved_kind,"
+                    ":classification_source,:classification_by_user_id,"
+                    ":classification_at,:page_count,:candidate_count)"
                 ),
                 {
                     "id": analysis_id,
@@ -139,6 +169,12 @@ async def persist_material_analysis(
                     "status": status,
                     "profile": profile,
                     "reason_code": reason_code,
+                    "suggested_kind": suggested_kind,
+                    "suggested_kind_confidence_ppm": suggested_kind_confidence_ppm,
+                    "resolved_kind": resolved_kind,
+                    "classification_source": classification_source,
+                    "classification_by_user_id": classification_by_user_id,
+                    "classification_at": classification_at,
                     "page_count": page_count,
                     "candidate_count": candidate_count,
                 },
@@ -240,10 +276,22 @@ async def _analysis_row(
                 f"SELECT {_ANALYSIS_COLUMNS},"
                 "task.quarantine_status,task.object_state,task.scan_verdict,"
                 "task.preview_status,task.content_sha256 AS current_source_sha256 "
+                ",scope.id AS knowledge_scope_id,"
+                "scope.scope_kind AS knowledge_scope_kind,"
+                "scope.client_account_id,account.display_name AS client_display_name "
                 "FROM f1.material_analysis AS analysis "
                 "JOIN f1.document_version AS version ON "
                 "version.enterprise_id=analysis.enterprise_id "
                 "AND version.id=analysis.document_version_id "
+                "JOIN f1.document_record AS record ON "
+                "record.enterprise_id=version.enterprise_id "
+                "AND record.id=version.document_record_id "
+                "JOIN f1.material_knowledge_scope AS scope ON "
+                "scope.enterprise_id=record.enterprise_id "
+                "AND scope.id=record.knowledge_scope_id "
+                "LEFT JOIN f1.crm_account AS account ON "
+                "account.enterprise_id=scope.enterprise_id "
+                "AND account.id=scope.client_account_id "
                 "JOIN f1.upload_task AS task ON "
                 "task.enterprise_id=version.enterprise_id "
                 "AND task.id=version.upload_task_id "
@@ -302,6 +350,12 @@ async def material_analysis_payload(
             "status",
             "reason_code",
             "shadow_status",
+            "suggested_kind",
+            "suggested_kind_confidence_ppm",
+            "resolved_kind",
+            "classification_source",
+            "classification_by_user_id",
+            "classification_at",
             "page_count",
             "candidate_count",
             "policy_source_id",
@@ -313,12 +367,23 @@ async def material_analysis_payload(
     }
     payload["pages"] = [dict(item) for item in pages]
     payload["candidates"] = [dict(item) for item in candidates]
+    payload["knowledge_scope"] = {
+        "id": row["knowledge_scope_id"],
+        "kind": str(row["knowledge_scope_kind"]),
+        "client_account_id": row.get("client_account_id"),
+        "client_display_name": row.get("client_display_name"),
+    }
     payload["allowed_actions"] = material_allowed_actions(
         role=tenant.role,
         status=str(row["status"]),
         document_released=released,
         source_id=row.get("policy_source_id"),
         version_id=row.get("policy_version_id"),
+        resolved_kind=str(row["resolved_kind"]),
+        classification_source=str(row["classification_source"]),
+        classification_by_user_id=row.get("classification_by_user_id"),
+        classification_at=row.get("classification_at"),
+        knowledge_scope_kind=str(row["knowledge_scope_kind"]),
     )
     payload["boundaries"] = list(MATERIAL_INTAKE_BOUNDARIES)
     return payload
@@ -338,9 +403,88 @@ async def get_material_analysis(
     return MaterialAnalysisOut.model_validate(payload)
 
 
+async def set_material_kind(
+    tenant: Tenant,
+    analysis_id: uuid.UUID,
+    *,
+    kind: str,
+) -> MaterialAnalysisOut:
+    """Persist an explicit manager choice without creating a business record."""
+    _require_viewer(tenant)
+    if kind not in {"policy", "report", "unknown"}:
+        raise HTTPException(status_code=422, detail="MATERIAL_KIND_INVALID")
+    async with session_scope(
+        role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
+    ) as session:
+        row = await _analysis_row(session, analysis_id=analysis_id, lock=True)
+        if (
+            str(row["status"]) != "ready"
+            or row.get("policy_source_id") is not None
+            or row.get("policy_version_id") is not None
+        ):
+            raise HTTPException(
+                status_code=409, detail="MATERIAL_CLASSIFICATION_NOT_EDITABLE"
+            )
+        actor_id = (
+            await session.execute(
+                text(
+                    "SELECT membership.user_id FROM f1.enterprise_user AS membership "
+                    "JOIN f1.user_profile AS profile "
+                    "ON profile.id=membership.user_id "
+                    "WHERE membership.enterprise_id=:enterprise_id "
+                    "AND profile.keycloak_sub=:sub"
+                ),
+                {"enterprise_id": tenant.enterprise_id, "sub": tenant.sub},
+            )
+        ).scalar_one_or_none()
+        if actor_id is None:
+            raise HTTPException(status_code=404, detail="MATERIAL_ACTOR_NOT_FOUND")
+        updated = (
+            await session.execute(
+                text(
+                    "UPDATE f1.material_analysis SET resolved_kind=:kind,"
+                    "classification_source='human_review',"
+                    "classification_by_user_id=:actor_id,"
+                    "classification_at=statement_timestamp(),"
+                    "updated_at=statement_timestamp() "
+                    "WHERE id=:analysis_id AND status='ready' "
+                    "AND policy_source_id IS NULL AND policy_version_id IS NULL "
+                    "RETURNING id"
+                ),
+                {
+                    "kind": kind,
+                    "actor_id": actor_id,
+                    "analysis_id": row["id"],
+                },
+            )
+        ).first()
+        if updated is None:
+            raise HTTPException(
+                status_code=409, detail="MATERIAL_CLASSIFICATION_NOT_EDITABLE"
+            )
+        await session.execute(
+            text(
+                "INSERT INTO f1.audit_log "
+                "(id,enterprise_id,user_sub,action,resource_type,resource_id,result) "
+                "VALUES (:id,:enterprise_id,:sub,'material.classification.updated',"
+                "'material_analysis',:resource_id,'updated')"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "enterprise_id": tenant.enterprise_id,
+                "sub": tenant.sub,
+                "resource_id": str(row["id"]),
+            },
+        )
+        await session.commit()
+
+    return await get_material_analysis(tenant, row["document_version_id"])
+
+
 __all__ = (
     "_analysis_row",
     "get_material_analysis",
     "material_analysis_payload",
     "persist_material_analysis",
+    "set_material_kind",
 )

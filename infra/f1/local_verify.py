@@ -56,6 +56,7 @@ P2_P7_TABLES = (
     "material_analysis",
     "material_page_classification",
     "material_field_candidate",
+    "material_knowledge_scope",
 )
 
 ENTERPRISE_A = "20000000-0000-4000-8000-00000000000a"
@@ -150,7 +151,7 @@ class VerificationCounts:
     database_identity_mismatch_count: int = 0
     migration_head_count: int = 2
     migration_head_mismatch_count: int = 0
-    rls_table_count: int = 34
+    rls_table_count: int = 35
     rls_mismatch_count: int = 0
     runtime_role_count: int = 2
     runtime_role_mismatch_count: int = 0
@@ -267,7 +268,7 @@ def verify_snapshot(snapshot: Snapshot, *, expected_database: str) -> Verificati
         expected_database,
     ):
         raise VerificationError("LOCAL_VERIFY_DATABASE_IDENTITY_MISMATCH")
-    if snapshot.f0_heads != ("f0d_0006",) or snapshot.f1_heads != ("f1_0011",):
+    if snapshot.f0_heads != ("f0d_0006",) or snapshot.f1_heads != ("f1_0014",):
         raise VerificationError("LOCAL_VERIFY_HEAD_MISMATCH")
 
     expected_rls = tuple((name, True, True) for name in sorted(P2_P7_TABLES))

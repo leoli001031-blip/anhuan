@@ -12,7 +12,7 @@
 ## 修改边界
 
 - 修改前检查 `git status --short --branch` 和 `git worktree list`，保留其他 worktree 的用户改动。
-- Alembic 只允许一条线性 head；当前源码 head 为 `f1_0011`。迁移、models、API main、App/Layout、lockfile由单一执行者写。
+- Alembic 只允许一条线性 head；当前源码 head 为 `f1_0014`。迁移、models、API main、App/Layout、lockfile由单一执行者写。
 - 复用现有租户上下文和 RLS；跨租户详情返回 404、集合零行；关键状态变化与 timeline/audit 同事务。
 - 不修改历史 F0/F1 证据、REJECTED 批次或冻结原件，不清理共享数据库、对象、卷、容器或 secret 目录。
 - 未经明确授权不 commit、push、deploy、删除文件或写生产。

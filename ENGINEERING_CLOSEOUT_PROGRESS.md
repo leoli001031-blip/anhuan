@@ -1,6 +1,6 @@
 # Engineering Closeout Progress
 
-> **后续产品切片（2026-08-12）：** `MATERIAL_INTAKE` 已在独立 `codex/material-intake` 分支把源码 head 线性推进到 `f1_0011`，状态仅 `TARGETED_TEST_PASSED / NOT_PRODUCTION`。下文 `f1_0010`、31 表与实跑计数均是 `codex/engineering-closeout` 当时的历史证据，不代表新切片已经完成实库重放。
+> **后续产品切片（2026-08-12）：** `MATERIAL_INTAKE` 已在独立 `codex/material-intake` 分支继续演进；人工类型分流及公司／客户知识归属已完成专属实库迁移和双知识域合成 PDF smoke，状态为 `SMOKE_PASSED / NOT_PRODUCTION`，精确现役 head 与边界以 `PROJECT_STATUS.md` 为准。下文 `f1_0010`、31 表与实跑计数均是 `codex/engineering-closeout` 当时的历史证据。
 
 ## 2026-08-11 任务0开工回执
 

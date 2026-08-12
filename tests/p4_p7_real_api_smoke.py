@@ -1,7 +1,7 @@
 """One-shot real PostgreSQL/API/RLS smoke for the P4-P7 prototypes.
 
 The runner reuses the P2 UUID-scoped PostgreSQL fixture, which migrates through
-``f1_0011`` and seeds synthetic tenant memberships.  Authentication is replaced
+``f1_0014`` and seeds synthetic tenant memberships.  Authentication is replaced
 only at FastAPI's ``current_user`` dependency; tenant selection, authorization,
 SQLAlchemy transactions, PostgreSQL constraints, audit writes, and FORCE RLS
 remain real.

@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
@@ -31,6 +31,7 @@ from ...features.p3.contracts import (
     PreviewManifestOut,
     VersionOut,
     WorksheetGridOut,
+    KnowledgeScopeUpdateIn,
     capabilities,
     idempotency_key_sha256,
     preflight_stream,
@@ -49,11 +50,18 @@ from ...features.p3.service import (
     require_manager,
     reserve_initial_version,
     reserve_next_version,
+    set_document_knowledge_scope,
 )
 from ...features.p3.processor import process_controlled_ingestion
 from ...features.p3.scanner import ScanFailure, scanner_version
-from ...features.material_intake.contracts import MaterialAnalysisOut
-from ...features.material_intake.service import get_material_analysis
+from ...features.material_intake.contracts import (
+    MaterialAnalysisOut,
+    SetMaterialKindIn,
+)
+from ...features.material_intake.service import (
+    get_material_analysis,
+    set_material_kind,
+)
 
 
 router = APIRouter()
@@ -106,6 +114,10 @@ async def ingestion_capabilities(
 async def document_library(
     status: Annotated[str | None, Query()] = None,
     content_type: Annotated[str | None, Query()] = None,
+    scope_kind: Annotated[
+        Literal["service_provider", "client"] | None, Query()
+    ] = None,
+    client_account_id: Annotated[uuid.UUID | None, Query()] = None,
     cursor: Annotated[str | None, Query()] = None,
     limit: Annotated[int, Query()] = 20,
     tenant: Tenant = Depends(tenant_from_header),
@@ -115,6 +127,8 @@ async def document_library(
             tenant,
             status=status,
             content_type=content_type,
+            scope_kind=scope_kind,
+            client_account_id=client_account_id,
             cursor=cursor,
             limit=limit,
         )
@@ -143,6 +157,13 @@ async def create_document(
     file: Annotated[UploadFile, File()],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
     plant_id: Annotated[uuid.UUID | None, Form()] = None,
+    declared_material_kind: Annotated[
+        Literal["policy", "report", "unknown"], Form()
+    ] = "unknown",
+    knowledge_scope_kind: Annotated[
+        Literal["service_provider", "client"], Form()
+    ] = "service_provider",
+    client_account_id: Annotated[uuid.UUID | None, Form()] = None,
     tenant: Tenant = Depends(tenant_from_header),
 ) -> DocumentDetailOut:
     try:
@@ -157,6 +178,9 @@ async def create_document(
             tenant,
             display_name=display_name,
             plant_id=plant_id,
+            declared_material_kind=declared_material_kind,
+            knowledge_scope_kind=knowledge_scope_kind,
+            client_account_id=client_account_id,
             preflight=preflight,
             idempotency_key_sha256=key_sha256,
         )
@@ -245,6 +269,54 @@ async def material_intake_analysis(
                 "retryable": True,
             },
         ) from None
+
+
+@router.patch(
+    "/material-analyses/{analysis_id}/classification",
+    response_model=MaterialAnalysisOut,
+)
+async def classify_material_intake(
+    analysis_id: uuid.UUID,
+    body: SetMaterialKindIn,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> MaterialAnalysisOut:
+    try:
+        return await set_material_kind(
+            tenant, analysis_id, kind=body.material_kind
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MATERIAL_INTAKE_UNAVAILABLE",
+                "message": "MATERIAL_INTAKE_UNAVAILABLE",
+                "retryable": True,
+            },
+        ) from None
+
+
+@router.patch(
+    "/documents/{document_id}/knowledge-scope",
+    response_model=DocumentDetailOut,
+)
+async def update_document_knowledge_scope(
+    document_id: uuid.UUID,
+    body: KnowledgeScopeUpdateIn,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> DocumentDetailOut:
+    try:
+        return await set_document_knowledge_scope(
+            tenant,
+            document_id,
+            kind=body.kind,
+            client_account_id=body.client_account_id,
+        )
+    except IngestionError as error:
+        raise _http_error(error) from None
+    except Exception:
+        raise _unavailable() from None
 
 
 @router.post("/versions/{version_id}/retry", response_model=VersionOut)

@@ -5,7 +5,10 @@ import type {
   DocumentDetail,
   IngestionCapabilities,
   IngestionErrorEnvelope,
+  KnowledgeScopeKind,
+  KnowledgeScopeTarget,
   MaterialIntakeAnalysis,
+  MaterialKind,
   PageText,
   PreviewManifest,
   VersionSummary,
@@ -30,8 +33,9 @@ export class IngestionApiError extends Error {
 
 interface RequestOptions {
   token: string | null;
-  method?: "GET" | "POST";
+  method?: "GET" | "POST" | "PATCH";
   body?: BodyInit;
+  contentType?: string;
   idempotencyKey?: string;
   signal?: AbortSignal;
 }
@@ -50,6 +54,7 @@ function requestHeaders(options: RequestOptions): Headers {
   if (options.idempotencyKey) {
     headers.set("Idempotency-Key", options.idempotencyKey);
   }
+  if (options.contentType) headers.set("Content-Type", options.contentType);
   return headers;
 }
 
@@ -130,6 +135,8 @@ export function getIngestionCapabilities(
 export interface ListDocumentParams {
   status?: string;
   contentType?: string;
+  scopeKind?: KnowledgeScopeKind;
+  clientAccountId?: string;
   cursor?: string | null;
   limit?: number;
 }
@@ -142,6 +149,8 @@ export function listIngestionDocuments(
   const query = new URLSearchParams();
   if (params.status) query.set("status", params.status);
   if (params.contentType) query.set("content_type", params.contentType);
+  if (params.scopeKind) query.set("scope_kind", params.scopeKind);
+  if (params.clientAccountId) query.set("client_account_id", params.clientAccountId);
   if (params.cursor) query.set("cursor", params.cursor);
   query.set("limit", String(params.limit ?? 20));
   return requestJson<DocumentCollection>(
@@ -156,9 +165,22 @@ export function createIngestionDocument(
   file: File,
   idempotencyKey: string,
   signal?: AbortSignal,
+  declaredMaterialKind: MaterialKind = "unknown",
+  knowledgeScope: KnowledgeScopeTarget = {
+    kind: "service_provider",
+    client_account_id: null,
+  },
 ): Promise<DocumentDetail> {
+  if (knowledgeScope.kind === "client" && !knowledgeScope.client_account_id) {
+    throw new IngestionApiError(0, "CLIENT_ACCOUNT_REQUIRED", false);
+  }
   const body = new FormData();
   body.set("display_name", displayName);
+  body.set("declared_material_kind", declaredMaterialKind);
+  body.set("knowledge_scope_kind", knowledgeScope.kind);
+  if (knowledgeScope.kind === "client" && knowledgeScope.client_account_id) {
+    body.set("client_account_id", knowledgeScope.client_account_id);
+  }
   body.set("file", file, file.name);
   return requestJson<DocumentDetail>(P3_INGESTION_BASE + "/documents", {
     token,
@@ -167,6 +189,27 @@ export function createIngestionDocument(
     idempotencyKey,
     signal,
   });
+}
+
+export function setMaterialIntakeClassification(
+  token: string | null,
+  analysisId: string,
+  materialKind: MaterialKind,
+  signal?: AbortSignal,
+): Promise<MaterialIntakeAnalysis> {
+  return requestJson<MaterialIntakeAnalysis>(
+    P3_INGESTION_BASE +
+      "/material-analyses/" +
+      encodeURIComponent(analysisId) +
+      "/classification",
+    {
+      token,
+      method: "PATCH",
+      body: JSON.stringify({ material_kind: materialKind }),
+      contentType: "application/json",
+      signal,
+    },
+  );
 }
 
 export function getIngestionDocument(

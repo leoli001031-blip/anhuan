@@ -266,6 +266,13 @@ export default function DocumentDetailPage() {
                   ),
                 },
                 { key: "versions", label: "版本数", children: document.version_count },
+                {
+                  key: "scope",
+                  label: "材料归属",
+                  children: document.knowledge_scope.kind === "client"
+                    ? `客户资料 · ${document.knowledge_scope.client_display_name ?? "客户档案"}`
+                    : "当前环保服务公司",
+                },
                 { key: "created", label: "创建时间", children: formatDateTime(document.created_at) },
                 { key: "updated", label: "更新时间", children: formatDateTime(document.updated_at) },
               ]}

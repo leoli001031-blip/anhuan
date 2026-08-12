@@ -241,7 +241,7 @@ class P3MigrationAndTenantContractTests(unittest.TestCase):
         script = ScriptDirectory.from_config(
             Config(str(ROOT / "infra/f1/alembic.ini"))
         )
-        self.assertEqual(script.get_heads(), ["f1_0011"])
+        self.assertEqual(script.get_heads(), ["f1_0014"])
         self.assertEqual(script.get_revision("f1_0006").down_revision, "f1_0005")
 
     def test_p3_does_not_rewrite_frozen_f1_migrations(self) -> None:

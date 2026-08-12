@@ -59,7 +59,7 @@
 
 `verify` 是无正文输出、无持久业务写入的工程校验，现在同时覆盖五个门：
 
-1. 数据库身份、`f0d_0006/f1_0011` 双 head、34 张 P2–P7及材料录入表 ENABLE + FORCE RLS、低权限运行角色和固定合成身份；
+1. 数据库身份、`f0d_0006/f1_0014` 双 head、35 张 P2–P7及材料录入表 ENABLE + FORCE RLS、低权限运行角色和固定合成身份；
 2. 独立随机 scratch 数据库中的迁移失败原子性，验证后精确删除；
 3. P2/P4–P7 真实 API + RLS，包括非法关闭 409 后业务/audit/timeline/notification 零漂移，以及应用 engine/factory 重建后仍能读取 5 类关键业务；
 4. P3 真实 ClamAV 扫描、预览和 release，以及 MinIO 写失败、ClamAV 不可用后的幂等恢复；
@@ -67,7 +67,25 @@
 
 成功必须依次包含 `LOCAL_VERIFY_OK`、`LOCAL_MIGRATION_ATOMICITY_OK`、`LOCAL_BUSINESS_VERIFY_OK`、`LOCAL_INGESTION_VERIFY_OK` 和 `LOCAL_LOG_VERIFY_OK`。所有输出只有聚合计数和固定标签。失败时按 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) 处理，不要改数据库“对齐数字”，也不要打印日志或手工清理未通过身份核验的资源。
 
-现役备份清单记录 34 表；历史 31 表工程备份在恢复时先移除空的材料录入 schema，再恢复旧 dump，随后由 migrator 升到 `f1_0011`。该兼容路径已写入合同，但本材料切片尚未执行真实恢复验证。
+现役备份清单记录 35 表；历史 31/34 表工程备份在恢复时先移除后续版本新增的空 schema，再恢复旧 dump，随后由 migrator 升到当前 `f1_0014`。该兼容路径已写入合同，但本知识归属增量尚未执行真实恢复验证。
+
+### 验证材料录入双知识域
+
+材料录入迁移或知识域权限发生变化后，运行窄正常验证：
+
+```bash
+./scripts/localctl migrate
+./scripts/localctl material-verify
+./scripts/localctl stop
+```
+
+`material-verify` 只使用专属 PostgreSQL、MinIO、ClamAV，并把同一份无客户数据的确定性合成文本 PDF 在服务公司域和一个合成 CRM 客户域各上传一次。它验证扫描、安全预览、分析、释放、知识域 RLS、服务公司政策草稿，以及客户材料在 API 和数据库 trigger 两层均不能进入公司政策库；不启动浏览器，不使用真实 Demo 或客户材料，也不建立物理 RAG 索引。
+
+2026-08-12 的正常验证中，`migrate` 从实库 `f1_0011` 执行到 `f1_0013`。第一次运行因旧文档回填受 `FORCE RLS` 遮蔽而失败，Alembic 事务整体回滚；回填改为只在验证过的 bootstrap session 中执行有界 `RESET ROLE` 后，完整重跑输出 `LOCAL_MIGRATE_OK`。提交前增加底层原件/任务 scope 限制后，再从 `f1_0013` 迁移到 `f1_0014` 并得到同一固定成功结果。
+
+最终 `LOCAL_MATERIAL_VERIFY_OK` 的精确聚合结果为：version=2、clean=2、preview=2、released object=2、analysis=2、page=2、candidate=8、scope=2（服务公司 1、客户 1）、客户负责人文档可见=1、底层原件/任务可见=2、同租户非负责人可见=0、跨租户可见=0、客户材料 API 政策拒绝=1、数据库政策拒绝=1、服务公司 policy draft=1、publication=0。scratch 数据库、临时对象和随机桶残留均为 0；最后 `stop` 输出 `LOCAL_STOPPED`。
+
+本命令通过只表示 `SMOKE_PASSED / NOT_PRODUCTION`。它不覆盖真实 Demo PDF、浏览器、OCR、物理 RAG、候选准确率、备份恢复、发布验收或生产。
 
 ### 反向依赖与清理边界
 

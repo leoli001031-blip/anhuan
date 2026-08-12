@@ -284,10 +284,17 @@ async def _controlled_document(
         await session.execute(
             text(
                 "SELECT task.content_sha256 FROM f1.document_version AS version "
+                "JOIN f1.document_record AS record "
+                "ON record.enterprise_id = version.enterprise_id "
+                "AND record.id = version.document_record_id "
+                "JOIN f1.material_knowledge_scope AS scope "
+                "ON scope.enterprise_id = record.enterprise_id "
+                "AND scope.id = record.knowledge_scope_id "
                 "JOIN f1.upload_task AS task "
                 "ON task.enterprise_id = version.enterprise_id "
                 "AND task.id = version.upload_task_id "
                 "WHERE version.id = :document_version_id "
+                "AND scope.scope_kind = 'service_provider' "
                 "AND task.pipeline_kind = 'controlled_ingestion' "
                 "AND task.object_state = 'ready' "
                 "AND task.quarantine_status = 'released' "

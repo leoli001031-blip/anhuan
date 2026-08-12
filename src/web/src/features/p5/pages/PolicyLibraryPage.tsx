@@ -15,6 +15,7 @@ import {
 } from "antd";
 import type { TableColumnsType } from "antd";
 import { useNavigate } from "react-router-dom";
+import ScopedMaterialUploadButton from "../../p3/components/ScopedMaterialUploadButton";
 import P5BoundaryBanner from "../components/P5BoundaryBanner";
 import PolicySourceModal from "../components/PolicySourceModal";
 import { useP5TenantQuery } from "../hooks/useP5TenantQuery";
@@ -162,6 +163,14 @@ export default function PolicyLibraryPage() {
           <Typography.Text type="secondary">登记结构化来源、内部审核候选与分域检索</Typography.Text>
         </div>
         <Space wrap>
+          {sources.data.allowed_actions.includes("create") && (
+            <ScopedMaterialUploadButton
+              knowledgeScope={{ kind: "service_provider", client_account_id: null }}
+              defaultMaterialKind="policy"
+              label="导入政策材料"
+              scopeHint="此入口固定归入当前环保服务公司，并将每份材料的人工预分类默认为政策；机器建议不会改变公司归属，也不会自动写入政策库。"
+            />
+          )}
           <Button onClick={() => { void sources.reload(); void search.reload(); }} disabled={sources.loading || search.loading}>刷新</Button>
           {sources.data.allowed_actions.includes("create") && (
             <Button type="primary" onClick={() => setCreateOpen(true)}>登记来源</Button>

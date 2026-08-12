@@ -414,12 +414,62 @@ services:
             psql --host=postgres --username=f0d_bootstrap
             --dbname="$${PGDATABASE}" --set=ON_ERROR_STOP=1
             --command="BEGIN;
+              DROP POLICY IF EXISTS p3_low_level_upload_scope
+                ON f1.upload_task;
+              DROP POLICY IF EXISTS p3_low_level_document_scope
+                ON f1.document;
+              DROP TRIGGER IF EXISTS document_knowledge_scope_update_guard
+                ON f1.document;
+              DROP TRIGGER IF EXISTS upload_task_controlled_scope_guard
+                ON f1.upload_task;
+              DROP FUNCTION IF EXISTS
+                f1.p3_guard_source_document_scope_update();
+              DROP FUNCTION IF EXISTS f1.p3_guard_controlled_upload_scope();
+              ALTER TABLE f1.document DROP CONSTRAINT IF EXISTS
+                document_knowledge_scope_enterprise_fk;
+              ALTER TABLE f1.document DROP COLUMN IF EXISTS
+                knowledge_scope_id;
+              DROP TRIGGER IF EXISTS material_analysis_policy_scope_guard
+                ON f1.material_analysis;
+              DROP TRIGGER IF EXISTS policy_version_document_scope_guard
+                ON f1.policy_version;
               DROP TABLE IF EXISTS f1.material_field_candidate;
               DROP TABLE IF EXISTS f1.material_page_classification;
               DROP TABLE IF EXISTS f1.material_analysis;
+              DROP TABLE IF EXISTS f1.material_knowledge_scope CASCADE;
+              DROP FUNCTION IF EXISTS f1.material_guard_policy_scope();
+              DROP FUNCTION IF EXISTS f1.p5_guard_policy_document_scope();
+              DROP FUNCTION IF EXISTS f1.material_guard_analysis_insert();
               DROP FUNCTION IF EXISTS f1.material_guard_analysis_update();
               COMMIT;";;
-          34) ;;
+          34)
+            psql --host=postgres --username=f0d_bootstrap
+            --dbname="$${PGDATABASE}" --set=ON_ERROR_STOP=1
+            --command="BEGIN;
+              DROP POLICY IF EXISTS p3_low_level_upload_scope
+                ON f1.upload_task;
+              DROP POLICY IF EXISTS p3_low_level_document_scope
+                ON f1.document;
+              DROP TRIGGER IF EXISTS document_knowledge_scope_update_guard
+                ON f1.document;
+              DROP TRIGGER IF EXISTS upload_task_controlled_scope_guard
+                ON f1.upload_task;
+              DROP FUNCTION IF EXISTS
+                f1.p3_guard_source_document_scope_update();
+              DROP FUNCTION IF EXISTS f1.p3_guard_controlled_upload_scope();
+              ALTER TABLE f1.document DROP CONSTRAINT IF EXISTS
+                document_knowledge_scope_enterprise_fk;
+              ALTER TABLE f1.document DROP COLUMN IF EXISTS
+                knowledge_scope_id;
+              DROP TRIGGER IF EXISTS material_analysis_policy_scope_guard
+                ON f1.material_analysis;
+              DROP TRIGGER IF EXISTS policy_version_document_scope_guard
+                ON f1.policy_version;
+              DROP FUNCTION IF EXISTS f1.material_guard_policy_scope();
+              DROP FUNCTION IF EXISTS f1.p5_guard_policy_document_scope();
+              DROP TABLE IF EXISTS f1.material_knowledge_scope CASCADE;
+              COMMIT;";;
+          35) ;;
           *) exit 64;;
         esac;
         exec pg_restore --clean --if-exists --exit-on-error
@@ -427,7 +477,7 @@ services:
         --dbname="$${PGDATABASE}" /backup/database.dump
     environment:
       PGDATABASE: ${LOCAL_DATABASE:?LOCAL_DATABASE_REQUIRED}
-      LOCAL_BACKUP_TABLE_COUNT: "34"
+      LOCAL_BACKUP_TABLE_COUNT: "35"
       PGPASSFILE: /run/secrets/f1/pgpass
     volumes:
       - backup_secrets:/run/secrets/f1:ro

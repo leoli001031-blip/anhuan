@@ -56,6 +56,21 @@ export interface IngestionCapabilities {
   };
 }
 
+export type KnowledgeScopeKind = "service_provider" | "client";
+
+export interface KnowledgeScope {
+  id: string;
+  kind: KnowledgeScopeKind;
+  client_account_id: string | null;
+  client_display_name: string | null;
+}
+
+export interface KnowledgeScopeTarget {
+  kind: KnowledgeScopeKind;
+  client_account_id: string | null;
+  client_display_name?: string | null;
+}
+
 export interface VersionSummary {
   id: string;
   document_id: string;
@@ -77,6 +92,8 @@ export interface VersionSummary {
 export interface DocumentSummary {
   id: string;
   display_name: string;
+  declared_material_kind: MaterialKind;
+  knowledge_scope: KnowledgeScope;
   status: DocumentStatus;
   version_count: number;
   latest_version: VersionSummary | null;
@@ -133,12 +150,18 @@ export interface WorksheetGrid {
 }
 
 export type MaterialAnalysisStatus = "ready" | "failed" | "confirmed";
+export type MaterialKind = "policy" | "report" | "unknown";
+export type MaterialClassificationSource =
+  | "upload_selection"
+  | "machine_pending"
+  | "human_review";
 export type MaterialPageKind = "text" | "scanned" | "mixed" | "unknown";
 export type MaterialDocumentProfile =
   | MaterialPageKind
   | "table"
   | "two_column";
 export type MaterialAnalysisAllowedAction =
+  | "set_material_kind"
   | "confirm_policy_draft"
   | "view_policy_source"
   | "view_policy_version";
@@ -176,6 +199,13 @@ export interface MaterialIntakeAnalysis {
   analysis_version: string;
   parser_backend: string;
   document_profile: MaterialDocumentProfile;
+  suggested_kind: MaterialKind;
+  suggested_kind_confidence_ppm: number | null;
+  resolved_kind: MaterialKind;
+  classification_source: MaterialClassificationSource;
+  classification_by_user_id: string | null;
+  classification_at: string | null;
+  knowledge_scope: KnowledgeScope;
   status: MaterialAnalysisStatus;
   reason_code: string | null;
   shadow_status: "disabled" | "unavailable" | "ready" | "failed";

@@ -88,6 +88,18 @@ INGESTION_PREVIEW_STATUSES = (
     "ready",
     "failed",
 )
+MATERIAL_KINDS = ("policy", "report", "unknown")
+MATERIAL_CLASSIFICATION_SOURCES = (
+    "upload_selection",
+    "machine_pending",
+    "human_review",
+)
+MATERIAL_KNOWLEDGE_SCOPE_KINDS = ("service_provider", "client")
+MATERIAL_SCOPE_SELECTION_SOURCES = (
+    "migration_backfill",
+    "upload_selection",
+    "human_review",
+)
 CRM_ACCOUNT_STAGES = ("lead", "active", "dormant", "closed")
 CRM_CONTACT_STATUSES = ("active", "inactive")
 CRM_FOLLOW_UP_CHANNELS = ("onsite", "meeting", "phone", "internal_note")
@@ -204,12 +216,21 @@ class Document(Base):
             ("f1.plant.enterprise_id", "f1.plant.id"),
             name="document_plant_enterprise_fk",
         ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "knowledge_scope_id"),
+            (
+                "f1.material_knowledge_scope.enterprise_id",
+                "f1.material_knowledge_scope.id",
+            ),
+            name="document_knowledge_scope_enterprise_fk",
+        ),
         {"schema": "f1"},
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
     plant_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    knowledge_scope_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     object_key: Mapped[str] = mapped_column(String)
     filename: Mapped[str] = mapped_column(String)
     size: Mapped[int] = mapped_column(BigInteger)
@@ -798,6 +819,57 @@ class InAppNotification(Base):
     )
 
 
+class MaterialKnowledgeScope(Base):
+    __tablename__ = "material_knowledge_scope"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id",
+            "id",
+            name="material_knowledge_scope_enterprise_id_id_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "client_account_id"),
+            ("f1.crm_account.enterprise_id", "f1.crm_account.id"),
+            name="material_knowledge_scope_client_enterprise_fk",
+        ),
+        CheckConstraint(
+            "scope_kind IN ('service_provider','client')",
+            name="material_knowledge_scope_kind_ck",
+        ),
+        CheckConstraint(
+            "(scope_kind = 'service_provider' AND client_account_id IS NULL) OR "
+            "(scope_kind = 'client' AND client_account_id IS NOT NULL)",
+            name="material_knowledge_scope_target_ck",
+        ),
+        Index(
+            "material_knowledge_scope_provider_uq",
+            "enterprise_id",
+            unique=True,
+            postgresql_where=text("scope_kind = 'service_provider'"),
+        ),
+        Index(
+            "material_knowledge_scope_client_uq",
+            "enterprise_id",
+            "client_account_id",
+            unique=True,
+            postgresql_where=text("scope_kind = 'client'"),
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("f1.enterprise.id")
+    )
+    scope_kind: Mapped[str] = mapped_column(String)
+    client_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
 class DocumentRecord(Base):
     __tablename__ = "document_record"
     __table_args__ = (
@@ -814,8 +886,36 @@ class DocumentRecord(Base):
             ("f1.enterprise_user.enterprise_id", "f1.enterprise_user.user_id"),
             name="document_record_creator_enterprise_fk",
         ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "knowledge_scope_id"),
+            (
+                "f1.material_knowledge_scope.enterprise_id",
+                "f1.material_knowledge_scope.id",
+            ),
+            name="document_record_knowledge_scope_enterprise_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "scope_selected_by_user_id"),
+            ("f1.enterprise_user.enterprise_id", "f1.enterprise_user.user_id"),
+            name="document_record_scope_actor_enterprise_fk",
+        ),
         CheckConstraint("status IN ('active','archived')", name="document_record_status_ck"),
         CheckConstraint("latest_version_no >= 0", name="document_record_latest_version_ck"),
+        CheckConstraint(
+            "declared_material_kind IN ('policy','report','unknown')",
+            name="document_record_declared_material_kind_ck",
+        ),
+        CheckConstraint(
+            "scope_selection_source IN "
+            "('migration_backfill','upload_selection','human_review')",
+            name="document_record_scope_source_ck",
+        ),
+        Index(
+            "document_record_knowledge_scope_idx",
+            "enterprise_id",
+            "knowledge_scope_id",
+            text("updated_at DESC"),
+        ),
         {"schema": "f1"},
     )
 
@@ -826,6 +926,11 @@ class DocumentRecord(Base):
     plant_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     title: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String, default="active")
+    declared_material_kind: Mapped[str] = mapped_column(String, default="unknown")
+    knowledge_scope_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    scope_selection_source: Mapped[str] = mapped_column(String)
+    scope_selected_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    scope_selected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     latest_version_no: Mapped[int] = mapped_column(Integer, default=0)
     created_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid)
     created_at: Mapped[datetime] = mapped_column(
@@ -1366,6 +1471,11 @@ class MaterialAnalysis(Base):
             name="material_analysis_confirmer_enterprise_fk",
         ),
         ForeignKeyConstraint(
+            ("enterprise_id", "classification_by_user_id"),
+            ("f1.enterprise_user.enterprise_id", "f1.enterprise_user.user_id"),
+            name="material_analysis_classifier_enterprise_fk",
+        ),
+        ForeignKeyConstraint(
             ("enterprise_id", "policy_source_id"),
             ("f1.policy_source.enterprise_id", "f1.policy_source.id"),
             name="material_analysis_source_enterprise_fk",
@@ -1411,6 +1521,33 @@ class MaterialAnalysis(Base):
         CheckConstraint(
             "candidate_count BETWEEN 0 AND 100",
             name="material_analysis_candidate_count_ck",
+        ),
+        CheckConstraint(
+            "suggested_kind IN ('policy','report','unknown')",
+            name="material_analysis_suggested_kind_ck",
+        ),
+        CheckConstraint(
+            "suggested_kind_confidence_ppm BETWEEN 0 AND 1000000",
+            name="material_analysis_suggested_confidence_ck",
+        ),
+        CheckConstraint(
+            "resolved_kind IN ('policy','report','unknown')",
+            name="material_analysis_resolved_kind_ck",
+        ),
+        CheckConstraint(
+            "classification_source IN "
+            "('upload_selection','machine_pending','human_review')",
+            name="material_analysis_classification_source_ck",
+        ),
+        CheckConstraint(
+            "(classification_source = 'machine_pending' "
+            "AND resolved_kind = 'unknown' "
+            "AND classification_by_user_id IS NULL "
+            "AND classification_at IS NULL) OR "
+            "(classification_source IN ('upload_selection','human_review') "
+            "AND classification_by_user_id IS NOT NULL "
+            "AND classification_at IS NOT NULL)",
+            name="material_analysis_classification_state_ck",
         ),
         CheckConstraint(
             "confirmation_key_sha256 IS NULL OR "
@@ -1463,6 +1600,18 @@ class MaterialAnalysis(Base):
     reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
     page_count: Mapped[int] = mapped_column(Integer)
     candidate_count: Mapped[int] = mapped_column(Integer, default=0)
+    suggested_kind: Mapped[str] = mapped_column(String, default="unknown")
+    suggested_kind_confidence_ppm: Mapped[int] = mapped_column(Integer, default=0)
+    resolved_kind: Mapped[str] = mapped_column(String, default="unknown")
+    classification_source: Mapped[str] = mapped_column(
+        String, default="machine_pending"
+    )
+    classification_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, nullable=True
+    )
+    classification_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     confirmed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -2206,6 +2355,7 @@ __all__ = (
     "FindingReview",
     "BusinessTimeline",
     "InAppNotification",
+    "MaterialKnowledgeScope",
     "DocumentRecord",
     "DocumentVersion",
     "DocumentPreviewUnit",
@@ -2246,6 +2396,10 @@ __all__ = (
     "INGESTION_STAGES",
     "INGESTION_SCAN_VERDICTS",
     "INGESTION_PREVIEW_STATUSES",
+    "MATERIAL_KINDS",
+    "MATERIAL_CLASSIFICATION_SOURCES",
+    "MATERIAL_KNOWLEDGE_SCOPE_KINDS",
+    "MATERIAL_SCOPE_SELECTION_SOURCES",
     "CRM_ACCOUNT_STAGES",
     "CRM_CONTACT_STATUSES",
     "CRM_FOLLOW_UP_CHANNELS",

@@ -245,8 +245,20 @@ export default function PolicyDraftFromDocumentPage() {
         <Alert
           type="info"
           showIcon
-          message="当前还不能确认政策草稿"
-          description="文档必须完成安全处理并由人工解除隔离，且当前身份需要获得服务端 confirm_policy_draft 权限。"
+          message={
+            analysis.resolved_kind === "report"
+              ? "该材料已归为报告，不会进入政策库"
+              : analysis.resolved_kind === "unknown"
+                ? "请先回到材料分析页完成人工分类"
+                : "当前还不能确认政策草稿"
+          }
+          description={
+            analysis.resolved_kind === "report"
+              ? "报告整理入口待接入；如分类有误，请先回到受控文档修改人工分类。"
+              : analysis.resolved_kind === "unknown"
+                ? "待分类材料不会创建政策草稿。机器建议不代替人工选择。"
+                : "是否可确认完全以服务端 allowed_actions 为准；文档还需完成安全处理、人工解除隔离并具备相应权限。"
+          }
         />
       ) : analysis ? (
         <>

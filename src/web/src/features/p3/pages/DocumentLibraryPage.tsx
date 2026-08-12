@@ -28,6 +28,7 @@ import type {
   DocumentCollection,
   DocumentSummary,
   IngestionCapabilities,
+  KnowledgeScopeKind,
 } from "../types";
 
 const EMPTY_COLLECTION: DocumentCollection = {
@@ -43,6 +44,7 @@ export default function DocumentLibraryPage() {
   const [capabilities, setCapabilities] = useState<IngestionCapabilities | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [contentTypeFilter, setContentTypeFilter] = useState<string | undefined>();
+  const [scopeKindFilter, setScopeKindFilter] = useState<KnowledgeScopeKind | undefined>();
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,7 +75,12 @@ export default function DocumentLibraryPage() {
         getIngestionCapabilities(getAccessToken(), controller.signal),
         listIngestionDocuments(
           getAccessToken(),
-          { status: statusFilter, contentType: contentTypeFilter, limit: 20 },
+          {
+            status: statusFilter,
+            contentType: contentTypeFilter,
+            scopeKind: scopeKindFilter,
+            limit: 20,
+          },
           controller.signal,
         ),
       ]);
@@ -87,7 +94,7 @@ export default function DocumentLibraryPage() {
       if (activeInitial.current === controller) activeInitial.current = null;
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, [contentTypeFilter, getAccessToken, statusFilter]);
+  }, [contentTypeFilter, getAccessToken, scopeKindFilter, statusFilter]);
 
   useEffect(() => {
     void refresh();
@@ -130,6 +137,7 @@ export default function DocumentLibraryPage() {
         {
           status: statusFilter,
           contentType: contentTypeFilter,
+          scopeKind: scopeKindFilter,
           cursor: collection.next_cursor,
           limit: 20,
         },
@@ -188,6 +196,22 @@ export default function DocumentLibraryPage() {
       width: 100,
       render: (_, document) =>
         document.latest_version ? mimeCopy(document.latest_version.content_type) : "—",
+    },
+    {
+      title: "材料归属",
+      key: "knowledge-scope",
+      width: 190,
+      render: (_, document) =>
+        document.knowledge_scope.kind === "client" ? (
+          <Space direction="vertical" size={0}>
+            <Tag color="purple">客户资料</Tag>
+            <Typography.Text type="secondary" ellipsis>
+              {document.knowledge_scope.client_display_name ?? "客户档案"}
+            </Typography.Text>
+          </Space>
+        ) : (
+          <Tag color="blue">服务公司资料</Tag>
+        ),
     },
     {
       title: "版本数",
@@ -258,7 +282,26 @@ export default function DocumentLibraryPage() {
 
       <ResourceLimitsCard capabilities={capabilities} loading={loading} />
 
+      <Alert
+        type="info"
+        showIcon
+        message="材料归属分为服务公司资料和客户资料"
+        description="从受控文档库上传时固定归入当前服务公司；客户专属材料请从对应客户档案详情上传。机器分析不会改变材料归属。"
+        style={{ marginTop: 16 }}
+      />
+
       <Space wrap style={{ marginBlock: 16 }}>
+        <Select
+          allowClear
+          placeholder="全部材料归属"
+          value={scopeKindFilter}
+          style={{ width: 180 }}
+          options={[
+            { value: "service_provider", label: "服务公司资料" },
+            { value: "client", label: "客户资料" },
+          ]}
+          onChange={setScopeKindFilter}
+        />
         <Select
           allowClear
           placeholder="全部处理状态"
@@ -315,7 +358,7 @@ export default function DocumentLibraryPage() {
             dataSource={collection.items}
             columns={columns}
             pagination={false}
-            scroll={{ x: 1190 }}
+            scroll={{ x: 1380 }}
             onRow={(document) => ({
               onDoubleClick: () => navigate("/controlled-documents/" + document.id),
             })}
@@ -334,6 +377,9 @@ export default function DocumentLibraryPage() {
         open={uploadOpen}
         token={getAccessToken()}
         capabilities={capabilities}
+        knowledgeScope={{ kind: "service_provider", client_account_id: null }}
+        defaultMaterialKind="unknown"
+        scopeHint="此处上传固定归入当前环保服务公司。若材料只属于某个客户，请关闭窗口并从该客户档案详情上传。"
         onCancel={() => setUploadOpen(false)}
         onComplete={() => void refresh(true)}
       />

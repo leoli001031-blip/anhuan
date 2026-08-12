@@ -155,7 +155,7 @@ def verify_normal_heads(
     f0_heads: tuple[str, ...],
     f1_heads: tuple[str, ...],
 ) -> None:
-    if f0_heads != ("f0d_0006",) or f1_heads != ("f1_0011",):
+    if f0_heads != ("f0d_0006",) or f1_heads != ("f1_0014",):
         raise AtomicityError("LOCAL_ATOMICITY_HEAD_MISMATCH")
 
 

@@ -48,7 +48,7 @@ class P2Wave4MigrationAndModelTests(unittest.TestCase):
         script = ScriptDirectory.from_config(
             Config(str(ROOT / "infra/f1/alembic.ini"))
         )
-        self.assertEqual(script.get_heads(), ["f1_0011"])
+        self.assertEqual(script.get_heads(), ["f1_0014"])
         self.assertEqual(script.get_revision("f1_0005").down_revision, "f1_0004")
 
     def test_notification_fields_composite_fks_uniques_and_read_guard(self) -> None:

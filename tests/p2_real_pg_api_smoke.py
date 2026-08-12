@@ -509,7 +509,7 @@ class ScratchPostgres:
                 "(SELECT string_agg(version_num, ',' ORDER BY version_num) "
                 "FROM f1.alembic_version)"
             ).fetchone()
-            if heads != ("f0d_0006", "f1_0011"):
+            if heads != ("f0d_0006", "f1_0014"):
                 METRICS["migration_head_mismatches"] = 1
                 raise SmokeFailure("MIGRATION_HEAD_RED")
             role_rows = connection.execute(

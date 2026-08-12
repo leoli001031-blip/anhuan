@@ -91,6 +91,17 @@ async def confirm_policy_draft(
         if str(analysis["status"]) != "ready":
             raise HTTPException(status_code=409, detail="MATERIAL_ANALYSIS_NOT_CONFIRMABLE")
         if (
+            str(analysis["resolved_kind"]) != "policy"
+            or str(analysis["knowledge_scope_kind"]) != "service_provider"
+            or str(analysis["classification_source"])
+            not in {"upload_selection", "human_review"}
+            or analysis.get("classification_by_user_id") is None
+            or analysis.get("classification_at") is None
+        ):
+            raise HTTPException(
+                status_code=409, detail="MATERIAL_POLICY_CLASSIFICATION_REQUIRED"
+            )
+        if (
             str(analysis["current_source_sha256"])
             != str(analysis["source_sha256"])
             or str(analysis["quarantine_status"]) != "released"

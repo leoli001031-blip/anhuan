@@ -19,7 +19,7 @@ PROJECT_ID = "anhuan-engineering-1234"
 DATABASE = "anhuan_engineering_1234"
 BACKUP_ID = "20260811T120000Z-123456abcdef"
 BUSINESS_SNAPSHOT = {
-    "table_count": 34,
+    "table_count": 35,
     "total_row_count": 2,
     "nonempty_table_count": 2,
     "count_sha256": "a" * 64,
@@ -367,7 +367,7 @@ class LocalctlBackupRestoreContractTests(unittest.TestCase):
             return_value=mock.Mock(returncode=0, stdout=output + "\n", stderr=""),
         ):
             snapshot = localctl._business_snapshot(self.STATE)
-        self.assertEqual(snapshot["table_count"], 34)
+        self.assertEqual(snapshot["table_count"], 35)
         self.assertEqual(snapshot["total_row_count"], 1)
         self.assertEqual(snapshot["nonempty_table_count"], 1)
         self.assertRegex(str(snapshot["count_sha256"]), r"\A[0-9a-f]{64}\Z")

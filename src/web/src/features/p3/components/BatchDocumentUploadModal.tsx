@@ -5,6 +5,7 @@ import {
   Input,
   List,
   Modal,
+  Select,
   Space,
   Tag,
   Typography,
@@ -14,7 +15,11 @@ import { DeleteOutlined, InboxOutlined } from "@ant-design/icons";
 import type { UploadFile } from "antd";
 import { createIngestionDocument, userFacingIngestionError } from "../ingestionApi";
 import { formatBytes, reasonCopy } from "../reasonCopy";
-import type { IngestionCapabilities } from "../types";
+import type {
+  IngestionCapabilities,
+  KnowledgeScopeTarget,
+  MaterialKind,
+} from "../types";
 
 const MAX_BATCH_FILES = 10;
 const MAX_CONCURRENT_UPLOADS = 2;
@@ -26,6 +31,7 @@ interface BatchItem {
   uploadFile: UploadFile;
   file: File;
   displayName: string;
+  declaredMaterialKind: MaterialKind;
   idempotencyKey: string;
   status: BatchItemStatus;
   error: string | null;
@@ -37,6 +43,9 @@ interface Props {
   open: boolean;
   token: string | null;
   capabilities: IngestionCapabilities | null;
+  knowledgeScope: KnowledgeScopeTarget;
+  defaultMaterialKind?: MaterialKind;
+  scopeHint?: string;
   onCancel: () => void;
   onComplete: () => void;
 }
@@ -68,6 +77,9 @@ export default function BatchDocumentUploadModal({
   open,
   token,
   capabilities,
+  knowledgeScope,
+  defaultMaterialKind = "unknown",
+  scopeHint,
   onCancel,
   onComplete,
 }: Props) {
@@ -79,8 +91,12 @@ export default function BatchDocumentUploadModal({
     if (open) {
       setItems([]);
       setUploading(false);
+      return;
     }
-  }, [open]);
+    for (const controller of activeControllers.current) controller.abort();
+    activeControllers.current.clear();
+    setUploading(false);
+  }, [open, defaultMaterialKind, knowledgeScope.client_account_id, knowledgeScope.kind]);
 
   useEffect(
     () => () => {
@@ -162,6 +178,8 @@ export default function BatchDocumentUploadModal({
             item.file,
             item.idempotencyKey,
             controller.signal,
+            item.declaredMaterialKind,
+            knowledgeScope,
           );
           succeeded += 1;
           updateItem(item.uid, {
@@ -220,7 +238,23 @@ export default function BatchDocumentUploadModal({
         type="info"
         showIcon
         message="一次最多 10 份，并发上传 2 份"
-        description="每份材料使用独立请求标识。上传成功后服务端自动开始安全处理，但不会自动解除隔离；关闭窗口不会删除已经进入隔离区的材料。"
+        description="先为每份材料选择政策、报告或待分类，可减少后续误归库；默认待分类最稳妥。系统仍会给出机器建议，但不会替代你的选择。上传后自动开始安全处理，不会自动解除隔离。"
+        style={{ marginBottom: 16 }}
+      />
+      <Alert
+        type="success"
+        showIcon
+        message={
+          knowledgeScope.kind === "client"
+            ? `归属客户：${knowledgeScope.client_display_name ?? "当前客户档案"}`
+            : "归属范围：当前环保服务公司"
+        }
+        description={
+          scopeHint ??
+          (knowledgeScope.kind === "client"
+            ? "归属由客户档案入口带入并锁定；机器分析不会更改客户归属。"
+            : "归属由当前入口带入并锁定；机器分析不会更改公司归属。客户专属材料请从客户档案详情上传。")
+        }
         style={{ marginBottom: 16 }}
       />
       {!capabilities?.upload_enabled && (
@@ -254,6 +288,7 @@ export default function BatchDocumentUploadModal({
                   uploadFile,
                   file,
                   displayName: defaultDisplayName(file.name),
+                  declaredMaterialKind: defaultMaterialKind,
                   idempotencyKey: newIdempotencyKey(),
                   status: "queued" as const,
                   error: null,
@@ -314,6 +349,31 @@ export default function BatchDocumentUploadModal({
                     }
                   />
                 </Space.Compact>
+                <Space wrap align="center">
+                  <Typography.Text>人工预分类</Typography.Text>
+                  <Select<MaterialKind>
+                    aria-label={`${item.file.name} 的人工预分类`}
+                    value={item.declaredMaterialKind}
+                    style={{ width: 180 }}
+                    disabled={uploading || item.status === "uploading" || item.status === "succeeded"}
+                    options={[
+                      { value: "unknown", label: "待分类（默认）" },
+                      { value: "policy", label: "政策／法规" },
+                      { value: "report", label: "检测／评估报告" },
+                    ]}
+                    onChange={(declaredMaterialKind) =>
+                      updateItem(item.uid, {
+                        declaredMaterialKind,
+                        idempotencyKey: newIdempotencyKey(),
+                        status: item.status === "failed" ? "queued" : item.status,
+                        error: null,
+                      })
+                    }
+                  />
+                  <Typography.Text type="secondary">
+                    这是人工输入；机器分析只会提供建议，之后仍可修改。
+                  </Typography.Text>
+                </Space>
                 <Space wrap>
                   <Typography.Text type="secondary">{formatBytes(item.file.size)}</Typography.Text>
                   {item.error && <Typography.Text type="danger">{item.error}</Typography.Text>}

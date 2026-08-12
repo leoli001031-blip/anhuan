@@ -9,7 +9,7 @@
 - 分支：`codex/material-intake`（独立工程分支；是否已推送以 Git 远端为准）
 - 干净基线：`origin/main@8d2e791b019ede7f1c3b5e939258952503bf7b89`
 - 当前工程基线：`codex/engineering-closeout@69f6d41`，其上为材料录入切片
-- F1 Alembic：`f1_0001 → … → f1_0011`，唯一源码 head 为 `f1_0011`
+- F1 Alembic：`f1_0001 → … → f1_0014`，唯一源码 head 为 `f1_0014`
 - 远端边界：只允许推送 `codex/material-intake` 工程分支；未部署、不写生产
 - 旧 `codex/f1-1-1-repair` 只保留作历史证据，不再继续开发或推送
 
@@ -26,13 +26,13 @@
 | P6 | `P6_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | 合成 Oracle 与分歧流程，外部调用为 0 | Gold、真实 OCR/LLM 准确率、发布门 |
 | P7 | `P7_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | PostgreSQL/API/RLS 人工结果与回滚门；本地 PostgreSQL + MinIO 备份/恢复链 | 故障切换、部署或生产访问 |
 | P8 | `P8_COMPLETE_NOT_RELEASE_VERIFIED / INTERNAL_PWA_ONLY / NOT_PRODUCTION` | 3 类 OIDC 身份；管理员 17、顾问 2、企业 2 页；离线静态壳与真实 A→B waiting update 用户确认链 | OS 级应用安装 `BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY / PWA_OS_INSTALL_NOT_TESTED`、设备矩阵、正式小程序发布 |
-| 材料录入降本 | `SMOKE_PASSED / NOT_PRODUCTION` | `f1_0011` 实库迁移；一份合成文本 PDF 经进程内 ASGI HTTP/API 路由、真实 MinIO/ClamAV、预览、4候选、释放、P5来源+draft、幂等与跨租户 RLS；TypeScript `--noEmit` | 真实PDF/批量浏览器、OCR、准确率、备份恢复、P4报告自动创建、Inspector运行时 |
+| 材料录入降本 | `SMOKE_PASSED / NOT_PRODUCTION` | 实库 `f1_0011 → … → f1_0014`；同一合成文本 PDF 在服务公司／客户域各上传一次，真实 MinIO/ClamAV、预览、释放、2 analysis/2 page/8 candidate、2 scope、负责人/非负责人/跨租户上下层 RLS 及客户材料 API+DB 政策硬拒绝通过；服务公司 policy draft=1、publication=0 | 真实 Demo PDF、批量浏览器、物理 RAG 索引/检索、OCR、准确率、备份恢复实跑、P4 报告入口、Inspector 运行时、发布验收与生产 |
 
 已保留的技术摘要为：直接相关检查 `230/230 OK`，备份 `20260810T224332Z-2a861bccbba9` 完成 `reset → restore`，恢复后 health ready、verify 五门全绿、浏览器与 PWA 更新链通过。这些摘要不替代当前 pending 的精确顺序重放证据表。P8 构建仍有单 JS 约 1.48 MiB 的非阻断性能债。
 
 ## 运行与发布边界
 
-- 材料录入分支已在同一专属、双标签本地 Compose 栈真实迁移到 `f1_0011`，并在随机 scratch 数据库和随机 MinIO 桶验证一份合成 PDF；没有使用旧共享 `anhuan-f1` 栈作证。
+- 材料录入分支已在专属、双标签本地 Compose 栈从实库 `f1_0011` 迁移到 `f1_0014`，并在随机 scratch 数据库和随机 MinIO 桶将同一份合成 PDF 分别按服务公司域、客户域验证。第一次迁移因 `FORCE RLS` 遮蔽旧文档回填而失败且事务整体回滚；限定 bootstrap session 的有界 `RESET ROLE` 回填修复后重跑得到 `LOCAL_MIGRATE_OK`。提交前又以 `f1_0014` 收紧底层原件/受控任务读取并完成同一验证。没有使用旧共享 `anhuan-f1` 栈作证。
 - 当前专属栈已停止并保留数据卷；需要继续本地工作时再显式执行 `./scripts/localctl start`。
 - 真实 `stop → start` 会强制重建 9 个核心容器但保留卷；重启后数据库、业务行和统一 verify 五门仍通过。
 - scratch 数据库和 P3 临时对象只用于 verifier，每轮结束后精确删除。旧共享 `anhuan-f1` 栈不是本轮工程完成证据。
@@ -59,4 +59,4 @@
 
 ## 下一步
 
-材料录入当前结论为 `SMOKE_PASSED / NOT_PRODUCTION`。下一步若继续，应建立代表性内部 PDF 准确率集与扫描件 OCR 路由，再单独验证批量浏览器流程；不恢复旧 F1.1.1 发布验收或 PWA OS 探针，不进入真实 UAT、生产或正式小程序。`pdf-inspector` 仍为 `RUNTIME_DISABLED`。
+材料录入当前把“材料类型”与“知识归属”分开：机器只建议类型，上传入口人工确定服务公司或客户归属，客户材料不能进入公司政策草稿。`f1_0014` 实库迁移和双知识域合成 PDF smoke 已通过；下一步应选择黑客松 Demo 中的代表性内部 PDF 做受控分流评估，再决定 OCR、物理 RAG 索引／检索和批量浏览器入口的投入顺序。备份恢复与发布验收仍未执行。不恢复旧 F1.1.1 发布验收或 PWA OS 探针，不进入真实 UAT、生产或正式小程序。`pdf-inspector` 仍为 `RUNTIME_DISABLED`。

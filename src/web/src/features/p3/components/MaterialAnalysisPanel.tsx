@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
-import { Alert, Button, Card, Empty, Space, Spin, Table, Tag, Typography } from "antd";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Alert, Button, Card, Empty, Select, Space, Spin, Table, Tag, Typography, message } from "antd";
 import type { TableColumnsType } from "antd";
 import { useNavigate } from "react-router-dom";
 import {
   getMaterialIntakeAnalysis,
   IngestionApiError,
+  setMaterialIntakeClassification,
   userFacingIngestionError,
 } from "../ingestionApi";
 import { reasonCopy } from "../reasonCopy";
 import type {
+  MaterialClassificationSource,
   MaterialFieldCandidate,
   MaterialIntakeAnalysis,
+  MaterialKind,
   MaterialPageClassification,
   VersionSummary,
 } from "../types";
@@ -52,17 +55,37 @@ function confidenceCopy(value: number | null): string {
   return `${(Math.max(0, Math.min(1_000_000, value)) / 10_000).toFixed(1)}% 机器线索`;
 }
 
+function materialKindCopy(kind: MaterialKind): string {
+  if (kind === "policy") return "政策／法规";
+  if (kind === "report") return "检测／评估报告";
+  return "待分类";
+}
+
+function classificationSourceCopy(source: MaterialClassificationSource): string {
+  if (source === "human_review") return "人工在分析页确认";
+  if (source === "upload_selection") return "上传时人工选择";
+  return "机器建议，尚未人工确认";
+}
+
 export default function MaterialAnalysisPanel({ token, version }: Props) {
   const navigate = useNavigate();
   const [analysis, setAnalysis] = useState<MaterialIntakeAnalysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedKind, setSelectedKind] = useState<MaterialKind>("unknown");
+  const [classificationSaving, setClassificationSaving] = useState(false);
+  const [classificationError, setClassificationError] = useState<string | null>(null);
+  const activeClassification = useRef<AbortController | null>(null);
   const isPdf = version.content_type === "application/pdf";
   const canRead = isPdf && version.scan_status === "clean" && version.preview_status === "ready";
 
   useEffect(() => {
     setAnalysis(null);
     setError(null);
+    setSelectedKind("unknown");
+    setClassificationError(null);
+    setClassificationSaving(false);
+    activeClassification.current?.abort();
     if (!canRead) {
       setLoading(false);
       return;
@@ -71,7 +94,10 @@ export default function MaterialAnalysisPanel({ token, version }: Props) {
     setLoading(true);
     void getMaterialIntakeAnalysis(token, version.id, controller.signal)
       .then((payload) => {
-        if (!controller.signal.aborted) setAnalysis(payload);
+        if (!controller.signal.aborted) {
+          setAnalysis(payload);
+          setSelectedKind(payload.resolved_kind);
+        }
       })
       .catch((reason) => {
         if (controller.signal.aborted) return;
@@ -86,6 +112,40 @@ export default function MaterialAnalysisPanel({ token, version }: Props) {
       });
     return () => controller.abort();
   }, [canRead, token, version.id, version.updated_at]);
+
+  useEffect(
+    () => () => {
+      activeClassification.current?.abort();
+    },
+    [],
+  );
+
+  const saveClassification = async () => {
+    if (!analysis?.allowed_actions.includes("set_material_kind")) return;
+    const controller = new AbortController();
+    activeClassification.current?.abort();
+    activeClassification.current = controller;
+    setClassificationSaving(true);
+    setClassificationError(null);
+    try {
+      const payload = await setMaterialIntakeClassification(
+        token,
+        analysis.id,
+        selectedKind,
+        controller.signal,
+      );
+      if (!controller.signal.aborted) {
+        setAnalysis(payload);
+        setSelectedKind(payload.resolved_kind);
+        message.success(`已将材料人工归为“${materialKindCopy(payload.resolved_kind)}”`);
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted) setClassificationError(userFacingIngestionError(reason));
+    } finally {
+      if (activeClassification.current === controller) activeClassification.current = null;
+      if (!controller.signal.aborted) setClassificationSaving(false);
+    }
+  };
 
   const pageColumns = useMemo<TableColumnsType<MaterialPageClassification>>(
     () => [
@@ -217,6 +277,8 @@ export default function MaterialAnalysisPanel({ token, version }: Props) {
     );
   } else {
     const canConfirm = analysis.allowed_actions.includes("confirm_policy_draft");
+    const canSetKind = analysis.allowed_actions.includes("set_material_kind");
+    const isClientKnowledge = analysis.knowledge_scope.kind === "client";
     content = (
       <Space direction="vertical" size={16} style={{ width: "100%" }}>
         <Alert
@@ -227,11 +289,111 @@ export default function MaterialAnalysisPanel({ token, version }: Props) {
         />
         <Space wrap>
           <Tag color="blue">{pageKindCopy(analysis.document_profile)} PDF</Tag>
+          <Tag color={isClientKnowledge ? "purple" : "cyan"}>
+            {isClientKnowledge
+              ? `客户资料 · ${analysis.knowledge_scope.client_display_name ?? "客户档案"}`
+              : "环保服务公司资料"}
+          </Tag>
           <Tag>解析：{analysis.parser_backend}</Tag>
           <Tag>PDF Inspector：{analysis.shadow_status === "disabled" ? "关闭" : analysis.shadow_status}</Tag>
           <Tag>{analysis.pages.length} 页</Tag>
           <Tag>{analysis.candidates.length} 个字段候选</Tag>
         </Space>
+
+        <Card size="small" title="材料去向（人工最终决定）">
+          <Space direction="vertical" size={12} style={{ width: "100%" }}>
+            <Space size={[20, 8]} wrap>
+              <Space direction="vertical" size={0}>
+                <Typography.Text type="secondary">机器建议</Typography.Text>
+                <Typography.Text strong>{materialKindCopy(analysis.suggested_kind)}</Typography.Text>
+                <Typography.Text type="secondary">
+                  {confidenceCopy(analysis.suggested_kind_confidence_ppm)}，仅供参考
+                </Typography.Text>
+              </Space>
+              <Space direction="vertical" size={0}>
+                <Typography.Text type="secondary">当前人工分类</Typography.Text>
+                <Typography.Text strong>{materialKindCopy(analysis.resolved_kind)}</Typography.Text>
+                <Typography.Text type="secondary">
+                  {classificationSourceCopy(analysis.classification_source)}
+                  {analysis.classification_at
+                    ? ` · ${new Date(analysis.classification_at).toLocaleString("zh-CN")}`
+                    : ""}
+                </Typography.Text>
+              </Space>
+            </Space>
+
+            <Typography.Text type="secondary">
+              机器只提出建议，不会替你决定材料进入哪个业务库；人工分类可在后续继续修正。
+            </Typography.Text>
+
+            {isClientKnowledge && analysis.resolved_kind === "policy" && (
+              <Alert
+                type="warning"
+                showIcon
+                message="客户范围内的政策材料不会创建公司政策草稿"
+                description="材料仍归属于当前客户；机器分类和人工材料类型都不会把它移动到环保服务公司的政策库。"
+              />
+            )}
+
+            {analysis.resolved_kind === "report" ? (
+              <Alert
+                type="info"
+                showIcon
+                message="这份材料不会进入政策库"
+                description="报告整理入口待接入；原始文件仍留在受控文档库。"
+              />
+            ) : analysis.resolved_kind === "unknown" ? (
+              <Alert
+                type="warning"
+                showIcon
+                message="请先人工选择材料类型"
+                description="待分类材料不会创建政策草稿，也不会自动进入其他业务库。"
+              />
+            ) : isClientKnowledge ? (
+              <Alert
+                type="info"
+                showIcon
+                message="已归为客户范围内的政策材料"
+                description="客户归属保持不变，不提供公司政策草稿入口。"
+              />
+            ) : (
+              <Alert
+                type="info"
+                showIcon
+                message="已归为政策材料"
+                description="完成安全释放并获得服务端授权后，才可进入政策草稿人工确认。"
+              />
+            )}
+
+            {classificationError && (
+              <Alert type="error" showIcon message="人工分类未保存" description={classificationError} />
+            )}
+
+            {canSetKind && (
+              <Space wrap>
+                <Select<MaterialKind>
+                  aria-label="选择材料人工分类"
+                  value={selectedKind}
+                  style={{ width: 200 }}
+                  disabled={classificationSaving}
+                  options={[
+                    { value: "unknown", label: "待分类" },
+                    { value: "policy", label: "政策／法规" },
+                    { value: "report", label: "检测／评估报告" },
+                  ]}
+                  onChange={setSelectedKind}
+                />
+                <Button
+                  type="primary"
+                  loading={classificationSaving}
+                  onClick={() => void saveClassification()}
+                >
+                  保存人工分类
+                </Button>
+              </Space>
+            )}
+          </Space>
+        </Card>
 
         <section aria-labelledby={`material-pages-${analysis.id}`}>
           <Typography.Title id={`material-pages-${analysis.id}`} level={5}>逐页分析线索</Typography.Title>
@@ -262,7 +424,7 @@ export default function MaterialAnalysisPanel({ token, version }: Props) {
         </section>
 
         <Space wrap>
-          {canConfirm && (
+          {canConfirm && !isClientKnowledge && (
             <Button
               type="primary"
               onClick={() => navigate(`/policies/import/${encodeURIComponent(version.id)}`)}
@@ -280,9 +442,11 @@ export default function MaterialAnalysisPanel({ token, version }: Props) {
               查看版本草稿
             </Button>
           )}
-          {!canConfirm && analysis.status !== "confirmed" && (
+          {(!canConfirm || isClientKnowledge) && analysis.status !== "confirmed" && (
             <Typography.Text type="secondary">
-              文档解除隔离且服务端授权后，才能进入人工确认。
+              {isClientKnowledge && analysis.resolved_kind === "policy"
+                ? "客户资料不会进入环保服务公司的政策草稿流程。"
+                : "文档解除隔离且服务端授权后，才能进入人工确认。"}
             </Typography.Text>
           )}
         </Space>
