@@ -23,6 +23,7 @@ _CORE_DATABASE_TABLES = (
     "f1.policy_source",
     "f1.quality_run",
     "f1.rehearsal_run",
+    "f1.material_analysis",
 )
 
 

@@ -396,7 +396,7 @@ def _source_run_row_count(
                 "(SELECT string_agg(version_num,',' ORDER BY version_num) "
                 "FROM f1.alembic_version)"
             ).fetchone()
-            if heads is None or tuple(heads) != ("f0d_0006", "f1_0010"):
+            if heads is None or tuple(heads) != ("f0d_0006", "f1_0011"):
                 raise IngestionVerifyError(
                     "LOCAL_INGESTION_SOURCE_NOT_READY"
                 )
@@ -725,7 +725,7 @@ def _seed_scratch(scratch_bootstrap_dsn: str) -> None:
                 "SELECT string_agg(version_num,',' ORDER BY version_num) "
                 "FROM f1.alembic_version"
             ).fetchone()
-            if head is None or head[0] != "f1_0010":
+            if head is None or head[0] != "f1_0011":
                 raise IngestionVerifyError("LOCAL_INGESTION_SEED_FAILED")
             local_seed._ensure_enterprise(
                 connection,
@@ -763,7 +763,7 @@ def _assert_scratch_heads(scratch_bootstrap_dsn: str) -> None:
                 "(SELECT string_agg(version_num,',' ORDER BY version_num) "
                 "FROM f1.alembic_version)"
             ).fetchone()
-        if heads is None or tuple(heads) != ("f0d_0006", "f1_0010"):
+        if heads is None or tuple(heads) != ("f0d_0006", "f1_0011"):
             raise IngestionVerifyError("LOCAL_INGESTION_MIGRATION_FAILED")
     except IngestionVerifyError:
         raise

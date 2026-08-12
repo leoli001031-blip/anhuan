@@ -52,6 +52,8 @@ from ...features.p3.service import (
 )
 from ...features.p3.processor import process_controlled_ingestion
 from ...features.p3.scanner import ScanFailure, scanner_version
+from ...features.material_intake.contracts import MaterialAnalysisOut
+from ...features.material_intake.service import get_material_analysis
 
 
 router = APIRouter()
@@ -158,7 +160,12 @@ async def create_document(
             preflight=preflight,
             idempotency_key_sha256=key_sha256,
         )
+        should_process = reservation.needs_quarantine_write or (
+            reservation.processing_stage in {"received", "retry_wait"}
+        )
         await complete_upload(tenant, reservation, file.file)
+        if should_process:
+            await process_controlled_ingestion(tenant, reservation.version_id)
         return await get_document(tenant, reservation.document_record_id)
     except IngestionError as error:
         raise _http_error(error) from None
@@ -191,7 +198,12 @@ async def append_version(
             preflight=preflight,
             idempotency_key_sha256=key_sha256,
         )
+        should_process = reservation.needs_quarantine_write or (
+            reservation.processing_stage in {"received", "retry_wait"}
+        )
         await complete_upload(tenant, reservation, file.file)
+        if should_process:
+            await process_controlled_ingestion(tenant, reservation.version_id)
         return await get_version(tenant, reservation.version_id)
     except IngestionError as error:
         raise _http_error(error) from None
@@ -210,6 +222,29 @@ async def version_detail(
         raise _http_error(error) from None
     except Exception:
         raise _unavailable() from None
+
+
+@router.get(
+    "/versions/{version_id}/material-intake",
+    response_model=MaterialAnalysisOut,
+)
+async def material_intake_analysis(
+    version_id: uuid.UUID,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> MaterialAnalysisOut:
+    try:
+        return await get_material_analysis(tenant, version_id)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "MATERIAL_INTAKE_UNAVAILABLE",
+                "message": "MATERIAL_INTAKE_UNAVAILABLE",
+                "retryable": True,
+            },
+        ) from None
 
 
 @router.post("/versions/{version_id}/retry", response_model=VersionOut)

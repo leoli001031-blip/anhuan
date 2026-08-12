@@ -5,6 +5,7 @@ import type {
   DocumentDetail,
   IngestionCapabilities,
   IngestionErrorEnvelope,
+  MaterialIntakeAnalysis,
   PageText,
   PreviewManifest,
   VersionSummary,
@@ -204,6 +205,20 @@ export function getIngestionVersion(
 ): Promise<VersionSummary> {
   return requestJson<VersionSummary>(
     P3_INGESTION_BASE + "/versions/" + encodeURIComponent(versionId),
+    { token, signal },
+  );
+}
+
+export function getMaterialIntakeAnalysis(
+  token: string | null,
+  versionId: string,
+  signal?: AbortSignal,
+): Promise<MaterialIntakeAnalysis> {
+  return requestJson<MaterialIntakeAnalysis>(
+    P3_INGESTION_BASE +
+      "/versions/" +
+      encodeURIComponent(versionId) +
+      "/material-intake",
     { token, signal },
   );
 }

@@ -1,5 +1,7 @@
 # Engineering Closeout Progress
 
+> **后续产品切片（2026-08-12）：** `MATERIAL_INTAKE` 已在独立 `codex/material-intake` 分支把源码 head 线性推进到 `f1_0011`，状态仅 `TARGETED_TEST_PASSED / NOT_PRODUCTION`。下文 `f1_0010`、31 表与实跑计数均是 `codex/engineering-closeout` 当时的历史证据，不代表新切片已经完成实库重放。
+
 ## 2026-08-11 任务0开工回执
 
 - 目标：单人可启动、维护、恢复并用真实浏览器操作 P2–P8，最终仅 `INTERNAL_ENGINEERING_READY / NOT_PRODUCTION`。

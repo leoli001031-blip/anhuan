@@ -132,6 +132,66 @@ export interface WorksheetGrid {
   truncated: boolean;
 }
 
+export type MaterialAnalysisStatus = "ready" | "failed" | "confirmed";
+export type MaterialPageKind = "text" | "scanned" | "mixed" | "unknown";
+export type MaterialDocumentProfile =
+  | MaterialPageKind
+  | "table"
+  | "two_column";
+export type MaterialAnalysisAllowedAction =
+  | "confirm_policy_draft"
+  | "view_policy_source"
+  | "view_policy_version";
+
+export interface MaterialPageClassification {
+  page_number: number;
+  primary_kind: MaterialPageKind;
+  ocr_required: boolean;
+  table_candidate: boolean;
+  two_column_candidate: boolean;
+  text_character_count: number;
+  text_confidence_ppm: number | null;
+  scan_confidence_ppm: number | null;
+  table_confidence_ppm: number | null;
+  two_column_confidence_ppm: number | null;
+  reason_codes: string[];
+}
+
+export interface MaterialFieldCandidate {
+  id: string;
+  field_name: string;
+  candidate_value: string;
+  page_number: number;
+  evidence_snippet: string;
+  confidence_ppm: number | null;
+  confidence_basis: string;
+  calibrated: false;
+  producer: "pypdf_heuristic" | "pdf_inspector_shadow";
+}
+
+export interface MaterialIntakeAnalysis {
+  id: string;
+  document_version_id: string;
+  source_sha256: string;
+  analysis_version: string;
+  parser_backend: string;
+  document_profile: MaterialDocumentProfile;
+  status: MaterialAnalysisStatus;
+  reason_code: string | null;
+  shadow_status: "disabled" | "unavailable" | "ready" | "failed";
+  page_count: number;
+  candidate_count: number;
+  pages: MaterialPageClassification[];
+  candidates: MaterialFieldCandidate[];
+  policy_source_id: string | null;
+  policy_version_id: string | null;
+  confirmed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  allowed_actions: MaterialAnalysisAllowedAction[];
+  boundaries: string[];
+}
+
 export interface IngestionErrorEnvelope {
   detail?: {
     code?: string;

@@ -1,16 +1,19 @@
 # PDF Inspector 受控纳入决策
 
-决策日期：2026-08-11
+决策日期：2026-08-12
 
 ```text
 ARCHITECTURE_CONSIDERED
+VENDOR_NEUTRAL_SHADOW_SEAM_IMPLEMENTED_NOT_TESTED
 RUNTIME_DISABLED
 NOT_PRODUCTION
 ```
 
 ## 结论
 
-PDF Inspector 可以作为“降低 PDF 材料录入成本”的候选影子解析器纳入后续架构，但本轮工程收口不启用它、不安装它，也不把旧 Probe 的源码、依赖或运行产物并入当前分支。
+PDF Inspector 已作为“降低 PDF 材料录入成本”的候选影子解析器纳入供应商中立合同，但运行实现仍固定关闭：当前分支不安装它，也不把旧 Probe 的源码、依赖或运行产物并入主 API、worker 或常驻镜像。
+
+当前材料录入切片由已锁定的 `pypdf` 生成文本/扫描、表格、双栏和法规/报告字段候选；页面显示页码证据与未校准置信线索，人工确认后才创建政策来源和版本草稿。该能力不依赖 Inspector，也不把候选自动写成权威数据。
 
 未来若满足全部供应链与隔离门，它只能在 P3 对源对象完成身份核验且 ClamAV 判定 `clean` 之后，以默认关闭、进程外、无网络的 shadow 任务运行。现有 P3 与 `pypdf` 继续承担权威解析和 fallback；Inspector 输出只能形成待人工确认的草稿，不得直接改变文档状态、证据、报告、法规、索引或问答结果。
 
@@ -82,10 +85,10 @@ ClamAV `clean` 是启动解析的必要条件，不是文件无风险或候选�
 
 ## 分阶段启用方案
 
-### Gate 0：当前状态
+### Gate 0：当前 Inspector 状态
 
-- 只保留本决策文档。
-- 运行时、API、worker、Compose、requirements、lockfile、数据库和页面均不接入 Inspector。
+- 已有默认关闭、无供应商依赖的 shadow capability seam；它只返回固定 disabled 状态。
+- API、worker、Compose、requirements、lockfile 均未安装或 import Inspector；页面只显示 shadow 已关闭。
 - 状态保持 `RUNTIME_DISABLED / NOT_PRODUCTION`。
 
 ### Gate 1：patched runner 原型
@@ -102,9 +105,9 @@ ClamAV `clean` 是启动解析的必要条件，不是文件无风险或候选�
 
 ### Gate 3：人工确认草稿
 
-- 另行设计最小数据模型、RLS、allowed_actions 与页面，不在本轮预先建表。
-- 页面必须显示“机器草稿”，支持确认、编辑、丢弃，并保留版本级审计。
-- 真实客户数据、自动晋升、OCR 联动、索引/RAG/报告/法规消费均需要新的明确授权。
+- `pypdf` 路径已实现最小数据模型、FORCE RLS、allowed_actions 与人工编辑确认页面，状态以 `MATERIAL_INTAKE_PROGRESS.md` 为准。
+- source + version draft + analysis confirmed + audit 在一个事务提交；不会自动审核、发布或解除隔离。
+- 这不代表 Inspector Gate 1/2 已通过；真实客户数据、OCR、自动晋升、索引/RAG 和自动创建报告仍需新的明确授权。
 
 ## 后续验收条件
 
@@ -119,6 +122,6 @@ ClamAV `clean` 是启动解析的必要条件，不是文件无风险或候选�
 - 草稿正文、文件名、对象 key、路径、凭据和 PII 的日志/argv 泄漏为 0。
 - 人工确认页面尚未实现时，候选正文不得作为产品数据对外可见。
 
-## 本轮完成定义
+## 当前完成定义
 
-本轮只需把这套边界纳入工程决策，并明确保留未来降低录入成本的路径。没有安装依赖、修改代码、生成 migration、启动旧 formal、运行旧 Probe 或处理真实材料；因此本决策不能被解释为“PDF Inspector 已接入”或“PDF 解析能力已升级”。
+当前只把供应商中立的 disabled shadow seam 与 `pypdf` 人工确认录入切片纳入代码；没有安装 Inspector、启动旧 formal、运行旧 Probe 或处理真实材料。因此只能写成“Inspector 已纳入架构考虑且运行时关闭”，不能写成“Inspector 解析器已启用”。

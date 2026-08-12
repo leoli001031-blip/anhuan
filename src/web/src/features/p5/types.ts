@@ -1,3 +1,5 @@
+import type { MaterialIntakeAnalysis } from "../p3/types";
+
 export type PolicySourceType = "law" | "regulation" | "standard" | "guidance" | "internal";
 export type PolicySourceStatus = "active" | "archived";
 export type PolicyDomain = "safety" | "health" | "environment" | "fire" | "chemical" | "general";
@@ -125,6 +127,17 @@ export interface CreatePolicyVersionInput {
   effective_to?: string | null;
   summary: string;
   document_version_id?: string | null;
+}
+
+export interface ConfirmMaterialPolicyDraftInput {
+  source: CreatePolicySourceInput;
+  version: Omit<CreatePolicyVersionInput, "document_version_id">;
+}
+
+export interface ConfirmMaterialPolicyDraftResult {
+  analysis: MaterialIntakeAnalysis;
+  source: PolicySource;
+  version: PolicyVersion;
 }
 
 export interface PolicyReviewInput {

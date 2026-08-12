@@ -59,13 +59,15 @@
 
 `verify` 是无正文输出、无持久业务写入的工程校验，现在同时覆盖五个门：
 
-1. 数据库身份、`f0d_0006/f1_0010` 双 head、31 张 P2–P7 表 ENABLE + FORCE RLS、低权限运行角色和固定合成身份；
+1. 数据库身份、`f0d_0006/f1_0011` 双 head、34 张 P2–P7及材料录入表 ENABLE + FORCE RLS、低权限运行角色和固定合成身份；
 2. 独立随机 scratch 数据库中的迁移失败原子性，验证后精确删除；
 3. P2/P4–P7 真实 API + RLS，包括非法关闭 409 后业务/audit/timeline/notification 零漂移，以及应用 engine/factory 重建后仍能读取 5 类关键业务；
 4. P3 真实 ClamAV 扫描、预览和 release，以及 MinIO 写失败、ClamAV 不可用后的幂等恢复；
 5. 9 个核心服务的完整有界日志、Git 跟踪及未忽略文件、以及如存在时的最新有效备份中的 secret、DSN、令牌、PII、文件名和正文标记边界。
 
 成功必须依次包含 `LOCAL_VERIFY_OK`、`LOCAL_MIGRATION_ATOMICITY_OK`、`LOCAL_BUSINESS_VERIFY_OK`、`LOCAL_INGESTION_VERIFY_OK` 和 `LOCAL_LOG_VERIFY_OK`。所有输出只有聚合计数和固定标签。失败时按 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) 处理，不要改数据库“对齐数字”，也不要打印日志或手工清理未通过身份核验的资源。
+
+现役备份清单记录 34 表；历史 31 表工程备份在恢复时先移除空的材料录入 schema，再恢复旧 dump，随后由 migrator 升到 `f1_0011`。该兼容路径已写入合同，但本材料切片尚未执行真实恢复验证。
 
 ### 反向依赖与清理边界
 

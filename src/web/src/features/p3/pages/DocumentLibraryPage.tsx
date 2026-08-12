@@ -15,7 +15,7 @@ import type { TableColumnsType } from "antd";
 import { useNavigate } from "react-router-dom";
 import { getSelectedEnterprise } from "../../../api";
 import { useAuth } from "../../../auth/OidcProvider";
-import DocumentUploadModal from "../components/DocumentUploadModal";
+import BatchDocumentUploadModal from "../components/BatchDocumentUploadModal";
 import IngestionStatus from "../components/IngestionStatus";
 import ResourceLimitsCard from "../components/ResourceLimitsCard";
 import {
@@ -50,20 +50,24 @@ export default function DocumentLibraryPage() {
   const activeInitial = useRef<AbortController | null>(null);
   const activeMore = useRef<AbortController | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (silent = false) => {
     activeInitial.current?.abort();
     activeMore.current?.abort();
-    setCollection(EMPTY_COLLECTION);
-    setCapabilities(null);
+    if (!silent) {
+      setCollection(EMPTY_COLLECTION);
+      setCapabilities(null);
+    }
     setError(null);
     if (!getSelectedEnterprise()) {
+      setCollection(EMPTY_COLLECTION);
+      setCapabilities(null);
       setLoading(false);
       setError("请先在顶部选择企业");
       return;
     }
     const controller = new AbortController();
     activeInitial.current = controller;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const [nextCapabilities, nextCollection] = await Promise.all([
         getIngestionCapabilities(getAccessToken(), controller.signal),
@@ -100,6 +104,19 @@ export default function DocumentLibraryPage() {
       activeMore.current?.abort();
     };
   }, [refresh]);
+
+  const shouldPoll = collection.items.some((document) =>
+    document.latest_version
+      ? ["received", "processing"].includes(document.latest_version.workflow_status) ||
+        document.latest_version.scan_status === "scanning" ||
+        ["queued", "generating"].includes(document.latest_version.preview_status)
+      : false,
+  );
+  useEffect(() => {
+    if (loading || !shouldPoll) return;
+    const timeout = window.setTimeout(() => void refresh(true), 2500);
+    return () => window.clearTimeout(timeout);
+  }, [collection.items, loading, refresh, shouldPoll]);
 
   const loadMore = async () => {
     if (!collection.next_cursor || loadingMore) return;
@@ -233,7 +250,7 @@ export default function DocumentLibraryPage() {
           </Button>
           {canCreate && (
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
-              新建文档
+              批量上传材料
             </Button>
           )}
         </Space>
@@ -287,7 +304,7 @@ export default function DocumentLibraryPage() {
         <Empty description="当前企业尚未导入文档">
           {canCreate && (
             <Button type="primary" onClick={() => setUploadOpen(true)}>
-              上传第一个文档
+              上传第一批材料
             </Button>
           )}
         </Empty>
@@ -313,16 +330,12 @@ export default function DocumentLibraryPage() {
         </>
       )}
 
-      <DocumentUploadModal
+      <BatchDocumentUploadModal
         open={uploadOpen}
-        mode="create"
         token={getAccessToken()}
         capabilities={capabilities}
         onCancel={() => setUploadOpen(false)}
-        onSuccess={({ documentId }) => {
-          setUploadOpen(false);
-          navigate("/controlled-documents/" + documentId);
-        }}
+        onComplete={() => void refresh(true)}
       />
     </div>
   );

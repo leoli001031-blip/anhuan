@@ -1343,6 +1343,288 @@ class PolicyVersion(Base):
     )
 
 
+class MaterialAnalysis(Base):
+    __tablename__ = "material_analysis"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="material_analysis_enterprise_id_id_uq"
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "document_version_id",
+            "analysis_version",
+            name="material_analysis_version_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "document_version_id"),
+            ("f1.document_version.enterprise_id", "f1.document_version.id"),
+            name="material_analysis_document_enterprise_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "confirmed_by_user_id"),
+            ("f1.enterprise_user.enterprise_id", "f1.enterprise_user.user_id"),
+            name="material_analysis_confirmer_enterprise_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "policy_source_id"),
+            ("f1.policy_source.enterprise_id", "f1.policy_source.id"),
+            name="material_analysis_source_enterprise_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "policy_version_id"),
+            ("f1.policy_version.enterprise_id", "f1.policy_version.id"),
+            name="material_analysis_policy_version_enterprise_fk",
+        ),
+        CheckConstraint(
+            "status IN ('ready','failed','confirmed')",
+            name="material_analysis_status_ck",
+        ),
+        CheckConstraint(
+            "document_profile IN "
+            "('text','scanned','mixed','table','two_column','unknown')",
+            name="material_analysis_profile_ck",
+        ),
+        CheckConstraint(
+            "shadow_status IN ('disabled','unavailable','ready','failed')",
+            name="material_analysis_shadow_ck",
+        ),
+        CheckConstraint(
+            "source_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_analysis_source_sha_ck",
+        ),
+        CheckConstraint(
+            "analysis_version = 'material-v1'",
+            name="material_analysis_version_ck",
+        ),
+        CheckConstraint(
+            "parser_backend = 'pypdf_heuristic'",
+            name="material_analysis_backend_ck",
+        ),
+        CheckConstraint(
+            "reason_code IS NULL OR reason_code ~ '^[A-Z0-9_]{1,80}$'",
+            name="material_analysis_reason_ck",
+        ),
+        CheckConstraint(
+            "page_count BETWEEN 1 AND 128",
+            name="material_analysis_page_count_ck",
+        ),
+        CheckConstraint(
+            "candidate_count BETWEEN 0 AND 100",
+            name="material_analysis_candidate_count_ck",
+        ),
+        CheckConstraint(
+            "confirmation_key_sha256 IS NULL OR "
+            "confirmation_key_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_analysis_confirmation_key_ck",
+        ),
+        CheckConstraint(
+            "confirmation_payload_sha256 IS NULL OR "
+            "confirmation_payload_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_analysis_confirmation_payload_ck",
+        ),
+        CheckConstraint(
+            "(status = 'ready' AND reason_code IS NULL "
+            "AND confirmed_by_user_id IS NULL AND confirmed_at IS NULL "
+            "AND policy_source_id IS NULL AND policy_version_id IS NULL "
+            "AND confirmation_key_sha256 IS NULL "
+            "AND confirmation_payload_sha256 IS NULL) OR "
+            "(status = 'failed' AND reason_code IS NOT NULL "
+            "AND confirmed_by_user_id IS NULL AND confirmed_at IS NULL "
+            "AND policy_source_id IS NULL AND policy_version_id IS NULL "
+            "AND confirmation_key_sha256 IS NULL "
+            "AND confirmation_payload_sha256 IS NULL) OR "
+            "(status = 'confirmed' AND reason_code IS NULL "
+            "AND confirmed_by_user_id IS NOT NULL AND confirmed_at IS NOT NULL "
+            "AND policy_source_id IS NOT NULL AND policy_version_id IS NOT NULL "
+            "AND confirmation_key_sha256 IS NOT NULL "
+            "AND confirmation_payload_sha256 IS NOT NULL)",
+            name="material_analysis_outcome_ck",
+        ),
+        Index(
+            "material_analysis_document_idx",
+            "enterprise_id",
+            "document_version_id",
+            "created_at",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("f1.enterprise.id")
+    )
+    document_version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    analysis_version: Mapped[str] = mapped_column(String, default="material-v1")
+    parser_backend: Mapped[str] = mapped_column(String, default="pypdf_heuristic")
+    status: Mapped[str] = mapped_column(String)
+    document_profile: Mapped[str] = mapped_column(String)
+    shadow_status: Mapped[str] = mapped_column(String, default="disabled")
+    reason_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    page_count: Mapped[int] = mapped_column(Integer)
+    candidate_count: Mapped[int] = mapped_column(Integer, default=0)
+    confirmed_by_user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    policy_source_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    policy_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    confirmation_key_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    confirmation_payload_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
+class MaterialPageClassification(Base):
+    __tablename__ = "material_page_classification"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="material_page_enterprise_id_id_uq"
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "analysis_id",
+            "page_number",
+            name="material_page_number_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "analysis_id"),
+            ("f1.material_analysis.enterprise_id", "f1.material_analysis.id"),
+            name="material_page_analysis_enterprise_fk",
+        ),
+        CheckConstraint(
+            "primary_kind IN ('text','scanned','mixed','unknown')",
+            name="material_page_kind_ck",
+        ),
+        CheckConstraint(
+            "page_number BETWEEN 1 AND 128",
+            name="material_page_number_ck",
+        ),
+        CheckConstraint(
+            "text_character_count BETWEEN 0 AND 100000",
+            name="material_page_character_count_ck",
+        ),
+        CheckConstraint(
+            "text_confidence_ppm BETWEEN 0 AND 1000000 "
+            "AND scan_confidence_ppm BETWEEN 0 AND 1000000 "
+            "AND table_confidence_ppm BETWEEN 0 AND 1000000 "
+            "AND two_column_confidence_ppm BETWEEN 0 AND 1000000",
+            name="material_page_confidence_ck",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(CAST(reason_codes AS jsonb)) = 'array' "
+            "AND octet_length(CAST(reason_codes AS text)) <= 2048",
+            name="material_page_reasons_ck",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("f1.enterprise.id")
+    )
+    analysis_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    page_number: Mapped[int] = mapped_column(Integer)
+    primary_kind: Mapped[str] = mapped_column(String)
+    ocr_required: Mapped[bool] = mapped_column(Boolean)
+    table_candidate: Mapped[bool] = mapped_column(Boolean, default=False)
+    two_column_candidate: Mapped[bool] = mapped_column(Boolean, default=False)
+    text_character_count: Mapped[int] = mapped_column(Integer)
+    text_confidence_ppm: Mapped[int] = mapped_column(Integer)
+    scan_confidence_ppm: Mapped[int] = mapped_column(Integer)
+    table_confidence_ppm: Mapped[int] = mapped_column(Integer)
+    two_column_confidence_ppm: Mapped[int] = mapped_column(Integer)
+    reason_codes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
+class MaterialFieldCandidate(Base):
+    __tablename__ = "material_field_candidate"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="material_candidate_enterprise_id_id_uq"
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "analysis_id", "page_number"),
+            (
+                "f1.material_page_classification.enterprise_id",
+                "f1.material_page_classification.analysis_id",
+                "f1.material_page_classification.page_number",
+            ),
+            name="material_candidate_page_enterprise_fk",
+        ),
+        CheckConstraint(
+            "field_name IN ('source_title','publisher','source_type',"
+            "'jurisdiction','source_reference','version_title','domain',"
+            "'effect_status','issued_on','effective_from','effective_to','summary',"
+            "'report_title','report_date','report_summary')",
+            name="material_candidate_field_ck",
+        ),
+        CheckConstraint(
+            "producer IN ('pypdf_heuristic','pdf_inspector_shadow')",
+            name="material_candidate_producer_ck",
+        ),
+        CheckConstraint(
+            "char_length(candidate_value) BETWEEN 1 AND 4000",
+            name="material_candidate_value_ck",
+        ),
+        CheckConstraint(
+            "page_number BETWEEN 1 AND 128",
+            name="material_candidate_page_ck",
+        ),
+        CheckConstraint(
+            "char_length(evidence_snippet) BETWEEN 1 AND 300",
+            name="material_candidate_evidence_ck",
+        ),
+        CheckConstraint(
+            "confidence_ppm BETWEEN 0 AND 1000000",
+            name="material_candidate_confidence_ck",
+        ),
+        CheckConstraint(
+            "confidence_basis ~ '^[a-z0-9_.-]{1,80}$'",
+            name="material_candidate_basis_ck",
+        ),
+        CheckConstraint(
+            "calibrated IS FALSE",
+            name="material_candidate_uncalibrated_ck",
+        ),
+        Index(
+            "material_candidate_analysis_idx",
+            "enterprise_id",
+            "analysis_id",
+            "field_name",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("f1.enterprise.id")
+    )
+    analysis_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    field_name: Mapped[str] = mapped_column(String)
+    candidate_value: Mapped[str] = mapped_column(Text)
+    page_number: Mapped[int] = mapped_column(Integer)
+    evidence_snippet: Mapped[str] = mapped_column(String(300))
+    confidence_ppm: Mapped[int] = mapped_column(Integer)
+    confidence_basis: Mapped[str] = mapped_column(String(80))
+    calibrated: Mapped[bool] = mapped_column(Boolean, default=False)
+    producer: Mapped[str] = mapped_column(String, default="pypdf_heuristic")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
 class PolicyReviewEvent(Base):
     __tablename__ = "policy_review_event"
     __table_args__ = (
@@ -1935,6 +2217,9 @@ __all__ = (
     "BusinessReportArtifact",
     "PolicySource",
     "PolicyVersion",
+    "MaterialAnalysis",
+    "MaterialPageClassification",
+    "MaterialFieldCandidate",
     "PolicyReviewEvent",
     "PolicyImpactCandidate",
     "PolicyImpactTask",

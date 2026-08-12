@@ -458,7 +458,7 @@ EXPECTED_VERIFICATION_METRICS = {
     "migration_head_count": 2,
     "migration_head_mismatch_count": 0,
     "rls_mismatch_count": 0,
-    "rls_table_count": 31,
+    "rls_table_count": 34,
     "runtime_role_count": 2,
     "runtime_role_membership_count": 0,
     "runtime_role_mismatch_count": 0,
@@ -3931,10 +3931,13 @@ def _new_backup_id() -> str:
     return f"{timestamp}-{secrets.token_hex(6)}"
 
 
-def _business_snapshot(state: dict[str, object]) -> dict[str, object]:
+def _business_snapshot(
+    state: dict[str, object],
+    table_names: tuple[str, ...] = P2_P7_TABLES,
+) -> dict[str, object]:
     selects = [
         f"SELECT '{name}',count(*)::bigint FROM f1.\"{name}\""
-        for name in P2_P7_TABLES
+        for name in table_names
     ]
     result = _compose(
         state,
@@ -3965,7 +3968,7 @@ def _business_snapshot(state: dict[str, object]) -> dict[str, object]:
         if value > 2**63 - 1:
             raise LocalError("LOCAL_BUSINESS_SNAPSHOT_INVALID")
         counts[match.group(1)] = value
-    if set(counts) != set(P2_P7_TABLES):
+    if set(counts) != set(table_names):
         raise LocalError("LOCAL_BUSINESS_SNAPSHOT_INVALID")
     digest = hashlib.sha256(b"ANHUAN_BUSINESS_COUNTS_V1\x00")
     for name in sorted(counts):
@@ -4320,6 +4323,8 @@ def _restore(
             "run",
             "--rm",
             "--no-deps",
+            "--env",
+            f"LOCAL_BACKUP_TABLE_COUNT={int(manifest['business_table_count'])}",
             "--volume",
             backup_mount,
             "restore-db",
@@ -4365,7 +4370,13 @@ def _restore(
         if set(_project_data_volumes(state)) != DATA_VOLUME_KEYS:
             raise LocalError("LOCAL_RESTORE_DATA_VOLUME_INCOMPLETE")
         _start(state, capture=True, announce=False)
-        if _business_snapshot(state) != _manifest_business_snapshot(manifest):
+        manifest_table_count = int(manifest["business_table_count"])
+        snapshot_tables = (
+            P2_P7_TABLES[:31]
+            if manifest_table_count == 31
+            else P2_P7_TABLES
+        )
+        if _business_snapshot(state, snapshot_tables) != _manifest_business_snapshot(manifest):
             raise LocalError("LOCAL_RESTORE_BUSINESS_IDENTITY_MISMATCH")
     except local_backup.BackupContractError:
         if destructive_started:

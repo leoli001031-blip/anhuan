@@ -316,6 +316,28 @@ services:
     profiles: [ops]
     restart: "no"
 
+  material-verifier:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "/app/infra/f1/local_material_verify.py"]
+    environment:
+      <<: *runtime_environment
+      F1_MINIO_ROOT_USER_FILE: /run/secrets/api/minio_root_user
+      F1_MINIO_ROOT_PASSWORD_FILE: /run/secrets/api/minio_root_password
+    volumes:
+      - migrator_secrets:/run/secrets/f1:ro
+      - api_secrets:/run/secrets/api:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      clamd:
+        condition: service_healthy
+    profiles: [ops]
+    restart: "no"
+
   targeted-tests:
     build:
       context: ../..
@@ -387,11 +409,25 @@ services:
       - -ec
       - >-
         test -f /backup/database.dump;
+        case "$${LOCAL_BACKUP_TABLE_COUNT}" in
+          31)
+            psql --host=postgres --username=f0d_bootstrap
+            --dbname="$${PGDATABASE}" --set=ON_ERROR_STOP=1
+            --command="BEGIN;
+              DROP TABLE IF EXISTS f1.material_field_candidate;
+              DROP TABLE IF EXISTS f1.material_page_classification;
+              DROP TABLE IF EXISTS f1.material_analysis;
+              DROP FUNCTION IF EXISTS f1.material_guard_analysis_update();
+              COMMIT;";;
+          34) ;;
+          *) exit 64;;
+        esac;
         exec pg_restore --clean --if-exists --exit-on-error
         --single-transaction --host=postgres --username=f0d_bootstrap
         --dbname="$${PGDATABASE}" /backup/database.dump
     environment:
       PGDATABASE: ${LOCAL_DATABASE:?LOCAL_DATABASE_REQUIRED}
+      LOCAL_BACKUP_TABLE_COUNT: "34"
       PGPASSFILE: /run/secrets/f1/pgpass
     volumes:
       - backup_secrets:/run/secrets/f1:ro

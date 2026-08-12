@@ -595,8 +595,9 @@ async def complete_upload(
         except IngestionError:
             await mark_quarantine_failed(tenant, reservation)
             raise
-    # Processing is an explicit manager action.  Upload never enters the
-    # legacy indexing queue and never starts scanning implicitly.
+    # Storage completion never enters the legacy indexing queue.  Product API
+    # callers may immediately invoke the controlled processor; retry remains
+    # available when that bounded request is interrupted or fail-closed.
     return True
 
 

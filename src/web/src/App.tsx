@@ -32,6 +32,7 @@ import {
 } from "./features/p4";
 import {
   PolicyImpactPage,
+  PolicyDraftFromDocumentPage,
   PolicyLibraryPage,
   PolicySourceDetailPage,
   PolicyVersionDetailPage,
@@ -100,6 +101,10 @@ function AppRoutes() {
           element={<ReportVersionDetailPage />}
         />
         <Route path="policies" element={<PolicyLibraryPage />} />
+        <Route
+          path="policies/import/:documentVersionId"
+          element={<PolicyDraftFromDocumentPage />}
+        />
         <Route
           path="policies/sources/:sourceId"
           element={<PolicySourceDetailPage />}

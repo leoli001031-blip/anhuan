@@ -18,6 +18,7 @@ import { getSelectedEnterprise } from "../../../api";
 import { useAuth } from "../../../auth/OidcProvider";
 import DocumentUploadModal from "../components/DocumentUploadModal";
 import IngestionStatus from "../components/IngestionStatus";
+import MaterialAnalysisPanel from "../components/MaterialAnalysisPanel";
 import PreviewPanel from "../components/PreviewPanel";
 import ResourceLimitsCard from "../components/ResourceLimitsCard";
 import VersionTable from "../components/VersionTable";
@@ -379,6 +380,7 @@ export default function DocumentDetailPage() {
                 </Space>
               </Card>
               <PreviewPanel token={getAccessToken()} version={selectedVersion} />
+              <MaterialAnalysisPanel token={getAccessToken()} version={selectedVersion} />
             </>
           ) : (
             <Empty description="请选择一个版本查看状态与预览" />

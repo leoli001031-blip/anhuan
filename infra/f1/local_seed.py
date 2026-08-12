@@ -253,7 +253,7 @@ def main() -> int:
             "SELECT string_agg(version_num, ',' ORDER BY version_num) "
             "FROM f1.alembic_version"
         ).fetchone()
-        if head is None or head[0] != "f1_0010":
+        if head is None or head[0] != "f1_0011":
             raise RuntimeError("LOCAL_SEED_MIGRATION_REQUIRED")
         _ensure_enterprise(
             connection, ENTERPRISE_A, "Local Enterprise A", "LOCAL-A"

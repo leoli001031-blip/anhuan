@@ -293,7 +293,7 @@ def _validate_business_snapshot(document: Any) -> dict[str, Any]:
     )
     digest = document["count_sha256"]
     if (
-        table_count != 31
+        table_count not in {31, 34}
         or nonempty > table_count
         or total < nonempty
         or not isinstance(digest, str)

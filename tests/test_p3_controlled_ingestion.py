@@ -241,7 +241,7 @@ class P3MigrationAndTenantContractTests(unittest.TestCase):
         script = ScriptDirectory.from_config(
             Config(str(ROOT / "infra/f1/alembic.ini"))
         )
-        self.assertEqual(script.get_heads(), ["f1_0010"])
+        self.assertEqual(script.get_heads(), ["f1_0011"])
         self.assertEqual(script.get_revision("f1_0006").down_revision, "f1_0005")
 
     def test_p3_does_not_rewrite_frozen_f1_migrations(self) -> None:
@@ -387,7 +387,7 @@ class P3PipelineBoundaryTests(unittest.TestCase):
                     f"legacy import in {path.name}",
                 )
 
-    def test_upload_finishes_held_and_does_not_start_processing(self) -> None:
+    def test_upload_finalizes_held_before_router_starts_processing(self) -> None:
         finalize = " ".join(_string_literals(P3_SERVICE, "finalize_quarantine"))
         self.assertIn("object_state='quarantined'", finalize)
         self.assertIn("quarantine_status='held'", finalize)
@@ -400,6 +400,18 @@ class P3PipelineBoundaryTests(unittest.TestCase):
                 "run_upload_pipeline",
             }.isdisjoint(calls)
         )
+        router_source = _source(P3_ROUTER)
+        for function_name in ("create_document", "append_version"):
+            segment = ast.get_source_segment(
+                router_source,
+                _definition(P3_ROUTER, function_name),
+            )
+            self.assertIsNotNone(segment)
+            assert segment is not None
+            self.assertLess(
+                segment.index("await complete_upload("),
+                segment.index("await process_controlled_ingestion("),
+            )
 
     def test_controlled_api_exposes_an_explicit_scan_preview_action(self) -> None:
         post_paths = _router_paths("post")

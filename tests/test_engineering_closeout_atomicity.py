@@ -73,10 +73,10 @@ class EngineeringCloseoutAtomicityTests(unittest.TestCase):
                     verify_rollback_observation(RollbackObservation(**values))
 
     def test_normal_migration_requires_one_exact_head_per_schema(self) -> None:
-        verify_normal_heads(("f0d_0006",), ("f1_0010",))
+        verify_normal_heads(("f0d_0006",), ("f1_0011",))
         for f0_heads, f1_heads in (
-            (("f0d_0006", "extra"), ("f1_0010",)),
-            (("f0d_0005",), ("f1_0010",)),
+            (("f0d_0006", "extra"), ("f1_0011",)),
+            (("f0d_0005",), ("f1_0011",)),
             (("f0d_0006",), ()),
         ):
             with self.subTest(f0=f0_heads, f1=f1_heads):

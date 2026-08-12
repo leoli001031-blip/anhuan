@@ -79,7 +79,7 @@ def _valid_snapshot() -> Snapshot:
     return Snapshot(
         identity=("f0d_bootstrap", "f0d_bootstrap", DATABASE),
         f0_heads=("f0d_0006",),
-        f1_heads=("f1_0010",),
+        f1_heads=("f1_0011",),
         rls_rows=tuple((name, True, True) for name in P2_P7_TABLES),
         runtime_roles=EXPECTED_RUNTIME_ROLES,
         runtime_role_memberships=0,
@@ -878,7 +878,7 @@ class LocalVerifierContracts(unittest.TestCase):
         self.assertNotIn("ports:", service)
 
     def test_success_requires_the_complete_exact_contract(self) -> None:
-        self.assertEqual(len(P2_P7_TABLES), 31)
+        self.assertEqual(len(P2_P7_TABLES), 34)
         self.assertEqual(len(EXPECTED_RUNTIME_ROLES), 2)
         self.assertEqual(len(EXPECTED_ENTERPRISES), 2)
         self.assertEqual(len(EXPECTED_BINDINGS), 7)
@@ -892,7 +892,7 @@ class LocalVerifierContracts(unittest.TestCase):
         self.assertEqual(tag, "LOCAL_VERIFY_OK")
         self.assertTrue(decoded)
         self.assertTrue(all(type(value) is int for value in decoded.values()))
-        self.assertEqual(decoded["rls_table_count"], 31)
+        self.assertEqual(decoded["rls_table_count"], 34)
         self.assertEqual(decoded["runtime_role_membership_count"], 0)
         for forbidden in (
             "fixture.invalid",

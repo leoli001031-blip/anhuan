@@ -1,5 +1,7 @@
 # Engineering Closeout Taskbook
 
+> **历史范围说明：** 本任务书冻结的是 `codex/engineering-closeout` 当轮范围。2026-08-12 获明确授权的新材料录入切片由 `MATERIAL_INTAKE_TASKBOOK.md` 单独治理，并线性新增 `f1_0011`；这不改写本任务书当时的 `f1_0010`/31表完成门。
+
 目标：把 P2–P8 本地原型收成一个人可启动、维护、恢复和用真实浏览器操作的工程。完成标签只能是：
 
 ```text
