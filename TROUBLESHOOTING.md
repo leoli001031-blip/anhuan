@@ -99,6 +99,12 @@
 | `LOCAL_RESTORE_DATA_VOLUME_RESIDUAL` / `LOCAL_RESTORE_DATA_VOLUME_INCOMPLETE` / `LOCAL_RESTORE_CLEANUP_FAILED` | 恢复过程中数据卷未达到原子边界；停止，不手工创建、挂载或删除卷。按 [RECOVERY.md](RECOVERY.md) 的失败流程处理。 |
 | `LOCAL_RESET_RESIDUALS` / `LOCAL_STOP_RESIDUALS` | 当前双标签项目仍有残余；不要扩大到 daemon 级清理，保留现场并修复 identity/Compose 问题。 |
 
-## 8. 禁止进入排障记录的内容
+## 8. 专属 material-RAG 验证失败
+
+当前阻塞分类是 `LOCAL_MATERIAL_RAG_PROVIDER_PROVISION_FAILED`，权威说明见 [MATERIAL_RAG_BLOCKED.md](./MATERIAL_RAG_BLOCKED.md)。历史 `LOCAL_MATERIAL_RAG_ARK_KEY_INVALID` 与折叠后的 `LOCAL_COMMAND_FAILED` 不是现役原因。
+
+不要为排障重跑 `./scripts/localctl material-rag-verify`，也不要向 Ark 发送 allowlist 文本，除非用户给出新的字面授权。默认 `localctl migrate/start/verify` 不是本切片入口；本树默认 migrate 还会因 `upgrade head` 与 `f1_0014` 校验冲突而失败回滚。失败只保留固定 reason 和聚合计数，不粘贴 RAGFlow 日志、正文、原名、dataset ID 或凭据。
+
+## 9. 禁止进入排障记录的内容
 
 不要粘贴 `.local/secrets/*`、`.local/compose.env`、完整 `state.json`、容器环境、容器日志原文、浏览器 stderr、DSN、Authorization header、OIDC token、用户邮箱、文件名或文件正文。允许记录的只有固定 reason code、退出码、Git commit、backup-id，以及 `health --json`/`verify`/`browser-verify` 的聚合计数、布尔值或固定状态。

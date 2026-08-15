@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import time
 import uuid
 from contextlib import closing
@@ -38,7 +39,18 @@ _CONTENT_KIND = {item.content_type: item.kind for item in ALLOWED_FORMATS.values
 _SCANNER_UNAVAILABLE = frozenset(
     {
         "P3_SCANNER_UNAVAILABLE",
+        "P3_SCANNER_DNS_FAILED",
+        "P3_SCANNER_REFUSED",
         "P3_SCANNER_TIMEOUT",
+        "P3_SCANNER_CONNECT_REFUSED",
+        "P3_SCANNER_CONNECT_RESET",
+        "P3_SCANNER_CONNECT_PIPE",
+        "P3_SCANNER_VERSION_REFUSED",
+        "P3_SCANNER_VERSION_RESET",
+        "P3_SCANNER_VERSION_PIPE",
+        "P3_SCANNER_STREAM_REFUSED",
+        "P3_SCANNER_STREAM_RESET",
+        "P3_SCANNER_STREAM_PIPE",
         "P3_SCAN_ENGINE_ERROR",
         "P3_SCAN_PROTOCOL_ERROR",
     }
@@ -459,6 +471,10 @@ async def process_controlled_ingestion(
     scanner_port: int = 3310,
 ) -> None:
     """Process one held version; failures become durable, body-free states."""
+    if scanner_host == "clamd":
+        configured = os.environ.get("F1_CLAMD_HOST")
+        if configured:
+            scanner_host = configured
     claim = await _claim_process(tenant, version_id)
     phase = "source"
     material_result = None

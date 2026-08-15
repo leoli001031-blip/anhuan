@@ -1,6 +1,6 @@
 # P6 AUTOMATED QUALITY Progress
 
-> **现役摘要（2026-08-11）：** `P6_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION`；仅证明合成 Oracle 工作流，不是 Gold 或真实准确率。下文保留启动时状态与过程；总状态见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)。
+> **阶段收口摘要（2026-08-11）：** `P6_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION`；仅证明合成 Oracle 工作流，不是 Gold 或真实准确率。下文保留启动时状态与过程；总状态见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)。
 
 ## 2026-08-10 阶段启动
 

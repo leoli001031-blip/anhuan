@@ -100,6 +100,21 @@ MATERIAL_SCOPE_SELECTION_SOURCES = (
     "upload_selection",
     "human_review",
 )
+MATERIAL_RAG_BINDING_STATUSES = (
+    "provisioning",
+    "ready",
+    "deleting",
+    "failed",
+    "deleted",
+)
+MATERIAL_RAG_JOB_ACTIONS = ("index", "rebuild", "delete")
+MATERIAL_RAG_JOB_STATUSES = (
+    "queued",
+    "running",
+    "retry_wait",
+    "done",
+    "failed",
+)
 CRM_ACCOUNT_STAGES = ("lead", "active", "dormant", "closed")
 CRM_CONTACT_STATUSES = ("active", "inactive")
 CRM_FOLLOW_UP_CHANNELS = ("onsite", "meeting", "phone", "internal_note")
@@ -389,11 +404,20 @@ class Outbox(Base):
 
 class QaRequest(Base):
     __tablename__ = "qa_request"
-    __table_args__ = {"schema": "f1"}
+    __table_args__ = (
+        CheckConstraint(
+            "query_context_sha256 ~ '^[0-9a-f]{64}$'",
+            name="qa_request_query_context_sha_ck",
+        ),
+        {"schema": "f1"},
+    )
 
     request_id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True)
     enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
     question_sha256: Mapped[str] = mapped_column(String)
+    query_context_sha256: Mapped[str] = mapped_column(
+        String(64), default="0" * 64
+    )
     status: Mapped[str] = mapped_column(String, default="accepted")
     refusal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     response_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
@@ -866,6 +890,342 @@ class MaterialKnowledgeScope(Base):
         Uuid, nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
+class MaterialRagScopeBinding(Base):
+    __tablename__ = "material_rag_scope_binding"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id",
+            "id",
+            name="material_rag_binding_enterprise_id_id_uq",
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "knowledge_scope_id",
+            name="material_rag_binding_scope_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "knowledge_scope_id"),
+            (
+                "f1.material_knowledge_scope.enterprise_id",
+                "f1.material_knowledge_scope.id",
+            ),
+            name="material_rag_binding_scope_enterprise_fk",
+        ),
+        CheckConstraint(
+            "backend ~ '^[a-z0-9_.-]{1,40}$'",
+            name="material_rag_binding_backend_ck",
+        ),
+        CheckConstraint(
+            "status IN ('provisioning','ready','deleting','failed','deleted')",
+            name="material_rag_binding_status_ck",
+        ),
+        CheckConstraint(
+            "dataset_ref_sha256 IS NULL OR "
+            "dataset_ref_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_rag_binding_ref_sha_ck",
+        ),
+        CheckConstraint(
+            "dataset_ref_aad_sha256 IS NULL OR "
+            "dataset_ref_aad_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_rag_binding_aad_sha_ck",
+        ),
+        CheckConstraint(
+            "error_reason IS NULL OR error_reason ~ '^[A-Z0-9_]{1,80}$'",
+            name="material_rag_binding_error_ck",
+        ),
+        CheckConstraint(
+            "(dataset_ref_ciphertext IS NULL AND dataset_ref_sha256 IS NULL "
+            "AND dataset_ref_aad_sha256 IS NULL) OR "
+            "(octet_length(dataset_ref_ciphertext) BETWEEN 29 AND 4096 "
+            "AND dataset_ref_sha256 IS NOT NULL "
+            "AND dataset_ref_aad_sha256 IS NOT NULL)",
+            name="material_rag_binding_ref_triplet_ck",
+        ),
+        CheckConstraint(
+            "(status IN ('provisioning','deleted') "
+            "AND dataset_ref_ciphertext IS NULL AND error_reason IS NULL) OR "
+            "(status IN ('ready','deleting') "
+            "AND dataset_ref_ciphertext IS NOT NULL AND error_reason IS NULL) OR "
+            "(status = 'failed' AND error_reason IS NOT NULL)",
+            name="material_rag_binding_state_ck",
+        ),
+        Index(
+            "material_rag_binding_dataset_ref_uq",
+            "backend",
+            "dataset_ref_sha256",
+            unique=True,
+            postgresql_where=text("dataset_ref_sha256 IS NOT NULL"),
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("f1.enterprise.id")
+    )
+    knowledge_scope_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    backend: Mapped[str] = mapped_column(String(40))
+    dataset_ref_ciphertext: Mapped[bytes | None] = mapped_column(
+        LargeBinary, nullable=True
+    )
+    dataset_ref_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    dataset_ref_aad_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    status: Mapped[str] = mapped_column(String, default="provisioning")
+    error_reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
+class MaterialRagUnit(Base):
+    __tablename__ = "material_rag_unit"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="material_rag_unit_enterprise_id_id_uq"
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "knowledge_scope_id",
+            "document_record_id",
+            "document_version_id",
+            "source_sha256",
+            "page_number",
+            "ordinal",
+            "parser_version",
+            name="material_rag_unit_identity_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "knowledge_scope_id"),
+            (
+                "f1.material_knowledge_scope.enterprise_id",
+                "f1.material_knowledge_scope.id",
+            ),
+            name="material_rag_unit_scope_enterprise_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "document_record_id"),
+            ("f1.document_record.enterprise_id", "f1.document_record.id"),
+            name="material_rag_unit_record_enterprise_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "document_version_id"),
+            ("f1.document_version.enterprise_id", "f1.document_version.id"),
+            name="material_rag_unit_version_enterprise_fk",
+        ),
+        CheckConstraint(
+            "source_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_rag_unit_source_sha_ck",
+        ),
+        CheckConstraint(
+            "body_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_rag_unit_body_sha_ck",
+        ),
+        CheckConstraint(
+            "body_aad_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_rag_unit_aad_sha_ck",
+        ),
+        CheckConstraint(
+            "page_number BETWEEN 1 AND 100000 "
+            "AND ordinal BETWEEN 1 AND 100000",
+            name="material_rag_unit_position_ck",
+        ),
+        CheckConstraint(
+            "parser_version ~ '^[A-Za-z0-9_.:+-]{1,80}$'",
+            name="material_rag_unit_parser_ck",
+        ),
+        CheckConstraint(
+            "octet_length(body_ciphertext) BETWEEN 29 AND 1048576",
+            name="material_rag_unit_ciphertext_ck",
+        ),
+        Index(
+            "material_rag_unit_version_idx",
+            "enterprise_id",
+            "knowledge_scope_id",
+            "document_version_id",
+            "page_number",
+            "ordinal",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("f1.enterprise.id")
+    )
+    knowledge_scope_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    document_record_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    document_version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    page_number: Mapped[int] = mapped_column(Integer)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    parser_version: Mapped[str] = mapped_column(String(80))
+    ocr_applied: Mapped[bool] = mapped_column(Boolean, default=False)
+    table_candidate: Mapped[bool] = mapped_column(Boolean, default=False)
+    two_column_candidate: Mapped[bool] = mapped_column(Boolean, default=False)
+    body_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+    body_sha256: Mapped[str] = mapped_column(String(64))
+    body_aad_sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
+class MaterialRagJob(Base):
+    __tablename__ = "material_rag_job"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="material_rag_job_enterprise_id_id_uq"
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "idempotency_sha256",
+            name="material_rag_job_idempotency_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "knowledge_scope_id"),
+            (
+                "f1.material_knowledge_scope.enterprise_id",
+                "f1.material_knowledge_scope.id",
+            ),
+            name="material_rag_job_scope_enterprise_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "document_record_id"),
+            ("f1.document_record.enterprise_id", "f1.document_record.id"),
+            name="material_rag_job_record_enterprise_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "document_version_id"),
+            ("f1.document_version.enterprise_id", "f1.document_version.id"),
+            name="material_rag_job_version_enterprise_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "upload_task_id"),
+            ("f1.upload_task.enterprise_id", "f1.upload_task.id"),
+            name="material_rag_job_upload_enterprise_fk",
+        ),
+        CheckConstraint(
+            "action IN ('index','rebuild','delete')",
+            name="material_rag_job_action_ck",
+        ),
+        CheckConstraint(
+            "status IN ('queued','running','retry_wait','done','failed')",
+            name="material_rag_job_status_ck",
+        ),
+        CheckConstraint(
+            "idempotency_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_rag_job_idempotency_ck",
+        ),
+        CheckConstraint(
+            "source_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_rag_job_source_sha_ck",
+        ),
+        CheckConstraint(
+            "attempt BETWEEN 0 AND 100", name="material_rag_job_attempt_ck"
+        ),
+        CheckConstraint(
+            "lease_owner IS NULL OR lease_owner ~ '^[A-Za-z0-9_.:-]{1,128}$'",
+            name="material_rag_job_owner_ck",
+        ),
+        CheckConstraint(
+            "error_reason IS NULL OR error_reason ~ '^[A-Z0-9_]{1,80}$'",
+            name="material_rag_job_error_ck",
+        ),
+        CheckConstraint(
+            "result_manifest_sha256 IS NULL OR "
+            "result_manifest_sha256 ~ '^[0-9a-f]{64}$'",
+            name="material_rag_job_manifest_ck",
+        ),
+        CheckConstraint(
+            "indexed_unit_count IS NULL OR "
+            "indexed_unit_count BETWEEN 0 AND 10000000",
+            name="material_rag_job_count_ck",
+        ),
+        CheckConstraint(
+            "(lease_token IS NULL AND lease_owner IS NULL "
+            "AND lease_acquired_at IS NULL AND lease_until IS NULL) OR "
+            "(lease_token IS NOT NULL AND lease_owner IS NOT NULL "
+            "AND lease_acquired_at IS NOT NULL "
+            "AND lease_until > lease_acquired_at)",
+            name="material_rag_job_lease_ck",
+        ),
+        CheckConstraint(
+            "(status = 'queued' AND lease_token IS NULL "
+            "AND next_attempt_at IS NULL AND error_reason IS NULL "
+            "AND result_manifest_sha256 IS NULL "
+            "AND indexed_unit_count IS NULL) OR "
+            "(status = 'running' AND lease_token IS NOT NULL "
+            "AND next_attempt_at IS NULL AND error_reason IS NULL "
+            "AND result_manifest_sha256 IS NULL "
+            "AND indexed_unit_count IS NULL) OR "
+            "(status = 'retry_wait' AND lease_token IS NULL "
+            "AND next_attempt_at IS NOT NULL AND error_reason IS NOT NULL "
+            "AND result_manifest_sha256 IS NULL "
+            "AND indexed_unit_count IS NULL) OR "
+            "(status = 'done' AND lease_token IS NULL "
+            "AND next_attempt_at IS NULL AND error_reason IS NULL "
+            "AND result_manifest_sha256 IS NOT NULL "
+            "AND indexed_unit_count IS NOT NULL) OR "
+            "(status = 'failed' AND lease_token IS NULL "
+            "AND next_attempt_at IS NULL AND error_reason IS NOT NULL "
+            "AND result_manifest_sha256 IS NULL "
+            "AND indexed_unit_count IS NULL)",
+            name="material_rag_job_state_ck",
+        ),
+        Index(
+            "material_rag_job_due_idx",
+            "status",
+            "next_attempt_at",
+            "created_at",
+            "id",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("f1.enterprise.id")
+    )
+    knowledge_scope_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    document_record_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    document_version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    upload_task_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    source_sha256: Mapped[str] = mapped_column(String(64))
+    action: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, default="queued")
+    idempotency_sha256: Mapped[str] = mapped_column(String(64))
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_acquired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    result_manifest_sha256: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    indexed_unit_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.statement_timestamp()
     )
 
@@ -2356,6 +2716,9 @@ __all__ = (
     "BusinessTimeline",
     "InAppNotification",
     "MaterialKnowledgeScope",
+    "MaterialRagScopeBinding",
+    "MaterialRagUnit",
+    "MaterialRagJob",
     "DocumentRecord",
     "DocumentVersion",
     "DocumentPreviewUnit",
@@ -2400,6 +2763,9 @@ __all__ = (
     "MATERIAL_CLASSIFICATION_SOURCES",
     "MATERIAL_KNOWLEDGE_SCOPE_KINDS",
     "MATERIAL_SCOPE_SELECTION_SOURCES",
+    "MATERIAL_RAG_BINDING_STATUSES",
+    "MATERIAL_RAG_JOB_ACTIONS",
+    "MATERIAL_RAG_JOB_STATUSES",
     "CRM_ACCOUNT_STAGES",
     "CRM_CONTACT_STATUSES",
     "CRM_FOLLOW_UP_CHANNELS",

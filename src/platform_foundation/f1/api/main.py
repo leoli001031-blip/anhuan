@@ -13,6 +13,7 @@ from .routers import (
     enterprises,
     findings,
     invitation,
+    material_qa,
     p3_controlled_ingestion,
     p4_views_reports,
     p5_policy_workflow,
@@ -37,6 +38,11 @@ app.include_router(plants.router, prefix="/api/v1/plants", tags=["plants"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
 app.include_router(qa.router, prefix="/api/v1/qa", tags=["qa"])
+app.include_router(
+    material_qa.router,
+    prefix="/api/v1/material-qa",
+    tags=["material-qa"],
+)
 app.include_router(audit.router, prefix="/api/v1/audit", tags=["audit"])
 app.include_router(invitation.router, prefix="/api/v1/invitations", tags=["invitations"])
 app.include_router(

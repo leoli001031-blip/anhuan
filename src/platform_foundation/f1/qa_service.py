@@ -26,6 +26,7 @@ from .database import session_scope
 QA_KEY_FILE: Path | None = None
 QA_OWNER_LEASE_SECONDS = 300
 _CIPHERTEXT_MAGIC = b"F1Q1"
+_LEGACY_CONTEXT_SHA256 = "0" * 64
 
 
 class QaResult:
@@ -116,11 +117,31 @@ def _question_sha256(question: str) -> str:
     return hashlib.sha256(question.encode("utf-8")).hexdigest()
 
 
-def _aad(request_id: uuid.UUID, enterprise_id: uuid.UUID, question_sha256: str) -> bytes:
-    """Return stable, body-free AAD binding the three replay identities."""
+def _aad(
+    request_id: uuid.UUID,
+    enterprise_id: uuid.UUID,
+    question_sha256: str,
+    query_context_sha256: str = _LEGACY_CONTEXT_SHA256,
+) -> bytes:
+    """Return body-free AAD bound to every replay identity.
+
+    Existing enterprise-only QA rows retain their v1 envelope.  Material QA
+    uses v2 and additionally binds the server-derived provider/client context
+    digest, so a request cannot be replayed after switching clients.
+    """
+    if query_context_sha256 == _LEGACY_CONTEXT_SHA256:
+        return (
+            "f1.qa.response.v1\x00"
+            f"{request_id}\x00{enterprise_id}\x00{question_sha256}"
+        ).encode("ascii")
+    if len(query_context_sha256) != 64 or any(
+        character not in "0123456789abcdef" for character in query_context_sha256
+    ):
+        raise ValueError("QA_CONTEXT_SHA256_INVALID")
     return (
-        "f1.qa.response.v1\x00"
-        f"{request_id}\x00{enterprise_id}\x00{question_sha256}"
+        "f1.qa.response.v2\x00"
+        f"{request_id}\x00{enterprise_id}\x00{question_sha256}\x00"
+        f"{query_context_sha256}"
     ).encode("ascii")
 
 
@@ -133,16 +154,19 @@ def _canonical_payload(outcome: QaResult) -> str:
     )
 
 
-def _validate_outcome(outcome: QaResult) -> str:
+def _validate_outcome(outcome: QaResult, *, allow_evidence_only: bool = False) -> str:
     has_answer = outcome.answer is not None
     has_refusal = bool(outcome.refusal_reason)
-    if has_answer == has_refusal:
+    has_citations = bool(outcome.citations)
+    if has_refusal:
+        if has_answer or has_citations:
+            raise QaOutcomeInvalid("QA_REFUSAL_CITATIONS_FORBIDDEN")
+        return "refused"
+    if not has_answer and not (allow_evidence_only and has_citations):
         raise QaOutcomeInvalid("QA_OUTCOME_STATE_INVALID")
-    if has_answer and not outcome.citations:
+    if has_answer and not has_citations:
         raise QaOutcomeInvalid("QA_CITATIONS_REQUIRED")
-    if has_refusal and outcome.citations:
-        raise QaOutcomeInvalid("QA_REFUSAL_CITATIONS_FORBIDDEN")
-    return "done" if has_answer else "refused"
+    return "done"
 
 
 def _result_from_row(
@@ -150,6 +174,7 @@ def _result_from_row(
     request_id: uuid.UUID,
     enterprise_id: uuid.UUID,
     question_sha256: str,
+    query_context_sha256: str = _LEGACY_CONTEXT_SHA256,
 ) -> QaResult | None:
     """Decode a terminal row selected as
     ``status, refusal_reason, ciphertext, attempt``.
@@ -165,7 +190,12 @@ def _result_from_row(
         return QaResult(None, [], refusal_reason, str(request_id))
     if status != "done" or ciphertext is None:
         return None
-    aad = _aad(request_id, enterprise_id, question_sha256)
+    aad = _aad(
+        request_id,
+        enterprise_id,
+        question_sha256,
+        query_context_sha256,
+    )
     payload = _decrypt(bytes(ciphertext), aad, allow_legacy=int(attempt or 0) == 0)
     data = json.loads(payload)
     return QaResult(
@@ -176,7 +206,11 @@ def _result_from_row(
 
 
 async def lookup_request(
-    request_id: uuid.UUID, tenant: Tenant, question: str | None = None
+    request_id: uuid.UUID,
+    tenant: Tenant,
+    question: str | None = None,
+    *,
+    query_context_sha256: str = _LEGACY_CONTEXT_SHA256,
 ) -> QaResult | None:
     """Read a terminal replay without claiming a missing or expired request."""
     async with session_scope(
@@ -186,7 +220,7 @@ async def lookup_request(
             await session.execute(
                 text(
                     "SELECT status, refusal_reason, response_encrypted, "
-                    "enterprise_id, question_sha256, attempt "
+                    "enterprise_id, question_sha256, query_context_sha256, attempt "
                     "FROM f1.qa_request WHERE request_id = :rid"
                 ),
                 {"rid": request_id},
@@ -195,10 +229,18 @@ async def lookup_request(
         if row is None:
             return None
         qsha = _question_sha256(question) if question is not None else str(row[4])
-        if row[3] != tenant.enterprise_id or str(row[4]) != qsha:
+        if (
+            row[3] != tenant.enterprise_id
+            or str(row[4]) != qsha
+            or str(row[5]) != query_context_sha256
+        ):
             raise RequestIdConflict("REQUEST_ID_CONFLICT")
         return _result_from_row(
-            (row[0], row[1], row[2], row[5]), request_id, tenant.enterprise_id, qsha
+            (row[0], row[1], row[2], row[6]),
+            request_id,
+            tenant.enterprise_id,
+            qsha,
+            query_context_sha256,
         )
 
 
@@ -208,6 +250,7 @@ async def reserve_request(
     question: str,
     *,
     lease_seconds: int = QA_OWNER_LEASE_SECONDS,
+    query_context_sha256: str = _LEGACY_CONTEXT_SHA256,
 ) -> QaReservation:
     """Atomically reserve the request before any external call.
 
@@ -225,11 +268,13 @@ async def reserve_request(
                 text(
                     "SELECT claim_state, owner_token, attempt, status, "
                     "refusal_reason, response_encrypted, response_sha256 "
-                    "FROM f1.claim_qa_request(:rid, :qsha, :lease_seconds)"
+                    "FROM f1.claim_qa_request("
+                    ":rid, :qsha, :context_sha, :lease_seconds)"
                 ),
                 {
                     "rid": request_id,
                     "qsha": qsha,
+                    "context_sha": query_context_sha256,
                     "lease_seconds": lease_seconds,
                 },
             )
@@ -248,6 +293,7 @@ async def reserve_request(
                 request_id,
                 tenant.enterprise_id,
                 qsha,
+                query_context_sha256,
             )
             if replay is None:
                 raise QaOutcomeInvalid("QA_REPLAY_INVALID")
@@ -295,22 +341,94 @@ async def ask_question(
     return outcome
 
 
+async def ask_material_question(
+    question: str,
+    request_id: uuid.UUID,
+    tenant: Tenant,
+    context: object,
+) -> QaResult:
+    """Persist and replay the fixed no-egress result for public material QA.
+
+    The product context is derived under RLS before this function is called.
+    Its digest participates in claim, completion, and response AAD so the same
+    request/question cannot be replayed after switching clients.  The current
+    authorization does not cover arbitrary user questions, therefore a claim
+    owner completes a deterministic refusal without invoking RAGFlow or Ark.
+    """
+    from .features.material_rag.contracts import RetrievalContext
+
+    if (
+        not isinstance(context, RetrievalContext)
+        or context.enterprise_id != tenant.enterprise_id
+        or not isinstance(question, str)
+        or not question.strip()
+    ):
+        raise QaOutcomeInvalid("MATERIAL_CONTEXT_INVALID")
+    reservation = await reserve_request(
+        request_id,
+        tenant,
+        question,
+        query_context_sha256=context.context_sha256,
+    )
+    if reservation.state is ReservationState.CONFLICT:
+        raise RequestIdConflict("REQUEST_ID_CONFLICT")
+    if reservation.state is ReservationState.IN_PROGRESS:
+        raise RequestInProgress("REQUEST_IN_PROGRESS")
+    if reservation.state is ReservationState.REPLAY:
+        replay = reservation.result
+        if (
+            replay is None
+            or replay.answer is not None
+            or replay.citations
+            or replay.refusal_reason
+            != "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED"
+        ):
+            raise QaOutcomeInvalid("MATERIAL_REPLAY_INVALID")
+        return replay
+    if reservation.state is not ReservationState.CLAIMED:
+        raise RequestOwnershipLost("REQUEST_RESERVATION_INVALID")
+    if reservation.owner_token is None:
+        raise RequestOwnershipLost("REQUEST_OWNER_MISSING")
+
+    outcome = QaResult(
+        answer=None,
+        citations=[],
+        refusal_reason="MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
+        request_id=str(request_id),
+    )
+    await complete_request(
+        request_id,
+        tenant,
+        question,
+        reservation.owner_token,
+        outcome,
+        query_context_sha256=context.context_sha256,
+    )
+    return outcome
+
+
 async def complete_request(
     request_id: uuid.UUID,
     tenant: Tenant,
     question: str,
     owner_token: uuid.UUID,
     outcome: QaResult,
+    *,
+    query_context_sha256: str = _LEGACY_CONTEXT_SHA256,
+    allow_evidence_only: bool = False,
 ) -> None:
     """Owner-token CAS the terminal state and audit it in one transaction."""
-    terminal = _validate_outcome(outcome)
+    terminal = _validate_outcome(outcome, allow_evidence_only=allow_evidence_only)
     qsha = _question_sha256(question)
     encrypted: bytes | None = None
     response_sha256: str | None = None
     refusal_reason: str | None = None
     if terminal == "done":
         stored = _canonical_payload(outcome)
-        encrypted = _encrypt(stored, _aad(request_id, tenant.enterprise_id, qsha))
+        encrypted = _encrypt(
+            stored,
+            _aad(request_id, tenant.enterprise_id, qsha, query_context_sha256),
+        )
         response_sha256 = hashlib.sha256(stored.encode("utf-8")).hexdigest()
     else:
         refusal_reason = outcome.refusal_reason
@@ -323,7 +441,8 @@ async def complete_request(
                 await session.execute(
                 text(
                     "SELECT f1.complete_qa_request("
-                    ":rid, :owner, :qsha, :status, :enc, :rsha, :reason)"
+                    ":rid, :owner, :qsha, :context_sha, "
+                    ":status, :enc, :rsha, :reason)"
                 ),
                 {
                     "status": terminal,
@@ -332,6 +451,7 @@ async def complete_request(
                     "reason": refusal_reason,
                     "rid": request_id,
                     "qsha": qsha,
+                    "context_sha": query_context_sha256,
                     "owner": owner_token,
                 },
                 )
@@ -379,6 +499,7 @@ __all__ = (
     "lookup_request",
     "reserve_request",
     "ask_question",
+    "ask_material_question",
     "complete_request",
     "RequestIdConflict",
     "RequestInProgress",

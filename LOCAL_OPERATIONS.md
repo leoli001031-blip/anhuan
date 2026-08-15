@@ -7,7 +7,7 @@
 
 所有生命周期操作都从仓库根目录通过 `./scripts/localctl` 执行。不要绕过它直接运行 `docker compose`、按名称或前缀操作容器/卷/网络，也不要执行任何 daemon 级 `prune`。
 
-当前维护基线是仓库根目录的 `codex/engineering-closeout` checkout。旧 repair worktree 只读保留，不得从那里执行本手册命令。
+当前材料 RAG 维护基线是独立 checkout 的 `codex/material-rag`；它从 `codex/material-intake@aef1a66` 派生。旧 repair worktree 和桌面 main checkout 只读保留，不得从那里执行本节命令。
 
 `localctl` 在 `.local/state.json` 中保存本次本地工程实例的身份。它只枚举 `com.docker.compose.project` 等于该实例项目名的资源，并逐个核验以下双标签：
 
@@ -59,7 +59,7 @@
 
 `verify` 是无正文输出、无持久业务写入的工程校验，现在同时覆盖五个门：
 
-1. 数据库身份、`f0d_0006/f1_0014` 双 head、35 张 P2–P7及材料录入表 ENABLE + FORCE RLS、低权限运行角色和固定合成身份；
+1. 数据库身份、`f0d_0006/f1_0014` 双 head、35 张 P2–P7 及材料录入表 ENABLE + FORCE RLS、低权限运行角色和固定合成身份；
 2. 独立随机 scratch 数据库中的迁移失败原子性，验证后精确删除；
 3. P2/P4–P7 真实 API + RLS，包括非法关闭 409 后业务/audit/timeline/notification 零漂移，以及应用 engine/factory 重建后仍能读取 5 类关键业务；
 4. P3 真实 ClamAV 扫描、预览和 release，以及 MinIO 写失败、ClamAV 不可用后的幂等恢复；
@@ -67,7 +67,7 @@
 
 成功必须依次包含 `LOCAL_VERIFY_OK`、`LOCAL_MIGRATION_ATOMICITY_OK`、`LOCAL_BUSINESS_VERIFY_OK`、`LOCAL_INGESTION_VERIFY_OK` 和 `LOCAL_LOG_VERIFY_OK`。所有输出只有聚合计数和固定标签。失败时按 [TROUBLESHOOTING.md](TROUBLESHOOTING.md) 处理，不要改数据库“对齐数字”，也不要打印日志或手工清理未通过身份核验的资源。
 
-现役备份清单记录 35 表；历史 31/34 表工程备份在恢复时先移除后续版本新增的空 schema，再恢复旧 dump，随后由 migrator 升到当前 `f1_0014`。该兼容路径已写入合同，但本知识归属增量尚未执行真实恢复验证。
+默认工程备份清单仍记录 35 表；历史 31/34 表工程备份按既有 `f1_0014` 合同恢复。本轮 `f1_0015 / 38` 表只属于下方专属 material-RAG migrator/seed/Compose，不接入默认工程备份恢复链，也尚未执行真实恢复验证。注意：默认 `./scripts/localctl migrate` 仍走 `migrate_f1` 的 `upgrade head`，源码 head 现为 `f1_0015`，随后又按 `f1_0014` 校验，因此在本树调用默认 migrate/start 会失败并回滚，不能当作已冻结可运行的 `f1_0014` 生命周期。未单独授权前不要为了对齐 head 改默认 verify，也不要把默认栈升到 `f1_0015`。
 
 ### 验证材料录入双知识域
 
@@ -86,6 +86,18 @@
 最终 `LOCAL_MATERIAL_VERIFY_OK` 的精确聚合结果为：version=2、clean=2、preview=2、released object=2、analysis=2、page=2、candidate=8、scope=2（服务公司 1、客户 1）、客户负责人文档可见=1、底层原件/任务可见=2、同租户非负责人可见=0、跨租户可见=0、客户材料 API 政策拒绝=1、数据库政策拒绝=1、服务公司 policy draft=1、publication=0。scratch 数据库、临时对象和随机桶残留均为 0；最后 `stop` 输出 `LOCAL_STOPPED`。
 
 本命令通过只表示 `SMOKE_PASSED / NOT_PRODUCTION`。它不覆盖真实 Demo PDF、浏览器、OCR、物理 RAG、候选准确率、备份恢复、发布验收或生产。
+
+### 验证 4 份 Demo 与双知识域物理 RAG
+
+```bash
+./scripts/localctl material-rag-verify
+```
+
+该命令使用与默认工程栈完全独立的 Compose project、网络、卷和专属 runtime 镜像，并由专属 migrator/seed 验证 `f1_0015 / 38` 表；它不启动浏览器，也不启停或复用共享栈。命令完整成功时的目标是：只读解析 core manifest 指定的 4 份内部 Demo PDF，在仓库外生成 0600 opaque 快照，并完成 130 页原生解析和 6 页 F0-H OCR。只有在用户对当次运行给出明确授权后，去除联系人、电话、邮箱和签章线索的片段，以及明确登记并通过同一敏感信息过滤的 provider／client B 合成 canary、固定验证查询和 6 个无身份远端别名，才可经 endpoint-aware relay 发送到 Ark 的固定 embedding 路径；relay 同时限定模型、text-only 请求及预先生成的正文 SHA 清单。PDF、图片、原名、对象键、本机路径、自由输入、外部 LLM 和外部 OCR 均禁止。
+
+2026-08-12 的旧目标合同曾在无网络、只读专属 runtime 中得到 `Ran 17 tests / OK`。此后测试集增长到 27 项；2026-08-13 使用仓库外既有、关键包版本与 lock 对齐的隔离 Python 3.11.9 环境得到一次完整 `Ran 27 tests / OK` 快照。该 venv 不是仓库受控产物，因此只算 `TARGETED_TEST_PASSED`。其后 provider 固定子阶段码增量只执行了 `Ran 1 test / OK`，当前树未重跑完整 27 项。最新一次明确授权的专属重放已经通过本地 authorizer 的 4 份 Demo、136 页、其中 6 页 F0-H OCR 及正文 SHA 授权文件生成精确门，随后固定停在 `LOCAL_MATERIAL_RAG_PROVIDER_PROVISION_FAILED`；未进入材料持久化索引、范围检索、重建或删除，也未取得 Ark embedding 成功或聚合审计证据。失败后专属 container、volume、network、runtime image、control/private 残留均为 0，共享栈未触碰。因此仍不能记录 `LOCAL_MATERIAL_RAG_VERIFY_OK`，当前状态为 `TARGETED_TEST_PASSED / MATERIAL_RAG_SMOKE_BLOCKED / NOT_PRODUCTION`。再次运行前必须取得新的字面授权，不能自动重放。
+
+命令无论成功失败都应删除本轮专属 container、volume、network、runtime image 和仓库外快照；不得用 `prune` 或手工前缀匹配清理。失败只记录固定 reason 和聚合健康状态，不粘贴 RAGFlow 日志、正文、原名、dataset ID 或凭据。
 
 ### 反向依赖与清理边界
 

@@ -153,6 +153,19 @@ def _pdf_bytes() -> bytes:
     return output.getvalue()
 
 
+def _pdf_with_aa_actions() -> bytes:
+    from pypdf.generic import DictionaryObject, NameObject
+
+    output = io.BytesIO()
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=72, height=72)
+    additional = DictionaryObject()
+    additional[NameObject("/O")] = DictionaryObject()
+    page[NameObject("/AA")] = additional
+    writer.write(output)
+    return output.getvalue()
+
+
 def _docx_bytes(text: str = "synthetic") -> bytes:
     document = (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -659,6 +672,11 @@ class P3FormatScannerAndPreviewTests(unittest.TestCase):
             lambda: preview.build_preview(
                 "pdf", io.BytesIO(body + b"\n/JavaScript")
             ),
+        )
+        preview.build_preview("pdf", io.BytesIO(body + b"\n/AA*\xd9binary"))
+        self.assert_preview_error(
+            "P3_PDF_ACTIVE_CONTENT",
+            lambda: preview.build_preview("pdf", io.BytesIO(_pdf_with_aa_actions())),
         )
 
     def test_docx_preview_rejects_external_relationship_and_zip_bomb(self) -> None:

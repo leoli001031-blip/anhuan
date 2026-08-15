@@ -1,6 +1,6 @@
 # P7 LOCAL PRODUCTION REHEARSAL ONLY Progress
 
-> **现役摘要（2026-08-11）：** `P7_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION`；未执行真实恢复、故障切换、shell、部署或生产访问。下文保留启动时状态与过程；总状态见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)。
+> **阶段收口摘要（2026-08-11）：** `P7_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION`；未执行真实恢复、故障切换、shell、部署或生产访问。下文保留启动时状态与过程；总状态见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)。
 
 ## 2026-08-10 阶段启动
 

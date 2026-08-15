@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import uuid
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Callable
 
 from platform_foundation.f0j1.ragflow_client import (
     RagFlowClient,
@@ -23,6 +23,9 @@ from .secret_files import SecretFileError, read_provider_secret_text
 
 RAGFLOW_BASE = _ragflow_base()
 EMBEDDING_MODEL = "doubao-embedding-vision@VolcEngine"
+MATERIAL_EMBEDDING_MODEL = (
+    "doubao-embedding-vision@material-rag-ark@VolcEngine"
+)
 EMBEDDING_MODEL_NAME = "doubao-embedding-vision"
 PROVIDER = "VolcEngine"
 INSTANCE = "ark-probe"
@@ -106,7 +109,7 @@ def _ensure_provider(client: RagFlowClient, token: str) -> None:
         )
     except RagFlowProbeError as error:
         # instance already exists is acceptable (idempotent).
-        if "already" not in str(error).lower() and "409" not in str(error):
+        if not error.already_exists:
             raise
 
 
@@ -128,7 +131,43 @@ def dataset_for_enterprise(enterprise_id: uuid.UUID) -> str:
         raise RagflowProvisionError(f"DATASET_OP_FAILED {error}") from error
 
 
+def dataset_for_material_scope(
+    knowledge_scope_id: uuid.UUID,
+    *,
+    mutation_guard: Callable[[], None] | None = None,
+) -> str:
+    """Return the one physical dataset owned by a material knowledge scope.
+
+    This is an adapter-internal function.  Product APIs must resolve a
+    provider/client context and never accept or return its result.  It never
+    falls back to the historical per-enterprise dataset.
+    """
+    if not isinstance(knowledge_scope_id, uuid.UUID):
+        raise ValueError("MATERIAL_SCOPE_ID_INVALID")
+    client, token = _client()
+    name = f"f1-material-{knowledge_scope_id.hex}"
+    try:
+        with ragflow_lock(name):
+            datasets = client.list_all_datasets(token)
+            matching = [dataset for dataset in datasets if dataset.get("name") == name]
+            if len(matching) > 1:
+                raise RagflowProvisionError("RAGFLOW_SCOPE_DATASET_AMBIGUOUS")
+            if matching:
+                dataset_id = matching[0].get("id")
+            else:
+                if mutation_guard is not None:
+                    mutation_guard()
+                dataset_id = client.create_dataset(
+                    token, name, MATERIAL_EMBEDDING_MODEL
+                ).get("id")
+            if not isinstance(dataset_id, str) or not dataset_id:
+                raise RagflowProvisionError("RAGFLOW_SCOPE_DATASET_INVALID")
+            return dataset_id
+    except RagFlowProbeError as error:
+        raise RagflowProvisionError(f"MATERIAL_DATASET_OP_FAILED {error}") from error
+
+
 __all__ = (
-    "dataset_for_enterprise", "ragflow_lock", "RagflowProvisionError",
-    "EMBEDDING_MODEL",
+    "dataset_for_enterprise", "dataset_for_material_scope", "ragflow_lock", "RagflowProvisionError",
+    "EMBEDDING_MODEL", "MATERIAL_EMBEDDING_MODEL",
 )

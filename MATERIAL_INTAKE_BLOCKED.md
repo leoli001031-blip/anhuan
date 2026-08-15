@@ -12,4 +12,4 @@
 - 扫描型 PDF 当前只生成 OCR 路由提示，不执行 OCR。
 - 没有持久后台队列；请求中断后的材料用现有 process/retry 恢复。
 - 报告标题、日期和摘要会生成候选，但本轮不自动选择服务任务或创建 P4 报告；该归属仍需人工判断。
-- 本轮没有建立物理 RAGFlow dataset、索引或检索链；`service_provider/client` 只是供应商中立的知识域真值与权限边界。
+- 本轮没有建立物理 RAGFlow dataset、索引或检索链；`service_provider/client` 只是供应商中立的知识域真值与权限边界。物理 RAG 的现役阻塞见 [MATERIAL_RAG_BLOCKED.md](./MATERIAL_RAG_BLOCKED.md)，不记入本切片完成门。

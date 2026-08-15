@@ -857,7 +857,18 @@ def _scan_status(row: Mapping[str, Any]) -> str:
     reason = str(row.get("error_reason") or "")
     if reason in {
         "P3_SCANNER_UNAVAILABLE",
+        "P3_SCANNER_DNS_FAILED",
+        "P3_SCANNER_REFUSED",
         "P3_SCANNER_TIMEOUT",
+        "P3_SCANNER_CONNECT_REFUSED",
+        "P3_SCANNER_CONNECT_RESET",
+        "P3_SCANNER_CONNECT_PIPE",
+        "P3_SCANNER_VERSION_REFUSED",
+        "P3_SCANNER_VERSION_RESET",
+        "P3_SCANNER_VERSION_PIPE",
+        "P3_SCANNER_STREAM_REFUSED",
+        "P3_SCANNER_STREAM_RESET",
+        "P3_SCANNER_STREAM_PIPE",
         "P3_SCAN_ENGINE_ERROR",
         "P3_SCAN_PROTOCOL_ERROR",
     }:

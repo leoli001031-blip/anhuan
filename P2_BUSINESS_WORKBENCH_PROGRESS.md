@@ -1,6 +1,6 @@
 # P2 BUSINESS WORKBENCH Progress
 
-> **现役摘要（2026-08-11）：** `TARGETED_TEST_PASSED / SMOKE_PASSED / NOT_PRODUCTION`。下文的 `NOT_TESTED`、`f1_0005` 与“不commit”是启动时/当轮快照；当前代码 checkpoint 为 `9d712cd`、迁移 head 为 `f1_0010`。总状态见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)。
+> **阶段收口摘要（2026-08-11）：** `TARGETED_TEST_PASSED / SMOKE_PASSED / NOT_PRODUCTION`。下文的 `NOT_TESTED`、`f1_0005` 与“不commit”是启动时/当轮快照；该阶段收口时代码 checkpoint 为 `9d712cd`、迁移 head 为 `f1_0010`。现役源码头与总状态见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)。
 
 ## 2026-08-10 启动
 
