@@ -253,6 +253,13 @@ export default function DocumentDetailPage() {
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
           <ResourceLimitsCard capabilities={capabilities} />
 
+          <Alert
+            type="info"
+            showIcon
+            message="解除隔离后才可索引"
+            description="仅扫描干净、安全预览完成并已解除隔离的版本会进入知识检索。问答页使用固定场景，不接受自由文本，也不会因检索开放任意正文外发。"
+          />
+
           <Card size="small">
             <Descriptions
               size="small"

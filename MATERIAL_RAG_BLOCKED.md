@@ -1,11 +1,119 @@
 # MATERIAL RAG Blocked
 
-## 2026-08-18 03:22｜合同漏项检查点｜现役
+## 2026-08-18 23:22｜租户 Select 时序/定位｜收口
 
-- 无。
+- 无新的实施不确定项。本窗口机器门已过：`LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK`。周期1 固定码 `UAT_TENANT_SWITCH_FAILED`；一跳后周期2 通过。
+- 现役保留：`LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION`（`ARK_KEY_ROTATION_REQUIRED`）。未读、未打印、未改、未用旧 key。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。未跑 headed `open`，不得写 `HUMAN_UAT_READY`。
+- 不是 production，未部署。未 commit。
 
-当前状态：`TARGETED_TEST_PASSED / SMOKE_PASSED / DUAL_F1_MIGRATION_CONTRACT_PASSED / CHECKPOINT_READY / NOT_PRODUCTION`。
-`ARK_KEY_ROTATION_REQUIRED`。UAT 未授权。旧 20260817 检查点只读。
+当前状态：`UAT_MACHINE_GATE_PASSED / LOCAL_SYNTHETIC_BROWSER_UAT_PASSED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`
+
+## 2026-08-18 22:57｜租户 Select 时序/定位｜开工（已被 23:22 收口）
+
+- 无。任务0与上窗收口基线相符：HEAD=`a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，dirty=24，staged=0，专属 C/V/N=0，无控制目录，无并发 UAT，共享 15/9/1。
+- 根因尚未唯一证实；本窗口按 header Select popup 时序/定位竞态验证，不得写成已确认产品 bug。
+- 现役保留：`LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION`（`ARK_KEY_ROTATION_REQUIRED`）。未读、未打印、未改、未用旧 key。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。本轮不跑 headed `open`，不得写 `HUMAN_UAT_READY`。
+
+当时状态（已被 23:22 覆盖）：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`
+
+## 2026-08-18 22:45｜J6 同页清空｜live 2/2 停止
+
+- 无新的实施不确定项。本窗口末次固定码：`LOCAL_MATERIAL_RAG_UAT_BROWSER_FAILED LOCAL_BROWSER_VERIFY_FAILED UAT_TENANT_OPTION_MISSING`
+- 完整因果：周期2 start exit 0 → check exit 2；反向门 `LOCAL_MATERIAL_RAG_UAT_REVERSE {"default_404":1,"foreign_404":1,"role_403":1,"unauth_401":1}`；check `finally` 已 `down --volumes`；专属 C/V/N=0；控制目录已删除。
+- 周期1 码不同：`UAT_TENANT_SWITCH_FAILED`（61s）。一跳把租户选项从 `clickElementWithText` 改为唯一可见 dropdown 的 DOM `click()` 后，周期2 变为 `UAT_TENANT_OPTION_MISSING`（41s）。J6 五字段与 `LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK` 未出现。
+- 含义：同页清空离线已红→绿，live 在租户切换提交上停下，清空门未获 live 证明。禁止本窗口再 start。
+- 现役保留：`LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION`（`ARK_KEY_ROTATION_REQUIRED`）。未读、未打印、未改、未用旧 key。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。不得写 `HUMAN_UAT_READY`。
+- 不是 production，未部署。未 commit。
+
+当前状态：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`
+
+## 2026-08-18 22:07｜J6 同页清空｜开工（已被 22:45 收口）
+
+- 无。假绿已定位：J6 fresh `/qa` 初态已空，只查 Empty，`cleared_on_failure` 字面 true。本轮用同页 prior ready + 同 requestId 503 实测清空。
+- 现役保留：`LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION`（`ARK_KEY_ROTATION_REQUIRED`）。未读、未打印、未改、未用旧 key。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。本轮不跑 headed `open`，不得写 `HUMAN_UAT_READY`。
+- 20:24 机器门两标签暂撤销为历史，因清空门未测。
+
+当时状态（已被 22:45 覆盖）：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`
+
+## 2026-08-18 20:24｜J6 AntD6 选择提交｜收口（历史；清空假绿，已被 22:07 覆盖）
+
+- 无。本窗口无新的实施不确定项；唯一 live 已通过，未继续猜修。
+- 现役保留：`LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION`（`ARK_KEY_ROTATION_REQUIRED`）。未读、未打印、未改、未用旧 key。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。本轮未跑 headed `open`，不得写 `HUMAN_UAT_READY`。
+- 不是 production，未部署。未 commit。
+
+当时状态（历史，清空假绿）：`UAT_MACHINE_GATE_PASSED / LOCAL_SYNTHETIC_BROWSER_UAT_PASSED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`
+
+## 2026-08-18 20:07｜J6 AntD6 选择提交｜开工（已被 20:24 收口）
+
+- 当时无新的实施不确定项。`.ant-select-item-option` 提交失败仍是高置信假说，本轮先拆 select/ask/observe_request 再唯一 live 裁决。
+- 现役保留：`LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION`（`ARK_KEY_ROTATION_REQUIRED`）。未读、未打印、未改、未用旧 key。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。本轮不跑 headed `open`，成功后仍不得写 `HUMAN_UAT_READY`。
+
+当时状态（已被 20:24 覆盖）：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / NOT_PRODUCTION`
+
+## 2026-08-18 19:43｜旅程终态证据链｜历史（旧窗口 live 2/2 已封存；已被 20:24 覆盖为文档现役）
+
+
+- 本窗口末次 live 固定码：`LOCAL_MATERIAL_RAG_UAT_BROWSER_FAILED LOCAL_BROWSER_VERIFY_FAILED REQUEST_NOT_SENT`
+- 有限证据：`{"actual_phase":null,"expected_phase":"unavailable","http_status":null,"journey":"J6_FAIL_CLEAR","request_seen":0}`
+- 完整因果：周期2 start exit 0 → check exit 2；反向门 `LOCAL_MATERIAL_RAG_UAT_REVERSE {"default_404":1,"foreign_404":1,"role_403":1,"unauth_401":1}`；check `finally` 已 `down --volumes`；专属 C/V/N=0；控制目录已删除。
+- 含义：J1–J4 已过（URL `?query=` 预选了目标 query）；J6 必须把默认 `provider.shared` 改成 `fail.clear`，CDP 鼠标点击 option 未让 antd 6 提交选中值，故 `request_seen=0`。不得把离线 `Ran 48 / OK` 写成 live 通过。
+- 额度：本窗口 live 2/2 已用尽。禁止再跑 `material-rag-uat-start/check/stop`，直到下一授权窗口按 J6 证据做 DOM option click。
+- 现役保留：`LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION`（`ARK_KEY_ROTATION_REQUIRED`）。未读、未打印、未改、未用旧 key。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。本轮未跑 headed `open`，不得写 `HUMAN_UAT_READY`。
+- 不是 production，未部署。未 commit。
+
+当时状态（历史）：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / NOT_PRODUCTION`
+
+## 2026-08-18 19:07｜旅程终态证据链｜开工（已被 19:43 覆盖为文档现役）
+
+- 无新的实施不确定项。旧窗口唯一 live 码仍为 `UAT_PHASE_MISSING`（六旅程共用），本窗口先拆证据链再 live。
+- 现役保留：`LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION`（`ARK_KEY_ROTATION_REQUIRED`）。未读、未打印、未改、未用旧 key。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。本轮不跑 headed `open`，成功后仍不得写 `HUMAN_UAT_READY`。
+
+当时状态（历史）：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / NOT_PRODUCTION`。
+
+## 2026-08-18 18:53｜live 浏览器第一阶段门失败｜历史（旧窗口；已被 19:43 覆盖）
+
+- 本窗口唯一 live 固定码：`LOCAL_MATERIAL_RAG_UAT_BROWSER_FAILED LOCAL_BROWSER_VERIFY_FAILED UAT_PHASE_MISSING`
+- 完整因果签名（周期2/2）：start exit 0 → check exit 2；反向门 `LOCAL_MATERIAL_RAG_UAT_REVERSE {"default_404":1,"foreign_404":1,"role_403":1,"unauth_401":1}`；浏览器 stderr 唯一失败码 `UAT_PHASE_MISSING`；check `finally` 已 `down --volumes`；专属 C/V/N=0；控制目录已删除。
+- 含义：真实浏览器链在 `waitForPhase` 上失败（J1 `ready` / J4 `empty` / J6 `unavailable` 共用此码）。61s 墙钟与登录后第一次 20s phase 等待相符。双合法租户隔离的 live 摘要键（`valid_tenant_count=2` 等）未出现。不得把 unittest 41/OK 写成 live 通过。
+- 已落地、未 live 证明：A/B catalog 原样映射、CRM 闭集名绑定、资源同名异主拒绝、失败清理、空 lock 可删控制目录、`HUMAN_UAT_URL` / `material-rag-uat-open`。
+- 额度：live 周期 2/2 已用尽。禁止再跑 `material-rag-uat-start/check/stop`，直到下一授权窗口先拆分 phase 失败码。
+- 现役保留：`LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION`（`ARK_KEY_ROTATION_REQUIRED`）。未读、未打印、未改、未用旧 key。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。不得写 `HUMAN_UAT_READY`。
+- 不是 production，未部署。未 commit。
+
+当时状态（历史）：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / NOT_PRODUCTION`。
+
+## 2026-08-18 18:12｜双合法租户隔离失效｜历史（20:24 live 已证明隔离；当时三个 UAT 通过标签已撤销）
+
+- 当时实施阻塞：`catalog_enterprise_for_tenant()` 对所有合法租户都返回合成 `ENTERPRISE_A`；跨租户 404 只测了非成员 UUID。三个 UAT 通过标签已撤销。
+- 离线测试已改为按认证 tenant 原样映射；live 未证明。
+
+## 2026-08-18 17:34｜合成浏览器 UAT 收口｜历史（已被 18:12 撤销三个 UAT 通过标签）
+
+- 当时现役（历史，含 `HUMAN_UAT_READY`，已撤销）：`UAT_MACHINE_GATE_PASSED / LOCAL_SYNTHETIC_BROWSER_UAT_PASSED / HUMAN_UAT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。
+- 隐藏验收发现双合法租户未隔离，标签撤销，不再现役。
+
+## 2026-08-18 14:54｜产品 UAT 机器门｜历史（已被 17:34 合成浏览器 UAT 覆盖为文档现役）
+
+- 当时机器门已过（历史）：`UAT_MACHINE_GATE_PASSED`。不是 `UAT_PASSED`。
+- 现役阻塞：`LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION`（`ARK_KEY_ROTATION_REQUIRED`）。未读、未打印、未改、未用旧 key。
+- 人工产品走查未签：`HUMAN_UAT_SIGNOFF_PENDING`。
+- 不是 production，未部署。无跨租户泄漏、无权限扩大。不标 `NEEDS_USER`（本轮不需要旧 key 即可完成离线机器门）。
+
+当时状态（历史）：`UAT_MACHINE_GATE_PASSED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。
+
+## 2026-08-18 03:22｜合同漏项检查点｜历史（已被 14:54 UAT 机器门覆盖为文档现役，检查点本身仍有效）
+
+- 当时无实施阻塞。状态为 `TARGETED_TEST_PASSED / SMOKE_PASSED / DUAL_F1_MIGRATION_CONTRACT_PASSED / CHECKPOINT_READY / NOT_PRODUCTION`。
+- `ARK_KEY_ROTATION_REQUIRED`。UAT 当时未授权。旧 20260817 检查点只读。
 
 ## 2026-08-18 03:14｜合同漏项检查点｜历史（开工，已被 03:22 收口）
 
@@ -27,7 +135,7 @@
 - 仍禁止：真实客户数据、生产写入、部署、commit/push、`RELEASE_VERIFIED`。Ark key 未打印、未修改。
 - 未验证：UAT、生产、正式发布、key 轮换、共享 `anhuan-f1` 作为证据。
 
-当前状态：`TARGETED_TEST_PASSED / SMOKE_PASSED / NOT_PRODUCTION`。已被 2026-08-18 检查点窗口收口，不再现役。
+当时状态（历史）：`TARGETED_TEST_PASSED / SMOKE_PASSED / NOT_PRODUCTION`。已被 2026-08-18 检查点窗口收口，不再现役。
 
 ## 2026-08-17 20:00｜冲突探针窗口｜历史（verify 10/10 额度耗尽，已被 longrun v3 收口）
 

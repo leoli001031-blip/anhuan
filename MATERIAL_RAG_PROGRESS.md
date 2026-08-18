@@ -1,5 +1,157 @@
 # MATERIAL RAG Progress
 
+## 2026-08-18 23:22｜租户 Select 时序/定位｜PASSED_MACHINE_GATE
+
+- 现役：`UAT_MACHINE_GATE_PASSED / LOCAL_SYNTHETIC_BROWSER_UAT_PASSED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。未写 `HUMAN_UAT_READY`。未 commit。Ark 外发=0。未跑 headed open。
+- 离线：先红 `Ran 63 tests in 3.275s / FAILED (failures=6)`，后绿 `Ran 63 tests in 5.314s / OK`；一跳后再绿 `Ran 63 tests in 5.329s / OK`。failures/errors/skipped=0。`git diff --check=0`。白名单外 SHA 漂移=0。
+- Live 周期1：start exit 0 wall=34510ms `http://127.0.0.1:62243/qa`。check exit 2 wall=61523ms。反向四门全 1。`UAT_TENANT_SWITCH_FAILED`（commit 等待，非 OPTION_MISSING）。`finally` 已 down。
+- 一跳后 Live 周期2：start exit 0 wall=34217ms `http://127.0.0.1:63153/qa`。check exit 0 wall=8668ms。反向四门全 1；六旅程；J6 五字段全 1；`valid_tenant_count=2`；三项 cross-tenant；唯一 `LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK`。stop exit 0 wall=33477ms `C=0 V=0 N=0`。
+- 收口专属 C/V/N=0，控制目录已删除，共享 before/after 字节相同 C=15/V=9/N=1。证据 `/private/tmp/anhuan-material-rag-tenant-switch-20260818` detached_root=`e9125ab16ef596c3bb019d287a69398f69b2350a96c139d5a938f04363770b64`。旧证据只读。根因仍不写成已确认产品 bug；本窗验证的是 header Select 提交判定（title 对 UUID）与定位。
+
+## 2026-08-18 22:57｜租户 Select 时序/定位｜STARTED（已被 23:22 收口）
+
+- 目标：验证 header Select 时序/定位竞态（未写成产品 bug）；反向红→最小修 runner；fresh live≤2 恢复机器门。不跑 headed open / Ark / commit。
+- 顺序：任务0基线（已核）→ 定位假绿先红 → aria-controls 轮询+精确匹配+CDP 点击 → ≥58 全绿 → live start/check，成功才 stop。
+- 最大风险：AntD6 无 aria-controls 契约时需唯一含目标 option 的可见 dropdown 替代；第2周期仅允许第1周期给出新固定证据并完成一跳后使用。
+- 任务0：HEAD=`a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，branch=`codex/material-rag-scanner-protocol`，dirty=24，staged=0，`git diff --check=0`。unittest `Ran 58 tests in 3.170s / OK`。专属 C/V/N=0，无控制目录，无并发 UAT。共享 C=15/V=9/N=1。24 路径 mode/SHA 已登记 `/private/tmp/anhuan-material-rag-tenant-switch-20260818-whitelist.json`。
+- 现役保持 `TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。20:24 机器门仍为历史。
+- live 额度：本窗口 0/2。J6 clear/localctl 冻结。白名单外禁止改。
+- 任务1红：`Ran 63 tests in 3.275s` / `FAILED (failures=6)`。签名：`tenantDisplayValue` 合同缺失、`SWITCH_FN_MISSING`×5（delayed-portal / leftover-qa / refuse-bad-options / commit-failed / steps-evidence）。未改测试绕过。
+- 任务2绿：同一命令 exit 0，`Ran 63 tests in 5.314s` / `OK`，failures/errors/skipped=0。`git diff --check=0`。白名单外 SHA 漂移=0。实现：membership `name + role` 精确展示值；header `aria-controls` 轮询受控 listbox；精确 title/content；CDP 鼠标点外层 option；header+localStorage 双提交；步骤 A0/B1/A2/B3；无敏计数证据。未改 J6 clear/localctl。未采用 fallback（aria-controls 路径已进测试）。
+- Live 周期1：start 23:14:05→23:14:40 wall=34510ms exit 0，`HUMAN_UAT_URL http://127.0.0.1:62243/qa`。check 23:14:40→23:15:41 wall=61523ms exit 2。反向四门全 1。浏览器 `UAT_TENANT_SWITCH_FAILED`（localctl 冻结未转印计数 JSON；61s≈commit 等待，不是 OPTION_MISSING）。`finally` 已 down，专属 C/V/N=0，未补 stop。
+- 一跳：commit 改为 title 或可见 text 精确等于目标（避免 selection-item title 为 UUID 时假失败）；失败码编入步骤/action/计数以便冻结 localctl 转印；点击前 elementFromPoint 必须落在目标 option。离线复跑 `Ran 63 tests in 5.329s / OK`。准备周期2。
+
+## 2026-08-18 22:45｜J6 同页清空｜STOPPED_LIVE_BUDGET
+
+- 现役：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。未恢复机器门两标签。未写 `HUMAN_UAT_READY`。未 commit。Ark 外发=0。本窗口 live 2/2 用尽，禁止第三次。
+- 末次 live 固定码：`LOCAL_MATERIAL_RAG_UAT_BROWSER_FAILED LOCAL_BROWSER_VERIFY_FAILED UAT_TENANT_OPTION_MISSING`。周期1 为 `UAT_TENANT_SWITCH_FAILED`。均无六键 JSON，J6 五字段未出现。不得把离线 `Ran 58 / OK` 写成 live 通过。
+- 离线：先红 `Ran 58 / FAILED (failures=6)`，后绿 `Ran 58 tests in 3.034s / OK`。同页 prior→fail.clear、requestId 绑定、五键计算已进 runner/localctl。白名单外 SHA 漂移=0。
+- Live 周期1：start exit 0 wall=34658ms `http://127.0.0.1:57636/qa`。check exit 2 wall=60926ms。反向四门全 1。`finally` 已 down。
+- 一跳后 Live 周期2：start exit 0 wall=34828ms `http://127.0.0.1:58198/qa`。check exit 2 wall=41111ms。反向四门全 1。租户选项唯一可见 dropdown DOM click 未命中。`finally` 已 down。未跑 open。未跑 stop（栈已空）。
+- 收口专属 C/V/N=0，控制目录已删除，共享 before/after 字节相同 C=15/V=9/N=1。证据 `/private/tmp/anhuan-material-rag-j6-clear-20260818` detached_root=`47e968d32defc0e53c418a9ad137764b9fb178418eba6a6c5099a73247b20f12`。旧证据只读。
+
+## 2026-08-18 22:07｜J6 同页清空｜STARTED（已被 22:45 收口）
+
+- 目标：同一真实 document 先非空 ready（答案节点在、citation row≥1），再 fail.clear；同 Network requestId 绑定 503/unavailable 后答案节点消失且 citation rows=0。成功才恢复机器门两标签；保持 `HUMAN_UAT_NOT_READY`。不 commit。Ark 外发=0。live≤2。
+- 任务0：HEAD=`a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，branch=`codex/material-rag-scanner-protocol`，dirty=24，staged=0，`git diff --check=0`。专属 C/V/N=0，无控制目录，无并发 UAT。共享 `anhuan-f1` C=15/V=9/N=1 exited。24 路径 mode/SHA 已登记。
+- 当时现役改为 `TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。20:24 的 `UAT_MACHINE_GATE_PASSED` 视为历史假绿（J6 初态已空仍写 `cleared_on_failure: true`）。
+- 目标检查红：`Ran 58 / FAILED (failures=6)`。签名：`FRESH_EMPTY_FALSE_GREEN`、`ID_MISMATCH_FALSE_GREEN`、`J6_CLEAR_FN_MISSING`、`J6_SUMMARY_FN_MISSING`、localctl 无 `_validate_material_rag_uat_browser_summary`、`j6_prior_answer` 未入 browser_fn。
+- 离线绿：同一命令 `Ran 58 tests in 3.034s / OK`，failures/errors/skipped=0。`git diff --check=0`。白名单外 SHA 漂移=0。建议：localctl J6 摘要测试放在允许的 `test_engineering_closeout_browser_runner.py`，因 `test_material_rag_uat.py` 不在白名单。
+- Live 周期1：start 22:38:02→22:38:37 wall=34658ms exit 0，`HUMAN_UAT_URL http://127.0.0.1:57636/qa`。check 22:38:48→22:39:49 wall=60926ms exit 2。反向四门全 1。浏览器 `LOCAL_MATERIAL_RAG_UAT_BROWSER_FAILED LOCAL_BROWSER_VERIFY_FAILED UAT_TENANT_SWITCH_FAILED`（无六键 JSON，非 J6 自有码）。check `finally` 已 down，专属 C/V/N=0。
+- 一跳：J6 后收起 query Select；租户选项改为唯一可见 dropdown 外层 wrapper DOM `click()`，不再用全局 `clickElementWithText`。准备周期2。
+- 顺序：反向测试先红（fresh empty / 同页 prior / requestId 错绑 / 五键写死缺失多余）→ 最小修 runner+localctl 判据 → 明卷≥53 绿 → live start/check，成功才 stop。
+- 最大风险：两步之间 navigate 重挂载，或只查 Empty。禁止加时/retry/读正文。白名单外字节必须不变。
+
+## 2026-08-18 20:24｜J6 AntD6 选择提交｜PASSED_MACHINE_GATE（历史；J6 清空假绿，已被 22:07 重开）
+
+- 当时现役（历史，清空假绿已撤销）：`UAT_MACHINE_GATE_PASSED / LOCAL_SYNTHETIC_BROWSER_UAT_PASSED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。未写 `HUMAN_UAT_READY`。未跑 `material-rag-uat-open`。未 commit。Ark 外发=0。本窗口 live 1/1 已用尽且通过。
+- 任务0：HEAD=`a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，branch=`codex/material-rag-scanner-protocol`，dirty=24，staged=0，`git diff --check=0`。收口专属 C=0 V=0 N=0，控制目录已删除。共享 `anhuan-f1` C=15/V=9/N=1 全部 exited；start/check/stop 均 `shared_identity_unchanged=1`。
+- 任务1–3 离线：只改 `selectClosedQuery`（可见唯一 enabled 外层 `.ant-select-item-option` 上 DOM `click()`，等展示值精确等于目标后再点检索）。`REQUEST_NOT_SENT` 拆为 `QUERY_NOT_COMMITTED/select`、`ASK_NOT_AVAILABLE/ask`、`POST_NOT_OBSERVED/observe_request`；六键 `journey,expected_phase,actual_phase,request_seen,http_status,action_stage`；localctl 缺键/多键拒绝。未改产品 UI/API，未改全局 `clickElementWithText`，未加 timeout/retry。
+- 目标检查红→绿：先红 `Ran 53 / FAILED (failures=12, errors=1)`；同一命令后绿 `Ran 53 tests in 2.822s / OK`，failures/errors/skipped=0。
+- 唯一 fresh live：start 20:21:09→20:21:45 wall=36060ms exit 0，`HUMAN_UAT_URL http://127.0.0.1:61181/qa`。重叠二次 start 被锁拒绝 `LOCAL_MATERIAL_RAG_UAT_ALREADY_RUNNING`，不计入新周期。check 20:23:41→20:23:50 wall=9123ms exit 0。stop 20:24:10→20:24:43 wall=33644ms exit 0。
+- Live 摘要：`LOCAL_MATERIAL_RAG_UAT_REVERSE {"default_404":1,"foreign_404":1,"role_403":1,"unauth_401":1}`；`journeys_passed=6`；`valid_tenant_count=2`；`cross_tenant_citation_denied=2` / `cross_tenant_delete_isolated=1` / `cross_tenant_state_isolated=1`；`unavailable_503=1`；唯一尾码 `LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK`。成功路径不打印六键 JSON；J6 合同为 POST 后 `request_seen=1` 再校验 HTTP 503 与 phase `unavailable`，否则不能写 `unavailable_503=1`。
+- 建议替换：FakePage 初始值必须是 `provider.shared`，仅可见唯一 enabled exact wrapper 的 DOM `click()` 才提交 `fail.clear`；`clickElementWithText` 在 query 门抛错。证据目录 `/private/tmp/anhuan-material-rag-j6-select-20260818/cycle1`（0700/0600），detached_root=`2df34a471482e8c2a1803feb8594202f76cb5ed9a9f256947435c3f4454e05a5`。旧 `journey-gate-20260818` 只读。
+
+## 2026-08-18 20:07｜J6 AntD6 选择提交｜STARTED（已被 20:24 收口）
+
+- 目标：只修 J6 在 Ant Design 6 中选择未真实提交；拆 `select/ask/observe_request` 三码；唯一 1 次 fresh live 裁决机器门。成功仍保持 `HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING`。不 commit。Ark 外发=0。
+- 任务0：HEAD=`a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，branch=`codex/material-rag-scanner-protocol`，dirty=24，staged=0，`git diff --check=0`。专属 C/V/N=0，无控制目录，无并发 UAT。旧两窗口 live 各 2/2 永久封存。
+- 当时现役（已被 20:24 覆盖）：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / NOT_PRODUCTION`。不改产品 UI/API。不改全局 `clickElementWithText`。
+- 末次旧证：`REQUEST_NOT_SENT` / `J6_FAIL_CLEAR` / `request_seen=0`（假说：option 未提交，尚未按阶段拆码）。锁定 antd 6.5.4、`@rc-component/select` 1.8.2。
+- 顺序：红灯伪 Page（可见唯一 enabled wrapper / hidden|dup|disabled 拒绝 / 三阶段码 / J6 POST+503+unavailable）→ runner+localctl 六键证据 → 明卷≥51 红→绿 → 唯一 live start/check，成功才 stop。
+- 最大风险：已选值被当成点击已验证，或点到 hidden/stale portal。禁止加时/retry/构造 POST。失败带更精确码即停。
+
+## 2026-08-18 19:43｜旅程终态证据链｜STOPPED_LIVE_BUDGET（历史，旧窗口 live 2/2 已封存）
+
+
+- 当时现役（历史）：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / NOT_PRODUCTION`。未恢复机器门三个通过标签。未写 `HUMAN_UAT_READY`。未 commit。Ark 外发=0。本窗口 live 周期 2/2 用尽，禁止第三次。
+- 任务0：HEAD=`a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，branch=`codex/material-rag-scanner-protocol`，dirty=24，staged=0，`git diff --check=0`。收口专属 C=0 V=0 N=0，控制目录已删除。共享 `anhuan-f1` C=15/V=9/N=1 全部 exited；未启停共享栈。
+- 任务1–2 离线：先红 `Ran 47`（当时 runner 尚未 export 旅程门）后绿 `Ran 47 / OK`；周期1 live 后再补 antd6/证据测试，先红 `Ran 48 / FAILED (failures=3)`（`antd6-content`=`REQUEST_NOT_SENT`，uncommitted/disabled=`EVIDENCE_INVALID`），一跳后同一命令 `Ran 48 tests in 2.662s / OK`，failures/errors/skipped=0。
+- 一跳（仅 runner）：antd 6 选中展示在 `.ant-select-content`（不再有 `.ant-select-selection-item`）；`REQUEST_NOT_SENT` 必须带五键证据。未改产品 UI，未加 timeout/retry。
+- 本窗口 Live 周期1：`material-rag-uat-start` exit 0，wall=35038ms，`HUMAN_UAT_URL http://127.0.0.1:54291/qa`。check exit 2，wall=58392ms；反向门 `LOCAL_MATERIAL_RAG_UAT_REVERSE {"default_404":1,"foreign_404":1,"role_403":1,"unauth_401":1}`；浏览器 `LOCAL_MATERIAL_RAG_UAT_BROWSER_FAILED LOCAL_BROWSER_VERIFY_FAILED REQUEST_NOT_SENT`（当时无旅程 JSON）。`finally` 已 down。
+- 本窗口 Live 周期2：start exit 0，wall=35071ms，`HUMAN_UAT_URL http://127.0.0.1:56113/qa`。check exit 2，wall=61236ms；反向门同上；浏览器 `REQUEST_NOT_SENT {"actual_phase":null,"expected_phase":"unavailable","http_status":null,"journey":"J6_FAIL_CLEAR","request_seen":0}`。能跑到 J6 表示 J1–J4 UI 与中间 HTTP 隔离段已过。`finally` 已 down。未跑 open，未跑第三次 live。
+- 证据目录（0700/0600）：`/private/tmp/anhuan-material-rag-journey-gate-20260818/cycle1|cycle2`。旧窗口 18:53 的 `UAT_PHASE_MISSING` 与本窗口码不同，不得合并计数。
+- 下一跳（未执行）：J1–J4 的 `?query=` 已预选目标，option 点击即使无效也能过选中等待；J6 从 `/qa` 默认 `provider.shared` 必须改成「失败并清空旧结果」。应对 `.ant-select-item-option-content`/title 做一次 DOM `click()` 再等展示值。禁止加时。禁止本窗口再 live。
+
+## 2026-08-18 19:07｜旅程终态证据链｜STARTED
+
+- 目标：修 browser runner 导航/选中/请求绑定/错误分类，live 取得旅程级证据后最多一跳复验。成功只恢复机器门；保持 `HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING`。不 commit。Ark 外发=0。
+- 任务0：HEAD=`a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，branch=`codex/material-rag-scanner-protocol`，dirty=24，staged=0，`git diff --check=0`。专属 C/V/N=0，无控制目录，无并发 UAT。旧窗口 live 2/2 已封存；本窗口新授权 live≤2。
+- 当时现役（历史）：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / NOT_PRODUCTION`。冻结双租户映射、CRM 闭集、compose 标签。不先改产品 UI。
+- 顺序：伪 Page 红灯→runner 绑定 POST/终态/六旅程码→离线≥41 红→绿→live 周期1；失败才按唯一证据一跳后周期2。
+- 最大风险：`waitForPhase` 仍被旧 `/qa` 或初始 empty 假绿，或 header 被 `uatPost` 污染。禁止加时/重试掩盖竞态。
+
+## 2026-08-18 18:53｜双租户隔离+资源门｜STOPPED_LIVE_BUDGET
+
+- 当时现役（历史）：`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / NOT_PRODUCTION`。未恢复三个 UAT 通过标签。未 commit。Ark 外发=0。live 周期 2/2 用尽。
+- 任务0核：HEAD=`a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，branch=`codex/material-rag-scanner-protocol`，dirty=24，staged=0，`git diff --check=0`。收口时专属 C=0 V=0 N=0，控制目录 `/private/tmp/anhuan-material-rag-uat-874c22204849` 已删除。共享 `anhuan-f1` 仍 C=15/V=9/N=1 全部 exited；未启停共享栈。
+- 任务1–3 离线已绿：catalog 按认证 tenant 原样映射 A/B；CRM 闭集名绑定；overlay `scope=material-rag-uat`；同名异主 `FOREIGN_RESOURCE` 且未删；check `finally` 清理；空 `command.lock` 允许删控制目录；start 打印 `HUMAN_UAT_URL` + `material-rag-uat-open`。
+- 目标检查（本窗口末次）：`PYTHONPATH=$PWD/src F1_KEYCLOAK_ISSUER_URL=http://material-rag.invalid/realms/anhuan /Users/lichenhao/Desktop/安环项目/.venv/bin/python -B -m unittest tests.test_material_rag_uat tests.test_engineering_closeout_browser_runner` → 先红 `Ran 41 / FAILED (failures=8)`，后绿 `Ran 41 tests in 0.885s / OK`，failures/errors/skipped=0。覆盖双合法租户、资源身份拒绝、cleanup、人工交接。
+- Live 周期1：`material-rag-uat-start` exit 0（`HUMAN_UAT_URL http://127.0.0.1:64405/qa`，`resource_identity_verified=1` `shared_identity_unchanged=1` `human_uat_url_ready=1`）。`material-rag-uat-check` exit 2，当时无浏览器失败码转印，`finally` 已 down。
+- Live 周期2：同一 start 再绿；check 转印 `LOCAL_MATERIAL_RAG_UAT_BROWSER_FAILED LOCAL_BROWSER_VERIFY_FAILED UAT_PHASE_MISSING`；反向门 `LOCAL_MATERIAL_RAG_UAT_REVERSE {"default_404":1,"foreign_404":1,"role_403":1,"unauth_401":1}`。check `finally` 清空专属栈与控制目录。未跑第三次 live。未跑 `material-rag-uat-open`。
+- `UAT_PHASE_MISSING` 来自 `waitForPhase`（J1 ready / J4 empty / J6 unavailable 共用此码）。61s 墙钟与「登录后第一次 20s phase 等待」相符，隔离 UI 切换未取证。下一窗先把 terminal phase 拆成固定码，禁止无新证据盲重跑 check。
+
+## 2026-08-18 18:12｜双租户隔离+资源门｜STARTED
+
+- 目标：真实 Keycloak 双合法租户 A/B 隔离 + 资源身份门 + 人工 /qa 交接。当时现役（历史）`TARGETED_TEST_PASSED / MATERIAL_RAG_UAT_BLOCKED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / NOT_PRODUCTION`。不 commit。Ark 外发=0。
+- 任务0：HEAD=`a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，branch=`codex/material-rag-scanner-protocol`，dirty=24（14M+10?），staged=0，`git diff --check=0`。专属 C/V/N=0。共享 `anhuan-f1` C=15/V=9/N=1 exited，canonical fingerprint=`e55770d2a87beda210c67762936085ea24b16df4ee460ae42c62f8d22cfae376`。
+- 顺序：双租户红灯测试→最小映射/闭集 CRM→overlay+身份拒绝+失败清理→人工 URL/headed 登录→unittest≥36→live start/check/stop 各 1 次。
+- 最大风险：catalog 仍把 B 映到 A，或 `down --volumes` 误删同名异主。额度 3h、目标检查≤8、live 周期≤2。
+
+## 2026-08-18 17:34｜HUMAN_UAT_READY（历史，已撤销）
+
+- 目标完成（历史，含 `HUMAN_UAT_READY`，已撤销）：真实浏览器→本地后端→Keycloak 租户鉴权。当时状态：`UAT_MACHINE_GATE_PASSED / LOCAL_SYNTHETIC_BROWSER_UAT_PASSED / HUMAN_UAT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。未签字，未 commit。
+- 红→绿：鉴权接线测试先 4 fail + 7 err；修复后 `Ran 36 / OK`。默认 flag 关 404、无 token 401、错误角色 403、非成员/未知客户 404 均在 live reverse 变红后记 1。
+- Live gate 1/2：`./scripts/localctl material-rag-uat-check` exit 0；六旅程 `journeys_passed=6`；尾码唯一 `LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK`；`uat_actor_header_present=0`；`residual_count=0`；`cleared_on_failure=true`。随后 `material-rag-uat-stop` exit 0，专属 C/V/N=0，共享指纹未变。
+- 默认路径仍关：host `npm run build` 无 Vite UAT=1；公共 `/material-qa` 自由提问 fail-closed。外发=0。未跑 161 / material-rag-verify。
+- 建议替换：认证 tenant 一律映射合成 `ENTERPRISE_A` catalog；真实 CRM id 经 `get_account` 后按 id 排序映射 `CLIENT_A`/`CLIENT_B`。原因：本地 Keycloak 企业 UUID 不是合成 catalog 键。
+
+## 2026-08-18 16:56｜MATERIAL_RAG_HUMAN_UAT_READINESS_STARTED
+
+
+- 目标：把 OFFLINE_UI_STATE_GATE 升级为真实浏览器→本地后端→Keycloak 租户鉴权；只到 `HUMAN_UAT_READY`，不代替签字，不 commit。Ark 外发=0。
+- 任务0：HEAD=`a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，dirty=19（10M+9?），staged=0，`git diff --check=0`。19 路径 mode/size/SHA 已登记。
+- 三首因：compose 未传 `F1_MATERIAL_RAG_UAT_LOCAL`；`web.Dockerfile` 无 Vite flag；后端要 `X-Uat-Actor` 而浏览器只发 Authorization/`X-Enterprise-Id`。`uatBrowserGate.mjs` 无网络。
+- 顺序：鉴权接线红→绿 → 专属 overlay+localctl → CDP `/qa` 六旅程 → unittest/lint/build → live-check≤2 后 stop。
+- 最大风险：把 UAT flag 漏进默认栈，或用 X-Uat-Actor/合成企业绕过 Keycloak。额度 60 分钟、改动批≤6、目标检查≤12、live gate≤2。
+
+## 2026-08-18 14:54｜UAT 机器门收口
+
+- 当时现役（历史）：`UAT_MACHINE_GATE_PASSED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。未写 `UAT_PASSED` / `RELEASE_VERIFIED` / production。未 commit/push。
+- 专属 `tests.test_material_rag_uat`：exit 0，`Ran 21 / OK`。公共 `tests.test_material_rag -k test_public_`：exit 0，`Ran 4 / OK`。前端 `npm run lint` / `npm run build` 各一次 exit 0（沿用已有 sibling `node_modules`，本仓未 `npm install`）。`git diff --check=0`。本任务进程 0。
+- 固定入口 `POST /api/v1/local-uat/material-qa` 仅 `F1_MATERIAL_RAG_UAT_LOCAL=1`。公共 `/material-qa` 自由提问仍 fail-closed。真实 Ark 检索腿仍 BLOCKED。
+- 证据：[MATERIAL_RAG_UAT_REPORT.md](./MATERIAL_RAG_UAT_REPORT.md)
+
+
+## 2026-08-18 14:34｜MATERIAL_RAG_UAT_STARTED
+
+- 从 checkpoint `a72fdb186de2ab53f6c8d72983f1b24fc99dac1e` 开始离线产品 UAT 机器门。branch=`codex/material-rag-scanner-protocol`，工作树 clean。
+- 最终只允许：`UAT_MACHINE_GATE_PASSED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。不得写 `UAT_PASSED` / `RELEASE_VERIFIED` / production。
+- 公共 `/material-qa` 自由提问保持 fail-closed。真实 Ark 检索腿保持 BLOCKED，不得读/用旧 key。只用合成数据、固定 query_id、本地 deterministic adapter。
+- 顺序：枚举调用链 → UAT 场景矩阵 → 红灯专属测试 → 最小前后端 → 绿灯与 lint/build → 报告。不 commit/push。不跑 161 项、不跑 material-rag-verify、不触碰共享 `anhuan-f1`。
+- `ARK_KEY_ROTATION_REQUIRED`。UAT 改动保持未提交。
+
+### 调用链取证（修改前）
+
+- `/qa`：`src/web/src/pages/QAPage.tsx` 仅禁用告示，无表单、无 API。
+- `/controlled-documents`：P3 `DocumentLibraryPage` / `DocumentDetailPage`；上传扫描预览释放已有。
+- 客户详情：`CrmAccountDetailPage` + `ScopedMaterialUploadButton`（`kind=client`）。
+- 公共 HTTP：`POST /api/v1/material-qa`（`question`+`request_id`+可选 `client_account_id`，`extra=forbid`）→ `derive_retrieval_context` → `qa_service.ask_material_question`。任意 question 在 DB/网络前完成 `MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED`，不调 RAGFlow/Ark。
+- `run_verified_retrieval` 对任意 question 同样 fail-closed。无本地固定-query 路由。前端无 `features/material-rag/`。
+
+### UAT 场景矩阵（合成 fixture，外发=0）
+
+| ID | 角色/入口 | fixture | 动作 | 期望 UI | 期望 HTTP/码 | DB/网络副作用 | 证据 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| J1 | 服务商 /qa + 文档库 | provider 合成单元 | 上传→扫描/预览→释放→索引→`provider.shared`→引用跳转 | loading→ready；scope=服务商共享 | 200；引用仅 provider | 无外发；仅内存 catalog | UAT 测试 + browser gate |
+| J2 | 客户详情→/qa?client=A | client A 单元 | `client.current` | scope=当前客户；无 provider 串入 | 200；仅 client A | 无外发 | 同上 |
+| J3 | /qa 组合 | provider+A；B 空 | `combo.provider_client` 对 A 与 B | A=共享+A；B=仅共享，无 A 客户引用 | 200；B 不回退 A | 无外发 | 同上 |
+| J4 | 跨客户/跨租户/未授权引用 | 企业B / 未知 client | `cross.denied` / 打开他户 citation | denied；无物理 ID | 404 `MATERIAL_CONTEXT_NOT_FOUND` / `MATERIAL_CITATION_NOT_FOUND` | 无外发 | JSON 键扫描 |
+| J5 | 幂等/冲突/重建/删除 | 同 request_id | 重放；换客户；rebuild；delete | conflict / 残留 0 | 200 重放；409 `REQUEST_ID_CONFLICT`；delete `residual_count=0` | 无外发 | store 计数 |
+| J6 | QA 页状态机 | 先成功再 `fail.clear` | loading/empty/disabled/in-progress/conflict/unavailable/retry/recovery | 失败后 answer/citations 清空 | 202 `REQUEST_IN_PROGRESS`；503 `MATERIAL_RAG_UNAVAILABLE` | 无外发 | journeyMachine + browser gate |
+
+公共自由提问与未知 `query_id` 在网络/DB 前拒绝。固定入口仅 `F1_MATERIAL_RAG_UAT_LOCAL=1`。
+
 ## 2026-08-18 03:14｜合同漏项检查点｜开工回执
 
 - 目标：修 `_closed_f1_migrate_target` 不可哈希泄漏与 wave2/3/4 仍断言 head=`f1_0014` 两处确定漏项；新建 20260818 可提交检查点。本轮不跑 Docker verify、不 commit。

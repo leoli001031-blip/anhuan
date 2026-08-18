@@ -260,7 +260,7 @@ export default function DocumentLibraryPage() {
             受控文档库
           </Typography.Title>
           <Typography.Text type="secondary">
-            新文件先进入隔离区，经本地扫描与安全预览后再解除隔离
+            新文件先进入隔离区，经本地扫描与安全预览后再解除隔离；仅已解除隔离的版本可进入知识检索
           </Typography.Text>
         </div>
         <Space wrap>
@@ -286,7 +286,7 @@ export default function DocumentLibraryPage() {
         type="info"
         showIcon
         message="材料归属分为服务公司资料和客户资料"
-        description="从受控文档库上传时固定归入当前服务公司；客户专属材料请从对应客户档案详情上传。机器分析不会改变材料归属。"
+        description="从受控文档库上传时固定归入当前服务公司；客户专属材料请从对应客户档案详情上传。机器分析不会改变材料归属。问答页只接受本地固定场景，不接受自由文本。"
         style={{ marginTop: 16 }}
       />
 

@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
   access,
@@ -13,6 +14,7 @@ import {
 } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const CACHE_PREFIX = "anhuan-internal-pwa-";
 const SELECTED_ENTERPRISE_KEY = "f1-selected-enterprise";
@@ -68,12 +70,14 @@ const UPDATE_TIMEOUT_MS = 180_000;
 const PWA_OS_COMMAND_TIMEOUT_MS = 60_000;
 const PWA_OS_SHIM_TIMEOUT_MS = 20_000;
 const PWA_APP_NAME = "安环内部工作台";
-const RUN_STAGES = new Set(["all", "business", "faults", "pwa-update", "pwa-os"]);
+const RUN_STAGES = new Set(["all", "business", "faults", "pwa-update", "pwa-os", "material-rag-uat", "material-rag-uat-human"]);
 const STAGE_SUCCESS_TAGS = Object.freeze({
   all: "LOCAL_BROWSER_VERIFY_OK",
   business: "LOCAL_BROWSER_BUSINESS_VERIFY_OK",
   faults: "LOCAL_BROWSER_FAULTS_VERIFY_OK",
   "pwa-update": "LOCAL_PWA_UPDATE_VERIFY_OK",
+  "material-rag-uat": "LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK",
+  "material-rag-uat-human": "LOCAL_MATERIAL_RAG_UAT_HUMAN_SESSION_READY",
 });
 let unexpectedFailureReason = "BROWSER_STAGE_BOOTSTRAP_UNEXPECTED";
 const TOP_LEVEL_PAGES = Object.freeze([
@@ -168,9 +172,10 @@ const ROUTE_REASON_KEYS = Object.freeze({
 });
 
 class VerifyError extends Error {
-  constructor(code) {
+  constructor(code, evidence = null) {
     super(code);
     this.code = code;
+    this.evidence = evidence;
   }
 }
 
@@ -196,8 +201,36 @@ function classifyCdpCommandError(error) {
   return "other";
 }
 
-function fail(code) {
-  throw new VerifyError(code);
+function limitedJourneyEvidence(evidence) {
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return null;
+  const status = evidence.http_status;
+  const stage = evidence.action_stage;
+  return {
+    journey: typeof evidence.journey === "string" ? evidence.journey : null,
+    expected_phase: typeof evidence.expected_phase === "string" ? evidence.expected_phase : null,
+    actual_phase: typeof evidence.actual_phase === "string" ? evidence.actual_phase : null,
+    request_seen: evidence.request_seen === 1 || evidence.request_seen === true ? 1 : 0,
+    http_status: Number.isInteger(status) ? status : null,
+    action_stage: stage === "select" || stage === "ask" || stage === "observe_request" ? stage : null,
+  };
+}
+
+function withActionStage(evidence, stage) {
+  const next = evidence && typeof evidence === "object" && !Array.isArray(evidence)
+    ? evidence
+    : {
+      journey: null,
+      expected_phase: null,
+      actual_phase: null,
+      request_seen: 0,
+      http_status: null,
+    };
+  next.action_stage = stage;
+  return next;
+}
+
+function fail(code, evidence = null) {
+  throw new VerifyError(code, limitedJourneyEvidence(evidence));
 }
 
 function markUnexpectedFailure(reason) {
@@ -549,7 +582,7 @@ async function waitForDevTools(profile, child) {
   fail("CHROME_DEBUG_ENDPOINT_TIMEOUT");
 }
 
-async function launchChrome(headed, installPwa, controlDirectory) {
+async function launchChrome(headed, installPwa, controlDirectory, visible = false) {
   const executable = await findChrome();
   const temporaryRoot = path.resolve(os.tmpdir());
   const systemHome = installPwa ? await realUserHome() : null;
@@ -586,7 +619,9 @@ async function launchChrome(headed, installPwa, controlDirectory) {
     "--use-mock-keychain",
     "about:blank",
   ];
-  if (headed || installPwa) {
+  if (visible) {
+    args.unshift("--window-size=1200,900");
+  } else if (headed || installPwa) {
     args.unshift("--window-position=-10000,-10000", "--window-size=1200,900");
   } else {
     args.unshift("--headless=new");
@@ -799,6 +834,11 @@ function requestHeader(headers, expectedName) {
   return null;
 }
 
+function headerPresent(headers, expectedName) {
+  const value = requestHeader(headers, expectedName);
+  return typeof value === "string" && value.length > 0;
+}
+
 function tenantHeader(headers) {
   return requestHeader(headers, "x-enterprise-id");
 }
@@ -815,8 +855,12 @@ class BrowserPage {
     this.apiFailureRoutes = new Set();
     this.apiFailureStatuses = new Map();
     this.apiResponseEvents = [];
+    this.apiRequestEvents = [];
+    this.apiRequestsById = new Map();
     this.currentRoute = "/";
     this.tenantRequests = [];
+    this.uatHeaderSnapshots = [];
+    this.uatUiAskSnapshots = [];
     this.ingestionUploadRequests = [];
     this.offlineProbe = false;
     this.offlineDocumentFromServiceWorker = false;
@@ -830,6 +874,30 @@ class BrowserPage {
         this.apiRequestIds.add(event.requestId);
         this.apiInflight.add(event.requestId);
         this.tenantRequests.push(tenantHeader(event.request?.headers));
+        const requestPath = apiPath(event.request?.url, this.origin);
+        const method = typeof event.request?.method === "string" ? event.request.method : "";
+        this.apiRequestsById.set(event.requestId, { path: requestPath, method });
+        if (typeof requestPath === "string") {
+          this.apiRequestEvents.push({
+            path: requestPath,
+            method,
+            requestId: typeof event.requestId === "string" ? event.requestId : "",
+            authorization: headerPresent(event.request?.headers, "authorization"),
+            enterprise: headerPresent(event.request?.headers, "x-enterprise-id"),
+            actor: headerPresent(event.request?.headers, "x-uat-actor"),
+          });
+        }
+        if (
+          typeof requestPath === "string"
+          && requestPath.startsWith("/api/v1/local-uat/material-qa")
+        ) {
+          const headers = event.request?.headers;
+          this.uatHeaderSnapshots.push({
+            authorization: Boolean(requestHeader(headers, "authorization")),
+            enterprise: Boolean(requestHeader(headers, "x-enterprise-id")),
+            actor: Boolean(requestHeader(headers, "x-uat-actor")),
+          });
+        }
         if (
           apiPath(event.request?.url, this.origin) === INGESTION_UPLOAD_PATH
           && event.request?.method === "POST"
@@ -847,10 +915,13 @@ class BrowserPage {
         if (responsePath !== null) {
           this.apiResponses += 1;
           const status = Number(event.response?.status);
+          const requestMeta = this.apiRequestsById.get(event.requestId);
           this.apiResponseEvents.push({
             path: responsePath,
             route: this.currentRoute,
             status: Number.isInteger(status) ? status : null,
+            method: requestMeta?.method ?? "",
+            requestId: typeof event.requestId === "string" ? event.requestId : "",
           });
           if (!Number.isFinite(status) || status < 200 || status >= 300) {
             this.apiNon2xx += 1;
@@ -3256,8 +3327,1004 @@ async function executePwaOs() {
 
 function preflightIdentitiesForStage(stage) {
   if (stage === "pwa-os") return [];
+  if (stage === "material-rag-uat" || stage === "material-rag-uat-human") return [IDENTITIES[0]];
   if (["faults", "pwa-update"].includes(stage)) return [IDENTITIES[0]];
   return IDENTITIES;
+}
+
+const UAT_QUERY_LABELS = Object.freeze({
+  "provider.shared": "服务商共享域",
+  "client.current": "当前客户域",
+  "combo.provider_client": "服务商共享域 + 当前客户域",
+  "cross.denied": "跨范围拒绝（固定）",
+  "fail.clear": "失败并清空旧结果",
+  "progress.wait": "处理中",
+});
+const UAT_FOREIGN_ENTERPRISE = "52000000-0000-4000-8000-00000000ffff";
+const UAT_UNKNOWN_CLIENT = "52000000-0000-4000-8000-00000000eeee";
+const UAT_SEED_ENTERPRISE_A = "20000000-0000-4000-8000-00000000000a";
+const UAT_SEED_ENTERPRISE_B = "20000000-0000-4000-8000-00000000000b";
+const UAT_ENTERPRISE_A_RECORD = "41000000-0000-4000-8000-000000000011";
+const UAT_ENTERPRISE_A_VERSION = "41000000-0000-4000-8000-000000000012";
+const UAT_ENTERPRISE_B_RECORD = "41000000-0000-4000-8000-000000000091";
+const UAT_ENTERPRISE_B_VERSION = "41000000-0000-4000-8000-000000000092";
+const UAT_CLIENT_A_NAME = "UAT-SYNTH-CLIENT-A";
+const UAT_CLIENT_B_NAME = "UAT-SYNTH-CLIENT-B";
+
+const UAT_ASK_PATH = "/api/v1/local-uat/material-qa";
+const UAT_PHASE_PREFIX = "material-rag-phase-";
+const UAT_CLOSED_HTTP = new Set([200, 202, 401, 403, 404, 409, 503]);
+const UAT_JOURNEYS = Object.freeze({
+  J1_PROVIDER: Object.freeze({
+    queryId: "provider.shared",
+    expectedPhase: "ready",
+    expectedStatus: 200,
+  }),
+  J2_CLIENT_A: Object.freeze({
+    queryId: "client.current",
+    expectedPhase: "ready",
+    expectedStatus: 200,
+  }),
+  J3_COMBO_A: Object.freeze({
+    queryId: "combo.provider_client",
+    expectedPhase: "ready",
+    expectedStatus: 200,
+  }),
+  J3_COMBO_B: Object.freeze({
+    queryId: "combo.provider_client",
+    expectedPhase: "ready",
+    expectedStatus: 200,
+  }),
+  J4_CLIENT_B_EMPTY: Object.freeze({
+    queryId: "client.current",
+    expectedPhase: "empty",
+    expectedStatus: 200,
+  }),
+  J6_FAIL_CLEAR: Object.freeze({
+    queryId: "fail.clear",
+    expectedPhase: "unavailable",
+    expectedStatus: 503,
+  }),
+});
+
+function qaSearch(search = "") {
+  if (search == null || search === "") return "";
+  return String(search).startsWith("?") ? String(search) : `?${search}`;
+}
+
+function isAskPost(event) {
+  return Boolean(
+    event
+    && event.path === UAT_ASK_PATH
+    && event.method === "POST",
+  );
+}
+
+function networkRequestId(event) {
+  return typeof event?.requestId === "string" && event.requestId.length > 0 ? event.requestId : null;
+}
+
+function httpFailureCode(status) {
+  return UAT_CLOSED_HTTP.has(status) ? `HTTP_${status}` : "HTTP_OTHER";
+}
+
+async function waitForPageCondition(page, check, code, evidence) {
+  const timeout = Number.isInteger(page.waitTimeout) ? page.waitTimeout : WAIT_TIMEOUT_MS;
+  const poll = Number.isInteger(page.pollMs) ? page.pollMs : 50;
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await check()) return;
+    await delay(poll);
+  }
+  fail(code, evidence);
+}
+
+async function readUiPhase(page) {
+  const testid = await page.evaluate(
+    `document.querySelector("[data-testid^='material-rag-phase-']")?.getAttribute("data-testid") ?? ""`,
+  );
+  if (typeof testid !== "string" || !testid.startsWith(UAT_PHASE_PREFIX)) return null;
+  return testid.slice(UAT_PHASE_PREFIX.length) || null;
+}
+
+async function navigateQa(page, search = "") {
+  const targetSearch = qaSearch(search);
+  page.currentRoute = "/qa";
+  const target = `${page.origin}/qa${targetSearch}`;
+  const result = await page.cdp.call("Page.navigate", { url: target }, page.sessionId);
+  if (result?.errorText) fail("BROWSER_NAVIGATION_FAILED");
+  await page.waitForExpression(
+    `location.origin === ${JSON.stringify(page.origin)} && location.pathname === "/qa" && location.search === ${JSON.stringify(targetSearch)} && document.readyState === "complete"`,
+    "BROWSER_NAVIGATION_TIMEOUT",
+  );
+  await waitForApplicationShell(page);
+}
+
+function selectedQueryMatchesExpression(label) {
+  return `(() => {
+    const marked = document.querySelector("[data-testid=\\"material-rag-query\\"]");
+    if (!marked) return false;
+    const root = (typeof marked.closest === "function" && marked.closest(".ant-select")) || marked;
+    const labeled = root.querySelector(".ant-select-selection-item, .ant-select-content-value, .ant-select-content");
+    if (!labeled) return false;
+    const wanted = ${JSON.stringify(label)};
+    const title = (labeled.getAttribute("title") ?? "").trim();
+    const text = (labeled.textContent ?? "").trim();
+    return title === wanted || text === wanted;
+  })()`;
+}
+
+function querySelectExpandedExpression() {
+  return `(() => {
+    const marked = document.querySelector("[data-testid=\\"material-rag-query\\"]");
+    if (!marked) return false;
+    const root = (typeof marked.closest === "function" && marked.closest(".ant-select")) || marked;
+    const combobox = root.querySelector("[role=\\"combobox\\"]");
+    if (combobox && combobox.getAttribute("aria-expanded") === "true") return true;
+    return String(root.className || "").includes("ant-select-open");
+  })()`;
+}
+
+function isVisibleNodeExpression(identifier) {
+  return `(${identifier} && ${identifier}.hidden !== true && ${identifier}.getAttribute("aria-hidden") !== "true" && (typeof ${identifier}.getBoundingClientRect !== "function" || (${identifier}.getBoundingClientRect().width > 0 && ${identifier}.getBoundingClientRect().height > 0)) && (typeof getComputedStyle !== "function" || (getComputedStyle(${identifier}).display !== "none" && getComputedStyle(${identifier}).visibility !== "hidden")))`;
+}
+
+function clickVerifiedQueryOptionExpression(label) {
+  return `(() => {
+    const wanted = ${JSON.stringify(label)};
+    const dropdowns = Array.from(document.querySelectorAll(".ant-select-dropdown")).filter((dd) => {
+      if (!dd) return false;
+      if (String(dd.className || "").includes("ant-select-dropdown-hidden")) return false;
+      return ${isVisibleNodeExpression("dd")};
+    });
+    if (dropdowns.length !== 1) return false;
+    const options = Array.from(dropdowns[0].querySelectorAll(".ant-select-item-option")).filter((el) => {
+      if (!el) return false;
+      if (String(el.className || "").includes("ant-select-item-option-disabled")) return false;
+      if (el.getAttribute("aria-disabled") === "true") return false;
+      return ${isVisibleNodeExpression("el")};
+    });
+    const byTitle = options.filter((el) => (el.getAttribute("title") ?? "").trim() === wanted);
+    let match = null;
+    if (byTitle.length === 1) {
+      match = byTitle[0];
+    } else if (byTitle.length > 1) {
+      return false;
+    } else {
+      const byContent = [];
+      for (const el of options) {
+        const inner = el.querySelector(".ant-select-item-option-content");
+        if ((inner?.textContent ?? "").trim() !== wanted) continue;
+        const wrapper = (typeof el.closest === "function" && el.closest(".ant-select-item-option")) || el;
+        if (!byContent.includes(wrapper)) byContent.push(wrapper);
+      }
+      if (byContent.length !== 1) return false;
+      match = byContent[0];
+    }
+    if (!match || typeof match.click !== "function") return false;
+    match.click();
+    return true;
+  })()`;
+}
+
+async function selectClosedQuery(page, queryId, evidence = null) {
+  const label = UAT_QUERY_LABELS[queryId];
+  if (typeof label !== "string") fail("UAT_QUERY_ID_INVALID");
+  const staged = withActionStage(evidence, "select");
+  if (await page.evaluate(selectedQueryMatchesExpression(label))) {
+    return;
+  }
+  await page.clickElement("[data-testid=\"material-rag-query\"]", "UAT_QUERY_SELECT_MISSING");
+  await waitForPageCondition(
+    page,
+    async () => page.evaluate(querySelectExpandedExpression()),
+    "QUERY_NOT_COMMITTED",
+    staged,
+  );
+  const clicked = await page.evaluate(clickVerifiedQueryOptionExpression(label));
+  if (clicked !== true) fail("QUERY_NOT_COMMITTED", staged);
+  await waitForPageCondition(
+    page,
+    async () => page.evaluate(selectedQueryMatchesExpression(label)),
+    "QUERY_NOT_COMMITTED",
+    staged,
+  );
+}
+
+async function clickAsk(page, evidence = null) {
+  const staged = withActionStage(evidence, "ask");
+  const state = await page.evaluate(`(() => {
+    const el = document.querySelector("[data-testid=\\"material-rag-ask\\"]");
+    if (!el) return "missing";
+    if (el.disabled === true || el.getAttribute("disabled") != null || el.getAttribute("aria-disabled") === "true") {
+      return "disabled";
+    }
+    return "ok";
+  })()`);
+  if (state === "missing") fail("UAT_ASK_BUTTON_MISSING", staged);
+  if (state !== "ok") fail("ASK_NOT_AVAILABLE", staged);
+  await page.clickElement("[data-testid=\"material-rag-ask\"]", "UAT_ASK_BUTTON_MISSING");
+}
+
+function summarizeUiAskHeaders(page) {
+  let authorizationHeaderPresent = 0;
+  let enterpriseHeaderPresent = 0;
+  let uatActorHeaderPresent = 0;
+  for (const snapshot of page.uatUiAskSnapshots ?? []) {
+    if (snapshot.authorization) authorizationHeaderPresent = 1;
+    if (snapshot.enterprise) enterpriseHeaderPresent = 1;
+    if (snapshot.actor) uatActorHeaderPresent = 1;
+  }
+  return {
+    authorization_header_present: authorizationHeaderPresent,
+    enterprise_header_present: enterpriseHeaderPresent,
+    uat_actor_header_present: uatActorHeaderPresent,
+  };
+}
+
+async function runUiAskJourney(page, journey, options = {}) {
+  const spec = UAT_JOURNEYS[journey];
+  if (!spec) fail("UAT_QUERY_ID_INVALID");
+  const evidence = {
+    journey,
+    expected_phase: spec.expectedPhase,
+    actual_phase: null,
+    request_seen: 0,
+    http_status: null,
+  };
+  if (options.navigate !== false) {
+    await navigateQa(page, options.search ?? "");
+  }
+  await selectClosedQuery(page, spec.queryId, evidence);
+  if (!Array.isArray(page.apiRequestEvents)) page.apiRequestEvents = [];
+  if (!Array.isArray(page.apiResponseEvents)) page.apiResponseEvents = [];
+  if (!Array.isArray(page.uatUiAskSnapshots)) page.uatUiAskSnapshots = [];
+  const requestBoundary = page.apiRequestEvents.length;
+  const responseBoundary = page.apiResponseEvents.length;
+  await clickAsk(page, evidence);
+  await waitForPageCondition(
+    page,
+    async () => page.apiRequestEvents.slice(requestBoundary).some(isAskPost),
+    "POST_NOT_OBSERVED",
+    withActionStage(evidence, "observe_request"),
+  );
+  evidence.request_seen = 1;
+  const uiRequest = page.apiRequestEvents.slice(requestBoundary).find(isAskPost);
+  await waitForPageCondition(
+    page,
+    async () => page.apiResponseEvents.slice(responseBoundary).some(isAskPost),
+    "RESPONSE_TIMEOUT",
+    withActionStage(evidence, "observe_request"),
+  );
+  const uiResponse = page.apiResponseEvents.slice(responseBoundary).find(
+    (event) => isAskPost(event) && networkRequestId(event) !== null && networkRequestId(event) === networkRequestId(uiRequest),
+  );
+  if (!uiResponse) {
+    fail("REQUEST_RESPONSE_ID_MISMATCH", withActionStage(evidence, "observe_request"));
+  }
+  evidence.http_status = uiResponse?.status ?? null;
+  if (evidence.http_status !== spec.expectedStatus) {
+    fail(httpFailureCode(evidence.http_status), evidence);
+  }
+  page.uatUiAskSnapshots.push({
+    authorization: Boolean(uiRequest?.authorization),
+    enterprise: Boolean(uiRequest?.enterprise),
+    actor: Boolean(uiRequest?.actor),
+  });
+  await waitForPageCondition(
+    page,
+    async () => {
+      evidence.actual_phase = await readUiPhase(page);
+      return Boolean(evidence.actual_phase) && evidence.actual_phase !== "loading";
+    },
+    "UI_NO_TERMINAL",
+    evidence,
+  );
+  if (evidence.actual_phase !== spec.expectedPhase) {
+    fail(`UI_GOT_${evidence.actual_phase}`, evidence);
+  }
+  return evidence;
+}
+
+const J6_DOC_ATTR = "data-j6-doc";
+
+async function observeQaSurface(page) {
+  const observed = await page.evaluate(`(() => {
+    const answer = document.querySelector("[data-testid=\\"material-rag-answer\\"]");
+    const table = document.querySelector("[data-testid=\\"material-rag-citations\\"]");
+    const rows = table ? table.querySelectorAll("tbody tr.ant-table-row") : [];
+    return {
+      answer_present: answer ? 1 : 0,
+      citation_rows: rows.length,
+    };
+  })()`);
+  return {
+    answer_present: observed && observed.answer_present === 1 ? 1 : 0,
+    citation_rows: Number.isInteger(observed?.citation_rows) ? observed.citation_rows : 0,
+  };
+}
+
+function computeJ6Clearance(prior, after, sameDocument) {
+  const j6_prior_answer = prior?.answer_present === 1 ? 1 : 0;
+  const j6_prior_citations = Number(prior?.citation_rows) >= 1 ? 1 : 0;
+  const j6_same_document = sameDocument === true || sameDocument === 1 ? 1 : 0;
+  const j6_answer_cleared = after?.answer_present === 0 ? 1 : 0;
+  const j6_citations_cleared = after?.citation_rows === 0 ? 1 : 0;
+  const cleared_on_failure = (
+    j6_prior_answer === 1
+    && j6_prior_citations === 1
+    && j6_same_document === 1
+    && j6_answer_cleared === 1
+    && j6_citations_cleared === 1
+  );
+  return {
+    j6_prior_answer,
+    j6_prior_citations,
+    j6_same_document,
+    j6_answer_cleared,
+    j6_citations_cleared,
+    cleared_on_failure,
+  };
+}
+
+async function stampJ6Document(page) {
+  const token = randomUUID();
+  const ok = await page.evaluate(`(() => {
+    document.documentElement.setAttribute(${JSON.stringify(J6_DOC_ATTR)}, ${JSON.stringify(token)});
+    return document.documentElement.getAttribute(${JSON.stringify(J6_DOC_ATTR)});
+  })()`);
+  if (ok !== token) fail("J6_DOCUMENT_STAMP_FAILED");
+  return token;
+}
+
+async function readJ6DocumentStamp(page) {
+  return page.evaluate(`document.documentElement.getAttribute(${JSON.stringify(J6_DOC_ATTR)})`);
+}
+
+async function runJ6FailClear(page) {
+  await navigateQa(page);
+  const stamp = await stampJ6Document(page);
+  await runUiAskJourney(page, "J1_PROVIDER", { navigate: false });
+  const prior = await observeQaSurface(page);
+  if (prior.answer_present !== 1) fail("J6_PRIOR_ANSWER_MISSING");
+  if (!(prior.citation_rows >= 1)) fail("J6_PRIOR_CITATIONS_MISSING");
+  await runUiAskJourney(page, "J6_FAIL_CLEAR", { navigate: false });
+  const after = await observeQaSurface(page);
+  const same = (await readJ6DocumentStamp(page)) === stamp;
+  if (!same) fail("J6_DOCUMENT_REMOUNTED");
+  const summary = computeJ6Clearance(prior, after, same);
+  if (summary.j6_answer_cleared !== 1) fail("J6_ANSWER_NOT_CLEARED");
+  if (summary.j6_citations_cleared !== 1) fail("J6_CITATIONS_NOT_CLEARED");
+  if (summary.cleared_on_failure !== true) fail("J6_NOT_CLEARED_ON_FAILURE");
+  await page.evaluate(`(() => {
+    const marked = document.querySelector("[data-testid=\\"material-rag-query\\"]");
+    const root = marked && typeof marked.closest === "function" ? marked.closest(".ant-select") : marked;
+    const expanded = root?.querySelector("[role=\\"combobox\\"]");
+    if (expanded && expanded.getAttribute("aria-expanded") === "true" && typeof root.click === "function") {
+      root.click();
+    }
+    const active = document.activeElement;
+    if (active && typeof active.blur === "function") active.blur();
+  })()`);
+  return summary;
+}
+
+async function pageJson(page, expression) {
+  return page.evaluate(expression);
+}
+
+function tenantDisplayValue(membership) {
+  if (!membership || typeof membership !== "object" || Array.isArray(membership)) return null;
+  const name = typeof membership.name === "string" ? membership.name.trim() : "";
+  const role = typeof membership.role === "string" ? membership.role.trim() : "";
+  if (!name || !role) return null;
+  return `${name} (${role})`;
+}
+
+function limitedTenantSwitchEvidence(evidence) {
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+    return {
+      step: null,
+      action: null,
+      visible_dropdown_count: null,
+      target_dropdown_count: null,
+      target_option_count: null,
+    };
+  }
+  const step = evidence.step;
+  const action = evidence.action;
+  const count = (value) => (Number.isInteger(value) ? value : null);
+  return {
+    step: step === "A0" || step === "B1" || step === "A2" || step === "B3" ? step : null,
+    action: action === "locate" || action === "click" || action === "commit" ? action : null,
+    visible_dropdown_count: count(evidence.visible_dropdown_count),
+    target_dropdown_count: count(evidence.target_dropdown_count),
+    target_option_count: count(evidence.target_option_count),
+  };
+}
+
+function failTenantSwitch(family, evidence) {
+  const limited = limitedTenantSwitchEvidence(evidence);
+  const step = limited.step || "XX";
+  const action = limited.action ? limited.action.toUpperCase() : "LOCATE";
+  const v = Number.isInteger(limited.visible_dropdown_count) ? limited.visible_dropdown_count : 0;
+  const t = Number.isInteger(limited.target_dropdown_count) ? limited.target_dropdown_count : 0;
+  const o = Number.isInteger(limited.target_option_count) ? limited.target_option_count : 0;
+  const prefix = family === "SWITCH" || family === "OPEN" || family === "CONTROL" || family === "STEP"
+    ? family
+    : "OPTION";
+  throw new VerifyError(
+    `UAT_TENANT_${prefix}_${step}_${action}_V${v}_T${t}_O${o}`,
+    limited,
+  );
+}
+
+function tenantSwitchCounts(snapshot) {
+  return {
+    visible_dropdown_count: Number.isInteger(snapshot?.visible_dropdown_count) ? snapshot.visible_dropdown_count : 0,
+    target_dropdown_count: Number.isInteger(snapshot?.target_dropdown_count) ? snapshot.target_dropdown_count : 0,
+    target_option_count: Number.isInteger(snapshot?.target_option_count) ? snapshot.target_option_count : 0,
+  };
+}
+
+function headerTenantDisplay() {
+  const header = document.querySelector(".ant-layout-header");
+  if (!header || typeof header.querySelector !== "function") return "";
+  const select = header.querySelector(".ant-select");
+  const root = select || header;
+  const item = root.querySelector(".ant-select-selection-item")
+    || root.querySelector(".ant-select-content")
+    || root.querySelector(".ant-select-selection-item-content");
+  if (!item) return "";
+  const title = (item.getAttribute("title") ?? "").trim();
+  const text = (item.textContent ?? "").trim();
+  return text || title;
+}
+
+function headerTenantMatches(wanted) {
+  const header = document.querySelector(".ant-layout-header");
+  if (!header || typeof header.querySelector !== "function") return false;
+  const select = header.querySelector(".ant-select");
+  const root = select || header;
+  const item = root.querySelector(".ant-select-selection-item")
+    || root.querySelector(".ant-select-content")
+    || root.querySelector(".ant-select-selection-item-content");
+  if (!item) return false;
+  const title = (item.getAttribute("title") ?? "").trim();
+  const text = (item.textContent ?? "").trim();
+  return title === wanted || text === wanted;
+}
+
+function tenantSwitchBudget(page) {
+  if (Number.isFinite(page?.waitTimeout) && page.waitTimeout > 0) {
+    return Math.min(page.waitTimeout, WAIT_TIMEOUT_MS);
+  }
+  return WAIT_TIMEOUT_MS;
+}
+
+async function switchMembershipTenant(page, membership, step) {
+  if (step !== "A0" && step !== "B1" && step !== "A2" && step !== "B3") {
+    failTenantSwitch("STEP", {
+      step: null,
+      action: "locate",
+      visible_dropdown_count: 0,
+      target_dropdown_count: 0,
+      target_option_count: 0,
+    });
+  }
+  const wanted = tenantDisplayValue(membership);
+  const enterpriseId = membership && typeof membership.enterprise_id === "string"
+    ? membership.enterprise_id
+    : "";
+  if (!wanted || !enterpriseId) fail("UAT_VALID_TENANT_MISSING");
+  const current = await pageJson(
+    page,
+    `localStorage.getItem(${JSON.stringify(SELECTED_ENTERPRISE_KEY)})`,
+  );
+  if (current === enterpriseId) return;
+  const emptyCounts = {
+    step,
+    visible_dropdown_count: 0,
+    target_dropdown_count: 0,
+    target_option_count: 0,
+  };
+  try {
+    await page.clickElement(".ant-layout-header .ant-select", "UAT_TENANT_SWITCH_CONTROL_MISSING");
+  } catch (error) {
+    if (error instanceof VerifyError && error.code === "UAT_TENANT_SWITCH_CONTROL_MISSING") {
+      failTenantSwitch("CONTROL", { ...emptyCounts, action: "locate" });
+    }
+    throw error;
+  }
+  try {
+    await page.waitForExpression(
+      `document.querySelector('.ant-layout-header [role="combobox"]')?.getAttribute("aria-expanded") === "true"`,
+      "UAT_TENANT_SWITCH_OPEN_FAILED",
+    );
+  } catch (error) {
+    if (error instanceof VerifyError && error.code === "UAT_TENANT_SWITCH_OPEN_FAILED") {
+      failTenantSwitch("OPEN", { ...emptyCounts, action: "locate" });
+    }
+    throw error;
+  }
+  const inspectExpr = `(${inspectTenantSwitchLocate.toString()})(${JSON.stringify(wanted)})`;
+  const deadline = Date.now() + tenantSwitchBudget(page);
+  let located = {
+    visible_dropdown_count: 0,
+    target_dropdown_count: 0,
+    target_option_count: 0,
+    x: null,
+    y: null,
+  };
+  while (Date.now() < deadline) {
+    located = await page.evaluate(inspectExpr);
+    const counts = tenantSwitchCounts(located);
+    if (counts.target_dropdown_count > 1 || counts.target_option_count > 1) {
+      failTenantSwitch("OPTION", { step, action: "locate", ...counts });
+    }
+    if (
+      counts.target_dropdown_count === 1
+      && counts.target_option_count === 1
+      && Number.isFinite(located?.x)
+      && Number.isFinite(located?.y)
+    ) {
+      break;
+    }
+    await delay(75);
+  }
+  const counts = tenantSwitchCounts(located);
+  if (counts.target_dropdown_count !== 1 || counts.target_option_count !== 1) {
+    failTenantSwitch("OPTION", { step, action: "locate", ...counts });
+  }
+  if (!Number.isFinite(located?.x) || !Number.isFinite(located?.y)) {
+    failTenantSwitch("OPTION", { step, action: "click", ...counts });
+  }
+  await dispatchTenantOptionClick(page, located.x, located.y);
+  const commitExpr = `localStorage.getItem(${JSON.stringify(SELECTED_ENTERPRISE_KEY)}) === ${JSON.stringify(enterpriseId)} && (${headerTenantMatches.toString()})(${JSON.stringify(wanted)})`;
+  try {
+    await page.waitForExpression(commitExpr, "UAT_TENANT_SWITCH_FAILED");
+  } catch (error) {
+    if (error instanceof VerifyError && error.code === "UAT_TENANT_SWITCH_FAILED") {
+      failTenantSwitch("SWITCH", { step, action: "commit", ...counts });
+    }
+    throw error;
+  }
+}
+
+async function dispatchTenantOptionClick(page, x, y) {
+  await page.cdp.call(
+    "Input.dispatchMouseEvent",
+    { type: "mouseMoved", x, y },
+    page.sessionId,
+  );
+  await page.cdp.call(
+    "Input.dispatchMouseEvent",
+    { type: "mousePressed", x, y, button: "left", clickCount: 1 },
+    page.sessionId,
+  );
+  await page.cdp.call(
+    "Input.dispatchMouseEvent",
+    { type: "mouseReleased", x, y, button: "left", clickCount: 1 },
+    page.sessionId,
+  );
+}
+
+function inspectTenantSwitchLocate(wanted) {
+  function isVisibleLayoutBox(el, extraHiddenClass) {
+    if (!el || el.hidden) return false;
+    if (typeof el.getAttribute === "function" && el.getAttribute("aria-hidden") === "true") return false;
+    const className = el.className == null ? "" : String(el.className);
+    if (extraHiddenClass && className.includes(extraHiddenClass)) return false;
+    const style = getComputedStyle(el);
+    const box = el.getBoundingClientRect();
+    if (style.display === "none" || style.visibility === "hidden") return false;
+    if (box.width <= 0 || box.height <= 0) return false;
+    return true;
+  }
+  function optionExactMatch(el) {
+    const title = (el.getAttribute("title") ?? "").trim();
+    const contentNode = typeof el.querySelector === "function"
+      ? el.querySelector(".ant-select-item-option-content")
+      : null;
+    const content = ((contentNode && contentNode.textContent) || el.textContent || "").trim();
+    return title === wanted || content === wanted;
+  }
+  function isEnabledOption(el) {
+    if (!el || el.hidden) return false;
+    if (typeof el.getAttribute === "function" && el.getAttribute("aria-disabled") === "true") return false;
+    const className = el.className == null ? "" : String(el.className);
+    if (className.includes("ant-select-item-option-disabled")) return false;
+    return isVisibleLayoutBox(el);
+  }
+  function collectTargetOptions(dropdown) {
+    const matches = [];
+    if (!dropdown || typeof dropdown.querySelectorAll !== "function") return matches;
+    for (const el of dropdown.querySelectorAll(".ant-select-item-option")) {
+      if (!isEnabledOption(el)) continue;
+      if (optionExactMatch(el)) matches.push(el);
+    }
+    return matches;
+  }
+  function resolveControlledDropdown(controls) {
+    if (!controls || typeof document.getElementById !== "function") return null;
+    const node = document.getElementById(controls);
+    if (!node) return null;
+    const className = node.className == null ? "" : String(node.className);
+    if (className.includes("ant-select-dropdown")) return node;
+    if (typeof node.closest === "function") {
+      const parent = node.closest(".ant-select-dropdown");
+      if (parent) return parent;
+    }
+    return null;
+  }
+  const visible = [];
+  for (const el of document.querySelectorAll(".ant-select-dropdown")) {
+    if (isVisibleLayoutBox(el, "ant-select-dropdown-hidden")) visible.push(el);
+  }
+  const combobox = document.querySelector('.ant-layout-header [role="combobox"]');
+  const controls = combobox && typeof combobox.getAttribute === "function"
+    ? (combobox.getAttribute("aria-controls") ?? "").trim()
+    : "";
+  const targetDropdowns = [];
+  if (controls) {
+    const controlled = resolveControlledDropdown(controls);
+    if (controlled && visible.includes(controlled)) targetDropdowns.push(controlled);
+  } else {
+    for (const dropdown of visible) {
+      if (collectTargetOptions(dropdown).length > 0) targetDropdowns.push(dropdown);
+    }
+  }
+  const matches = [];
+  for (const dropdown of targetDropdowns) {
+    matches.push(...collectTargetOptions(dropdown));
+  }
+  let x = null;
+  let y = null;
+  if (matches.length === 1) {
+    const match = matches[0];
+    if (typeof match.scrollIntoView === "function") {
+      match.scrollIntoView({ block: "center", inline: "center" });
+    }
+    const box = match.getBoundingClientRect();
+    if (box.width > 0 && box.height > 0) {
+      x = box.left + box.width / 2;
+      y = box.top + box.height / 2;
+      if (typeof document.elementFromPoint === "function") {
+        const hit = document.elementFromPoint(x, y);
+        if (!(hit && (hit === match || (typeof match.contains === "function" && match.contains(hit))))) {
+          x = null;
+          y = null;
+        }
+      }
+    }
+  }
+  return {
+    visible_dropdown_count: visible.length,
+    target_dropdown_count: targetDropdowns.length,
+    target_option_count: matches.length,
+    x,
+    y,
+  };
+}
+
+async function executeMaterialRagUat(cdp, origin, secretDirectory) {
+  return runIdentity(
+    cdp,
+    origin,
+    secretDirectory,
+    IDENTITIES[0],
+    async (page) => {
+      await page.waitForExpression(
+        `Boolean(localStorage.getItem(${JSON.stringify(SELECTED_ENTERPRISE_KEY)}))`,
+        "ADMIN_TENANT_CONTEXT_MISSING",
+      );
+      const memberships = await pageJson(page, `(async () => {
+        const key = Object.keys(sessionStorage).find((name) => name.startsWith("oidc.user:"));
+        const session = JSON.parse(sessionStorage.getItem(key) || "null");
+        const token = session && typeof session.access_token === "string" ? session.access_token : "";
+        if (!token) return { ok: false, reason: "SESSION" };
+        const response = await fetch("/api/v1/users/me/enterprises", {
+          headers: { Authorization: "Bearer " + token },
+        });
+        if (response.status !== 200) return { ok: false, reason: "MEMBERSHIP", status: response.status };
+        const payload = await response.json();
+        const items = Array.isArray(payload) ? payload : [];
+        return { ok: true, items };
+      })()`);
+      const membershipItems = Array.isArray(memberships?.items) ? memberships.items : [];
+      const memberA = membershipItems.find((item) => item && item.enterprise_id === UAT_SEED_ENTERPRISE_A);
+      const memberB = membershipItems.find((item) => item && item.enterprise_id === UAT_SEED_ENTERPRISE_B);
+      if (!memberships?.ok || !tenantDisplayValue(memberA) || !tenantDisplayValue(memberB)) {
+        fail("UAT_VALID_TENANT_MISSING");
+      }
+      const validTenantCount = 2;
+
+      await switchMembershipTenant(page, memberA, "A0");
+      const created = await pageJson(page, `(async () => {
+        const key = Object.keys(sessionStorage).find((name) => name.startsWith("oidc.user:"));
+        const session = JSON.parse(sessionStorage.getItem(key) || "null");
+        const token = session && typeof session.access_token === "string" ? session.access_token : "";
+        const enterprise = localStorage.getItem(${JSON.stringify(SELECTED_ENTERPRISE_KEY)});
+        if (!token || !enterprise) return { ok: false, reason: "SESSION" };
+        const listed = await fetch("/api/v1/views-reports/crm/accounts", {
+          headers: {
+            Authorization: "Bearer " + token,
+            "X-Enterprise-Id": enterprise,
+          },
+        });
+        if (listed.status !== 200) return { ok: false, reason: "CRM_LIST", status: listed.status };
+        const listing = await listed.json();
+        const items = Array.isArray(listing.items) ? listing.items : [];
+        const ids = {};
+        for (const display_name of [${JSON.stringify(UAT_CLIENT_A_NAME)}, ${JSON.stringify(UAT_CLIENT_B_NAME)}]) {
+          const existing = items.find((item) => item && item.display_name === display_name);
+          if (existing && typeof existing.id === "string") {
+            ids[display_name] = existing.id;
+            continue;
+          }
+          const response = await fetch("/api/v1/views-reports/crm/accounts", {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer " + token,
+              "X-Enterprise-Id": enterprise,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ display_name, stage: "lead" }),
+          });
+          if (response.status !== 201) return { ok: false, reason: "CRM", status: response.status };
+          const payload = await response.json();
+          if (typeof payload.id !== "string") return { ok: false, reason: "CRM_ID" };
+          ids[display_name] = payload.id;
+        }
+        return {
+          ok: true,
+          first: ids[${JSON.stringify(UAT_CLIENT_A_NAME)}],
+          second: ids[${JSON.stringify(UAT_CLIENT_B_NAME)}],
+        };
+      })()`);
+      if (!created?.ok || typeof created.first !== "string" || typeof created.second !== "string") {
+        fail("UAT_CRM_ACCOUNT_CREATE_FAILED");
+      }
+
+      async function uatPost(path, body, enterpriseOverride) {
+        return pageJson(page, `(async () => {
+          const key = Object.keys(sessionStorage).find((name) => name.startsWith("oidc.user:"));
+          const session = JSON.parse(sessionStorage.getItem(key) || "null");
+          const token = session && typeof session.access_token === "string" ? session.access_token : "";
+          const enterprise = ${JSON.stringify(enterpriseOverride ?? null)}
+            || localStorage.getItem(${JSON.stringify(SELECTED_ENTERPRISE_KEY)});
+          if (!token || !enterprise) return { status: 0, detail: "SESSION" };
+          const response = await fetch(${JSON.stringify(path)}, {
+            method: "POST",
+            headers: {
+              Authorization: "Bearer " + token,
+              "X-Enterprise-Id": enterprise,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(${JSON.stringify(body)}),
+          });
+          let payload = {};
+          try { payload = await response.json(); } catch { payload = {}; }
+          return {
+            status: response.status,
+            detail: typeof payload.detail === "string" ? payload.detail : null,
+            residual_count: typeof payload.residual_count === "number" ? payload.residual_count : null,
+            answer: payload.answer === null || typeof payload.answer === "string" ? payload.answer : null,
+            citation_count: Array.isArray(payload.citations) ? payload.citations.length : 0,
+            citation_record_id: Array.isArray(payload.citations)
+              && payload.citations[0]
+              && typeof payload.citations[0].document_record_id === "string"
+              ? payload.citations[0].document_record_id
+              : null,
+            refusal_reason: typeof payload.refusal_reason === "string" ? payload.refusal_reason : null,
+          };
+        })()`);
+      }
+
+      await runUiAskJourney(page, "J1_PROVIDER");
+      const providerText = await pageJson(
+        page,
+        `document.querySelector("[data-testid='material-rag-answer']")?.textContent ?? ""`,
+      );
+      if (!String(providerText).includes("SYNTH_PROVIDER")) fail("UAT_PROVIDER_ANSWER_MISSING");
+
+      await runUiAskJourney(page, "J2_CLIENT_A", {
+        search: `?client=${encodeURIComponent(created.first)}&query=client.current`,
+      });
+      await runUiAskJourney(page, "J3_COMBO_A", {
+        search: `?client=${encodeURIComponent(created.first)}&query=combo.provider_client`,
+      });
+      await runUiAskJourney(page, "J3_COMBO_B", {
+        search: `?client=${encodeURIComponent(created.second)}&query=combo.provider_client`,
+      });
+      await runUiAskJourney(page, "J4_CLIENT_B_EMPTY", {
+        search: `?client=${encodeURIComponent(created.second)}&query=client.current`,
+      });
+
+      const foreignEnterprise = await uatPost(
+        "/api/v1/local-uat/material-qa",
+        { query_id: "provider.shared", request_id: randomUUID() },
+        UAT_FOREIGN_ENTERPRISE,
+      );
+      const unknownClient = await uatPost(
+        "/api/v1/local-uat/material-qa",
+        {
+          query_id: "client.current",
+          request_id: randomUUID(),
+          client_account_id: UAT_UNKNOWN_CLIENT,
+        },
+      );
+      const foreignCitation = await uatPost(
+        "/api/v1/local-uat/material-qa/citation",
+        {
+          document_record_id: UAT_ENTERPRISE_B_RECORD,
+          document_version_id: UAT_ENTERPRISE_B_VERSION,
+        },
+      );
+      if (
+        foreignEnterprise.status !== 404
+        || unknownClient.status !== 404
+        || unknownClient.detail !== "MATERIAL_CONTEXT_NOT_FOUND"
+        || foreignCitation.status !== 404
+        || foreignCitation.detail !== "MATERIAL_CITATION_NOT_FOUND"
+      ) {
+        fail("UAT_DENIED_404_MISSING");
+      }
+
+      const replayId = randomUUID();
+      const firstAsk = await uatPost(
+        "/api/v1/local-uat/material-qa",
+        { query_id: "provider.shared", request_id: replayId },
+      );
+      const replayAsk = await uatPost(
+        "/api/v1/local-uat/material-qa",
+        { query_id: "provider.shared", request_id: replayId },
+      );
+      const conflictAsk = await uatPost(
+        "/api/v1/local-uat/material-qa",
+        {
+          query_id: "client.current",
+          request_id: replayId,
+          client_account_id: created.first,
+        },
+      );
+      await uatPost(
+        "/api/v1/local-uat/material-qa/rebuild",
+        { client_account_id: created.first },
+      );
+      const deleted = await uatPost(
+        "/api/v1/local-uat/material-qa/delete",
+        { client_account_id: created.first },
+      );
+      if (
+        firstAsk.status !== 200
+        || replayAsk.status !== 200
+        || conflictAsk.status !== 409
+        || conflictAsk.detail !== "REQUEST_ID_CONFLICT"
+        || deleted.status !== 200
+        || deleted.residual_count !== 0
+      ) {
+        fail("UAT_IDEMPOTENT_OR_RESIDUAL_FAILED");
+      }
+
+      if (!UAT_JOURNEYS.J6_FAIL_CLEAR) fail("UAT_QUERY_ID_INVALID");
+      const j6Clearance = await runJ6FailClear(page);
+
+      const isolationRequestId = randomUUID();
+      const tenantAAsk = await uatPost(
+        "/api/v1/local-uat/material-qa",
+        { query_id: "provider.shared", request_id: isolationRequestId },
+        UAT_SEED_ENTERPRISE_A,
+      );
+      await switchMembershipTenant(page, memberB, "B1");
+      const tenantBAsk = await uatPost(
+        "/api/v1/local-uat/material-qa",
+        { query_id: "provider.shared", request_id: isolationRequestId },
+      );
+      if (
+        tenantAAsk.status !== 200
+        || tenantBAsk.status !== 200
+        || tenantAAsk.citation_record_id !== UAT_ENTERPRISE_A_RECORD
+        || tenantBAsk.citation_record_id !== UAT_ENTERPRISE_B_RECORD
+        || tenantAAsk.citation_record_id === tenantBAsk.citation_record_id
+      ) {
+        fail("UAT_CROSS_TENANT_STATE_LEAK");
+      }
+      const bOpensA = await uatPost(
+        "/api/v1/local-uat/material-qa/citation",
+        {
+          document_record_id: UAT_ENTERPRISE_A_RECORD,
+          document_version_id: UAT_ENTERPRISE_A_VERSION,
+        },
+      );
+      await switchMembershipTenant(page, memberA, "A2");
+      const aOpensB = await uatPost(
+        "/api/v1/local-uat/material-qa/citation",
+        {
+          document_record_id: UAT_ENTERPRISE_B_RECORD,
+          document_version_id: UAT_ENTERPRISE_B_VERSION,
+        },
+      );
+      if (
+        bOpensA.status !== 404
+        || bOpensA.detail !== "MATERIAL_CITATION_NOT_FOUND"
+        || aOpensB.status !== 404
+        || aOpensB.detail !== "MATERIAL_CITATION_NOT_FOUND"
+      ) {
+        fail("UAT_CROSS_TENANT_CITATION_LEAK");
+      }
+      const deletedAfterIsolation = await uatPost(
+        "/api/v1/local-uat/material-qa/delete",
+        { client_account_id: created.first },
+        UAT_SEED_ENTERPRISE_A,
+      );
+      await switchMembershipTenant(page, memberB, "B3");
+      const tenantBAfterDelete = await uatPost(
+        "/api/v1/local-uat/material-qa",
+        { query_id: "provider.shared", request_id: isolationRequestId },
+      );
+      if (
+        deletedAfterIsolation.status !== 200
+        || deletedAfterIsolation.residual_count !== 0
+        || tenantBAfterDelete.status !== 200
+        || tenantBAfterDelete.citation_record_id !== UAT_ENTERPRISE_B_RECORD
+      ) {
+        fail("UAT_CROSS_TENANT_DELETE_LEAK");
+      }
+
+      const headerSummary = summarizeUiAskHeaders(page);
+      if (headerSummary.authorization_header_present !== 1) fail("UAT_AUTHORIZATION_HEADER_MISSING");
+      if (headerSummary.enterprise_header_present !== 1) fail("UAT_ENTERPRISE_HEADER_MISSING");
+      if (headerSummary.uat_actor_header_present !== 0) fail("UAT_ACTOR_HEADER_PRESENT");
+
+      return {
+        stage: "material-rag-uat",
+        journeys_passed: 6,
+        residual_count: deleted.residual_count,
+        authorization_header_present: headerSummary.authorization_header_present,
+        enterprise_header_present: headerSummary.enterprise_header_present,
+        uat_actor_header_present: headerSummary.uat_actor_header_present,
+        denied_404: 1,
+        conflict_409: 1,
+        unavailable_503: 1,
+        valid_tenant_count: validTenantCount,
+        cross_tenant_state_isolated: 1,
+        cross_tenant_citation_denied: 2,
+        cross_tenant_delete_isolated: 1,
+        human_uat_url_ready: 1,
+        j6_prior_answer: j6Clearance.j6_prior_answer,
+        j6_prior_citations: j6Clearance.j6_prior_citations,
+        j6_same_document: j6Clearance.j6_same_document,
+        j6_answer_cleared: j6Clearance.j6_answer_cleared,
+        j6_citations_cleared: j6Clearance.j6_citations_cleared,
+        cleared_on_failure: j6Clearance.cleared_on_failure,
+      };
+    },
+  );
+}
+
+async function executeMaterialRagUatHuman(cdp, origin, secretDirectory) {
+  return runIdentity(
+    cdp,
+    origin,
+    secretDirectory,
+    IDENTITIES[0],
+    async (page) => {
+      await page.waitForExpression(
+        `Boolean(localStorage.getItem(${JSON.stringify(SELECTED_ENTERPRISE_KEY)}))`,
+        "ADMIN_TENANT_CONTEXT_MISSING",
+      );
+      await navigateQa(page);
+      await page.waitForExpression(
+        `Boolean(document.querySelector("[data-testid=\\"material-rag-query\\"]"))`,
+        "UAT_HUMAN_QA_MISSING",
+      );
+      return {
+        stage: "material-rag-uat-human",
+        human_uat_url_ready: 1,
+      };
+    },
+  );
 }
 
 async function executeStage(
@@ -3289,6 +4356,12 @@ async function executeStage(
   if (stage === "pwa-os") {
     return executePwaOs(cdp, origin, secretDirectory, controlDirectory, runtime);
   }
+  if (stage === "material-rag-uat") {
+    return executeMaterialRagUat(cdp, origin, secretDirectory);
+  }
+  if (stage === "material-rag-uat-human") {
+    return executeMaterialRagUatHuman(cdp, origin, secretDirectory);
+  }
   fail("BROWSER_STAGE_INVALID");
 }
 
@@ -3313,7 +4386,8 @@ async function main() {
     preflightIdentitiesForStage(stage),
   );
   markUnexpectedFailure("BROWSER_STAGE_LAUNCH_UNEXPECTED");
-  const runtime = await launchChrome(headed, installPwa, controlDirectory);
+  const visibleHuman = stage === "material-rag-uat-human";
+  const runtime = await launchChrome(headed || visibleHuman, installPwa, controlDirectory, visibleHuman);
   let signalCleanupStarted = false;
   const onSignal = () => {
     if (signalCleanupStarted) return;
@@ -3342,7 +4416,14 @@ async function main() {
     primaryError = error;
   } finally {
     try {
-      await cleanupChrome(runtime);
+      if (visibleHuman && primaryError == null) {
+        if (runtime.cdp) {
+          runtime.cdp.close();
+          runtime.cdp = null;
+        }
+      } else {
+        await cleanupChrome(runtime);
+      }
     } catch (error) {
       cleanupError = error;
     }
@@ -3355,8 +4436,41 @@ async function main() {
   process.stdout.write(`${JSON.stringify(summary)}\n${STAGE_SUCCESS_TAGS[stage]}\n`);
 }
 
-main().catch((error) => {
-  const code = error instanceof VerifyError ? error.code : unexpectedFailureReason;
-  process.stderr.write(`LOCAL_BROWSER_VERIFY_FAILED ${code}\n`);
-  process.exitCode = 1;
-});
+function isMainModule() {
+  try {
+    return fileURLToPath(import.meta.url) === path.resolve(process.argv[1] ?? "");
+  } catch {
+    return false;
+  }
+}
+
+if (isMainModule()) {
+  main().catch((error) => {
+    const code = error instanceof VerifyError ? error.code : unexpectedFailureReason;
+    const lines = [`LOCAL_BROWSER_VERIFY_FAILED ${code}`];
+    if (error instanceof VerifyError && error.evidence) {
+      lines.push(JSON.stringify(error.evidence));
+    }
+    process.stderr.write(`${lines.join("\n")}\n`);
+    process.exitCode = 1;
+  });
+}
+
+export {
+  UAT_JOURNEYS,
+  UAT_QUERY_LABELS,
+  VerifyError,
+  clickAsk,
+  computeJ6Clearance,
+  headerTenantDisplay,
+  inspectTenantSwitchLocate,
+  limitedTenantSwitchEvidence,
+  navigateQa,
+  observeQaSurface,
+  runJ6FailClear,
+  runUiAskJourney,
+  selectClosedQuery,
+  summarizeUiAskHeaders,
+  switchMembershipTenant,
+  tenantDisplayValue,
+};

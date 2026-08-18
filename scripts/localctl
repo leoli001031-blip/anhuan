@@ -25,7 +25,7 @@ import urllib.request
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -51,6 +51,7 @@ LOCK_FILE = STATE_DIR / "command.lock"
 REVERSE_JOURNAL = STATE_DIR / "reverse-recovery.json"
 BROWSER_RECOVERY_JOURNAL = STATE_DIR / "browser-recovery.json"
 COMPOSE_FILE = ROOT / "infra/f1/docker-compose.local.yml"
+MATERIAL_RAG_UAT_COMPOSE_FILE = ROOT / "infra/f1/docker-compose.material-rag-uat.yml"
 MATERIAL_RAG_COMPOSE_FILE = ROOT / "infra/f1/docker-compose.material-rag.yml"
 MATERIAL_RAG_CLAMD_DIAG_COMPOSE_FILE = (
     ROOT / "infra/f1/docker-compose.material-rag-clamd-diag.yml"
@@ -111,6 +112,62 @@ MATERIAL_RAG_ARK_KEY_FILE = Path(
 )
 MATERIAL_RAG_SCOPE = "material-rag-verification"
 MATERIAL_RAG_PROJECT_RE = re.compile(r"anhuan-material-rag-[0-9a-f]{12}\Z")
+MATERIAL_RAG_UAT_CONTROL_SCHEMA = "anhuan-material-rag-uat-control-v1"
+MATERIAL_RAG_UAT_WORKSPACE_SHA256 = hashlib.sha256(
+    f"anhuan-material-rag-uat-control-v1\0{ROOT}\0{os.geteuid()}".encode("utf-8")
+).hexdigest()
+MATERIAL_RAG_UAT_PROBE = MATERIAL_RAG_UAT_WORKSPACE_SHA256[:12]
+MATERIAL_RAG_UAT_CONTROL_DIR = Path("/private/tmp") / (
+    f"anhuan-material-rag-uat-{MATERIAL_RAG_UAT_PROBE}"
+)
+MATERIAL_RAG_UAT_STATE_FILE = MATERIAL_RAG_UAT_CONTROL_DIR / "state.json"
+MATERIAL_RAG_UAT_ENV_FILE = MATERIAL_RAG_UAT_CONTROL_DIR / "compose.env"
+MATERIAL_RAG_UAT_LOCK_FILE = MATERIAL_RAG_UAT_CONTROL_DIR / "command.lock"
+MATERIAL_RAG_UAT_SECRETS_DIR = MATERIAL_RAG_UAT_CONTROL_DIR / "secrets"
+MATERIAL_RAG_UAT_HOME_DIR = MATERIAL_RAG_UAT_CONTROL_DIR / "home"
+MATERIAL_RAG_UAT_TMP_DIR = MATERIAL_RAG_UAT_CONTROL_DIR / "tmp"
+MATERIAL_RAG_UAT_SHARED_FILE = MATERIAL_RAG_UAT_CONTROL_DIR / "shared.sha256"
+MATERIAL_RAG_UAT_PROJECT_RE = re.compile(r"anhuan-material-rag-uat-[0-9a-f]{12}\Z")
+MATERIAL_RAG_UAT_SCOPE = "material-rag-uat"
+MATERIAL_RAG_UAT_OWNED_FILE = MATERIAL_RAG_UAT_CONTROL_DIR / "owned.json"
+MATERIAL_RAG_UAT_MUTATION_SERVICES = (
+    "secret-init",
+    "postgres",
+    "keycloak",
+    "keycloak-provisioner",
+    "minio",
+    "redis",
+    "clamd",
+    "migrator",
+    "seed",
+    "api",
+    "worker",
+    "dispatcher",
+    "web",
+)
+MATERIAL_RAG_UAT_VOLUME_KEYS = (
+    "migrator_secrets",
+    "seed_secrets",
+    "provisioner_secrets",
+    "api_secrets",
+    "worker_secrets",
+    "dispatcher_secrets",
+    "postgres_secrets",
+    "keycloak_secrets",
+    "minio_secrets",
+    "backup_secrets",
+    "postgres_data",
+    "keycloak_data",
+    "minio_data",
+    "redis_data",
+)
+MATERIAL_RAG_UAT_NETWORK_KEYS = ("localnet", "edge")
+MATERIAL_RAG_UAT_IDENTITY_LABELS = (
+    "com.docker.compose.project",
+    "com.docker.compose.service",
+    "io.anhuan.scope",
+    "io.anhuan.project-id",
+)
 MATERIAL_RAG_RUNTIME_IMAGE_RE = re.compile(
     r"anhuan-material-rag-runtime:[0-9a-f]{12}\Z"
 )
@@ -8436,6 +8493,1137 @@ def _material_rag_lock() -> object:
         os.close(descriptor)
 
 
+def _material_rag_uat_environment() -> dict[str, str]:
+    return {
+        "DOCKER_CONFIG": str(MATERIAL_RAG_UAT_HOME_DIR / ".docker"),
+        "DOCKER_HOST": "unix:///var/run/docker.sock",
+        "HOME": str(MATERIAL_RAG_UAT_HOME_DIR),
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "NO_PROXY": "127.0.0.1,localhost,postgres,keycloak,minio,redis,clamd,api,web",
+        "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        "TMPDIR": str(MATERIAL_RAG_UAT_TMP_DIR),
+        "no_proxy": "127.0.0.1,localhost,postgres,keycloak,minio,redis,clamd,api,web",
+    }
+
+
+def _material_rag_uat_identity() -> dict[str, str]:
+    probe = MATERIAL_RAG_UAT_PROBE
+    return {
+        "schema": MATERIAL_RAG_UAT_CONTROL_SCHEMA,
+        "project_id": str(
+            uuid.uuid5(
+                uuid.NAMESPACE_URL,
+                f"anhuan-material-rag-uat:{MATERIAL_RAG_UAT_WORKSPACE_SHA256}",
+            )
+        ),
+        "compose_project": f"anhuan-material-rag-uat-{probe}",
+        "database": f"anhuan_mruat_{MATERIAL_RAG_UAT_WORKSPACE_SHA256[:24]}",
+        "runtime_image": f"anhuan-material-rag-uat-runtime:{probe}",
+        "web_image": f"anhuan-material-rag-uat-web:{probe}",
+    }
+
+
+def _material_rag_uat_new_state() -> dict[str, object]:
+    return {**_material_rag_uat_identity(), "web_port": _free_port()}
+
+
+def _material_rag_uat_validate_state(state: object) -> dict[str, object]:
+    identity = _material_rag_uat_identity()
+    if not isinstance(state, dict):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_STATE_INVALID")
+    required = {
+        "schema",
+        "project_id",
+        "compose_project",
+        "database",
+        "web_port",
+        "runtime_image",
+        "web_image",
+    }
+    if set(state) != required:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_STATE_INVALID")
+    try:
+        port = int(state["web_port"])
+        uuid.UUID(str(state["project_id"]))
+    except (TypeError, ValueError):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_STATE_INVALID") from None
+    if (
+        not MATERIAL_RAG_UAT_PROJECT_RE.fullmatch(str(state["compose_project"]))
+        or not str(state["database"]).startswith("anhuan_mruat_")
+        or not 1024 <= port <= 65535
+    ):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_STATE_INVALID")
+    for key, value in identity.items():
+        if str(state[key]) != value:
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_STATE_INVALID")
+    return {**state, "web_port": port}
+
+
+def _material_rag_uat_write_docker_config() -> None:
+    docker_dir = MATERIAL_RAG_UAT_HOME_DIR / ".docker"
+    if not docker_dir.exists():
+        docker_dir.mkdir(mode=0o700)
+    _directory(docker_dir)
+    plugin_dir = _docker_plugin_directory()
+    payload: dict[str, object] = {}
+    if plugin_dir is not None:
+        payload["cliPluginsExtraDirs"] = [plugin_dir]
+    data = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "ascii"
+    )
+    path = docker_dir / "config.json"
+    if path.exists():
+        _secure_file(path, maximum=4096)
+        if path.read_bytes() != data:
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_DOCKER_CONFIG_DRIFT")
+    else:
+        _exclusive_write(path, data)
+
+
+def _material_rag_uat_write_secrets(state: dict[str, object]) -> None:
+    existing = {
+        name for name in ALL_SECRET_NAMES if (MATERIAL_RAG_UAT_SECRETS_DIR / name).exists()
+    }
+    if existing:
+        if existing != set(ALL_SECRET_NAMES):
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_SECRET_SET_INCOMPLETE")
+        return
+    passwords = {
+        name: _secret_value()
+        for name in TEXT_SECRET_NAMES
+        if name
+        not in {
+            "f0d_migration_dsn",
+            "f1_bootstrap_dsn",
+            "f1_migration_dsn",
+            "minio_root_user",
+            "f1_qa_key",
+        }
+    }
+    passwords["minio_root_user"] = "local" + secrets.token_hex(12)
+    passwords["f1_qa_key"] = secrets.token_hex(32)
+    database = str(state["database"])
+    bootstrap_password = quote(passwords["f0d_bootstrap_password"], safe="")
+    migration_password = quote(passwords["f0d_migration_password"], safe="")
+    passwords["f0d_migration_dsn"] = (
+        "postgresql://f0d_migration:"
+        f"{migration_password}@postgres:5432/{database}"
+    )
+    passwords["f1_bootstrap_dsn"] = (
+        "postgresql://f0d_bootstrap:"
+        f"{bootstrap_password}@postgres:5432/{database}"
+    )
+    passwords["f1_migration_dsn"] = passwords["f0d_migration_dsn"]
+    for name in TEXT_SECRET_NAMES:
+        path = MATERIAL_RAG_UAT_SECRETS_DIR / name
+        if not path.exists():
+            _exclusive_write(path, passwords[name].encode("ascii"))
+    f0i_path = MATERIAL_RAG_UAT_SECRETS_DIR / "f0i_key"
+    if not f0i_path.exists():
+        _exclusive_write(f0i_path, secrets.token_bytes(32))
+
+
+def _material_rag_uat_write_env(state: dict[str, object]) -> None:
+    origin = f"http://127.0.0.1:{int(state['web_port'])}"
+    values = {
+        "LOCAL_DATABASE": state["database"],
+        "LOCAL_GID": os.getegid(),
+        "LOCAL_PROJECT_ID": state["project_id"],
+        "LOCAL_RUNTIME_IMAGE": state["runtime_image"],
+        "LOCAL_SECRETS_DIR": str(MATERIAL_RAG_UAT_SECRETS_DIR),
+        "LOCAL_UID": os.geteuid(),
+        "LOCAL_WEB_IMAGE": state["web_image"],
+        "LOCAL_WEB_ORIGIN": origin,
+        "LOCAL_WEB_PORT": state["web_port"],
+    }
+    data = "".join(f"{key}={values[key]}\n" for key in sorted(values)).encode("utf-8")
+    if MATERIAL_RAG_UAT_ENV_FILE.exists():
+        _secure_file(MATERIAL_RAG_UAT_ENV_FILE, maximum=16384)
+        if MATERIAL_RAG_UAT_ENV_FILE.read_bytes() != data:
+            _atomic_replace(MATERIAL_RAG_UAT_ENV_FILE, data)
+    else:
+        _exclusive_write(MATERIAL_RAG_UAT_ENV_FILE, data)
+
+
+def _material_rag_uat_initialize() -> dict[str, object]:
+    if not MATERIAL_RAG_UAT_CONTROL_DIR.exists():
+        MATERIAL_RAG_UAT_CONTROL_DIR.mkdir(mode=0o700)
+    _directory(MATERIAL_RAG_UAT_CONTROL_DIR)
+    for directory in (
+        MATERIAL_RAG_UAT_SECRETS_DIR,
+        MATERIAL_RAG_UAT_HOME_DIR,
+        MATERIAL_RAG_UAT_TMP_DIR,
+    ):
+        if not directory.exists():
+            directory.mkdir(mode=0o700)
+        _directory(directory)
+    if MATERIAL_RAG_UAT_STATE_FILE.exists():
+        _secure_file(MATERIAL_RAG_UAT_STATE_FILE, maximum=16384)
+        try:
+            state = json.loads(MATERIAL_RAG_UAT_STATE_FILE.read_text(encoding="ascii"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_STATE_INVALID") from None
+        state = _material_rag_uat_validate_state(state)
+    else:
+        state = _material_rag_uat_new_state()
+        payload = (
+            json.dumps(state, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode("ascii")
+        _exclusive_write(MATERIAL_RAG_UAT_STATE_FILE, payload)
+    _material_rag_uat_write_secrets(state)
+    _validate_secret_set(MATERIAL_RAG_UAT_SECRETS_DIR)
+    _material_rag_uat_write_docker_config()
+    _material_rag_uat_write_env(state)
+    return state
+
+
+@contextlib.contextmanager
+def _material_rag_uat_lock() -> object:
+    _directory(MATERIAL_RAG_UAT_CONTROL_DIR)
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(MATERIAL_RAG_UAT_LOCK_FILE, flags, 0o600)
+    except OSError:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_LOCK_INVALID") from None
+    try:
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (BlockingIOError, OSError):
+        os.close(descriptor)
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_ALREADY_RUNNING") from None
+    try:
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _material_rag_uat_run(
+    arguments: list[str],
+    *,
+    capture: bool = False,
+    timeout: int = 600,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    try:
+        result = subprocess.run(
+            arguments,
+            cwd=ROOT,
+            env=_material_rag_uat_environment(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE if capture else None,
+            stderr=subprocess.PIPE if capture else None,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_COMMAND_FAILED") from None
+    if check and result.returncode != 0:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_COMMAND_FAILED")
+    return result
+
+
+def _material_rag_uat_compose(
+    state: dict[str, object],
+    *arguments: str,
+    capture: bool = False,
+    timeout: int = 600,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        _docker(),
+        "compose",
+        "--ansi",
+        "never",
+        "--project-name",
+        str(state["compose_project"]),
+        "--env-file",
+        str(MATERIAL_RAG_UAT_ENV_FILE),
+        "-f",
+        str(COMPOSE_FILE),
+        "-f",
+        str(MATERIAL_RAG_UAT_COMPOSE_FILE),
+        "--profile",
+        "ops",
+        *arguments,
+    ]
+    return _material_rag_uat_run(
+        command, capture=capture, timeout=timeout, check=check
+    )
+
+
+def _material_rag_uat_inventory(project: str) -> tuple[int, int, int]:
+    containers = _resource_ids("ps", project)
+    volumes = _resource_ids("volume", project)
+    networks = _resource_ids("network", project)
+    return len(containers), len(volumes), len(networks)
+
+
+def _material_rag_uat_docker_json(arguments: list[str]) -> tuple[int, object]:
+    try:
+        result = subprocess.run(
+            [_docker(), *arguments],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_COMMAND_FAILED") from None
+    if result.returncode != 0:
+        return result.returncode, None
+    try:
+        return 0, json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_INSPECT_INVALID") from None
+
+
+def _material_rag_uat_identity_labels(labels: object) -> dict[str, str]:
+    if not isinstance(labels, dict):
+        return {}
+    return {
+        key: str(value)
+        for key, value in sorted(labels.items())
+        if key in MATERIAL_RAG_UAT_IDENTITY_LABELS
+    }
+
+
+def _material_rag_uat_config_digest(payload: dict[str, object]) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+
+def _material_rag_uat_resource_row(kind: str, payload: dict[str, object]) -> dict[str, object]:
+    if kind == "container":
+        config = payload.get("Config") if isinstance(payload.get("Config"), dict) else {}
+        state = payload.get("State") if isinstance(payload.get("State"), dict) else {}
+        restart = payload.get("RestartCount", 0)
+        if type(restart) is not int:
+            restart = 0
+        return {
+            "kind": "container",
+            "name": str(payload.get("Name", "")).lstrip("/"),
+            "id": str(payload.get("Id", "")),
+            "image": str(payload.get("Image") or config.get("Image") or ""),
+            "config": _material_rag_uat_config_digest(
+                {
+                    "image": config.get("Image"),
+                    "cmd": config.get("Cmd"),
+                    "entrypoint": config.get("Entrypoint"),
+                    "labels": _material_rag_uat_identity_labels(config.get("Labels")),
+                }
+            ),
+            "state": str(state.get("Status", "")),
+            "restart": restart,
+        }
+    labels = payload.get("Labels")
+    name = str(payload.get("Name", ""))
+    if kind == "volume":
+        resource_id = name
+        image = str(payload.get("Driver", ""))
+        config = _material_rag_uat_config_digest(
+            {
+                "driver": payload.get("Driver"),
+                "labels": _material_rag_uat_identity_labels(labels),
+            }
+        )
+    else:
+        resource_id = str(payload.get("Id", ""))
+        image = str(payload.get("Driver", ""))
+        config = _material_rag_uat_config_digest(
+            {
+                "driver": payload.get("Driver"),
+                "labels": _material_rag_uat_identity_labels(labels),
+            }
+        )
+    return {
+        "kind": kind,
+        "name": name,
+        "id": resource_id,
+        "image": image,
+        "config": config,
+        "state": "exists",
+        "restart": 0,
+    }
+
+
+def _material_rag_uat_project_rows(project: str) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for resource_id in _resource_ids("ps", project):
+        code, payload = _material_rag_uat_docker_json(["inspect", resource_id])
+        if code != 0 or not isinstance(payload, list) or not payload:
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_SHARED_INSPECT_FAILED")
+        rows.append(_material_rag_uat_resource_row("container", payload[0]))
+    for resource_id in _resource_ids("volume", project):
+        code, payload = _material_rag_uat_docker_json(
+            ["volume", "inspect", resource_id]
+        )
+        if code != 0 or not isinstance(payload, list) or not payload:
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_SHARED_INSPECT_FAILED")
+        rows.append(_material_rag_uat_resource_row("volume", payload[0]))
+    for resource_id in _resource_ids("network", project):
+        code, payload = _material_rag_uat_docker_json(
+            ["network", "inspect", resource_id]
+        )
+        if code != 0 or not isinstance(payload, list) or not payload:
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_SHARED_INSPECT_FAILED")
+        rows.append(_material_rag_uat_resource_row("network", payload[0]))
+    rows.sort(key=lambda row: (str(row["kind"]), str(row["name"]), str(row["id"])))
+    return rows
+
+
+def _material_rag_uat_foreign_fingerprint() -> str:
+    rows: list[dict[str, object]] = []
+    for project in ("anhuan-f1",):
+        rows.extend(_material_rag_uat_project_rows(project))
+    if STATE_FILE.exists():
+        try:
+            payload = json.loads(STATE_FILE.read_text(encoding="ascii"))
+            project = str(payload.get("compose_project", ""))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            project = ""
+        if PROJECT_RE.fullmatch(project):
+            rows.extend(_material_rag_uat_project_rows(project))
+    encoded = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _material_rag_uat_expected_resources(
+    state: dict[str, object],
+) -> tuple[tuple[str, str], ...]:
+    project = str(state["compose_project"])
+    items: list[tuple[str, str]] = []
+    for service in MATERIAL_RAG_UAT_MUTATION_SERVICES:
+        items.append(("container", f"{project}-{service}-1"))
+    for volume in MATERIAL_RAG_UAT_VOLUME_KEYS:
+        items.append(("volume", f"{project}_{volume}"))
+    for network in MATERIAL_RAG_UAT_NETWORK_KEYS:
+        items.append(("network", f"{project}_{network}"))
+    return tuple(items)
+
+
+def _material_rag_uat_inspect_named(kind: str, name: str) -> dict[str, object] | None:
+    if kind == "container":
+        arguments = ["inspect", name]
+    elif kind == "volume":
+        arguments = ["volume", "inspect", name]
+    else:
+        arguments = ["network", "inspect", name]
+    code, payload = _material_rag_uat_docker_json(arguments)
+    if code != 0 or not isinstance(payload, list) or not payload:
+        return None
+    if not isinstance(payload[0], dict):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_INSPECT_INVALID")
+    return payload[0]
+
+
+def _material_rag_uat_payload_labels(kind: str, payload: dict[str, object]) -> dict[str, str]:
+    if kind == "container":
+        config = payload.get("Config") if isinstance(payload.get("Config"), dict) else {}
+        labels = config.get("Labels")
+    else:
+        labels = payload.get("Labels")
+    return _material_rag_uat_identity_labels(labels)
+
+
+def _material_rag_uat_payload_id(kind: str, payload: dict[str, object]) -> str:
+    if kind == "volume":
+        return str(payload.get("Name", ""))
+    return str(payload.get("Id", ""))
+
+
+def _material_rag_uat_labels_owned(
+    state: dict[str, object], labels: dict[str, str]
+) -> bool:
+    return (
+        labels.get("com.docker.compose.project") == str(state["compose_project"])
+        and labels.get("io.anhuan.scope") == MATERIAL_RAG_UAT_SCOPE
+        and labels.get("io.anhuan.project-id") == str(state["project_id"])
+    )
+
+
+def _material_rag_uat_assert_owned(state: dict[str, object]) -> None:
+    if not MATERIAL_RAG_UAT_OWNED_FILE.exists():
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_OWNED_MISSING")
+    _secure_file(MATERIAL_RAG_UAT_OWNED_FILE, maximum=65536)
+    try:
+        recorded = json.loads(MATERIAL_RAG_UAT_OWNED_FILE.read_text(encoding="ascii"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_OWNED_INVALID") from None
+    if not isinstance(recorded, list):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_OWNED_INVALID")
+    for item in recorded:
+        if not isinstance(item, dict):
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_OWNED_INVALID")
+        kind = str(item.get("kind", ""))
+        name = str(item.get("name", ""))
+        expected_id = str(item.get("id", ""))
+        payload = _material_rag_uat_inspect_named(kind, name)
+        if payload is None:
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_OWNED_MISSING_RESOURCE")
+        if _material_rag_uat_payload_id(kind, payload) != expected_id:
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_OWNED_ID_MISMATCH")
+        labels = _material_rag_uat_payload_labels(kind, payload)
+        if not _material_rag_uat_labels_owned(state, labels):
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_FOREIGN_RESOURCE")
+
+
+def _material_rag_uat_record_owned(state: dict[str, object]) -> None:
+    rows: list[dict[str, str]] = []
+    for kind, name in _material_rag_uat_expected_resources(state):
+        payload = _material_rag_uat_inspect_named(kind, name)
+        if payload is None:
+            continue
+        labels = _material_rag_uat_payload_labels(kind, payload)
+        if not _material_rag_uat_labels_owned(state, labels):
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_FOREIGN_RESOURCE")
+        rows.append(
+            {
+                "kind": kind,
+                "name": name,
+                "id": _material_rag_uat_payload_id(kind, payload),
+            }
+        )
+    payload = (json.dumps(rows, sort_keys=True, separators=(",", ":")) + "\n").encode(
+        "ascii"
+    )
+    if MATERIAL_RAG_UAT_OWNED_FILE.exists():
+        _secure_file(MATERIAL_RAG_UAT_OWNED_FILE, maximum=65536)
+        _atomic_replace(MATERIAL_RAG_UAT_OWNED_FILE, payload)
+    else:
+        _exclusive_write(MATERIAL_RAG_UAT_OWNED_FILE, payload)
+
+
+def _material_rag_uat_assert_mutation_safe(
+    state: dict[str, object], *, action: str
+) -> None:
+    identity = _material_rag_uat_identity()
+    if str(state["compose_project"]) != identity["compose_project"]:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_PROJECT_MISMATCH")
+    if str(state["project_id"]) != identity["project_id"]:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_PROJECT_ID_MISMATCH")
+    if str(state.get("schema", "")) != MATERIAL_RAG_UAT_CONTROL_SCHEMA:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_STATE_INVALID")
+    for kind, name in _material_rag_uat_expected_resources(state):
+        payload = _material_rag_uat_inspect_named(kind, name)
+        if payload is None:
+            continue
+        labels = _material_rag_uat_payload_labels(kind, payload)
+        if not _material_rag_uat_labels_owned(state, labels):
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_FOREIGN_RESOURCE")
+    project = str(state["compose_project"])
+    for list_kind, kind in (("ps", "container"), ("volume", "volume"), ("network", "network")):
+        for resource_id in _resource_ids(list_kind, project):
+            inspect_args = (
+                ["inspect", resource_id]
+                if list_kind == "ps"
+                else [list_kind, "inspect", resource_id]
+            )
+            code, payload = _material_rag_uat_docker_json(inspect_args)
+            if code != 0 or not isinstance(payload, list) or not payload:
+                raise LocalError("LOCAL_MATERIAL_RAG_UAT_INSPECT_INVALID")
+            labels = _material_rag_uat_payload_labels(kind, payload[0])
+            if not _material_rag_uat_labels_owned(state, labels):
+                raise LocalError("LOCAL_MATERIAL_RAG_UAT_FOREIGN_RESOURCE")
+    if action in {"down", "check"} and MATERIAL_RAG_UAT_OWNED_FILE.exists():
+        _material_rag_uat_assert_owned(state)
+
+
+def _material_rag_uat_record_shared() -> str:
+    digest = _material_rag_uat_foreign_fingerprint()
+    payload = (digest + "\n").encode("ascii")
+    if MATERIAL_RAG_UAT_SHARED_FILE.exists():
+        _secure_file(MATERIAL_RAG_UAT_SHARED_FILE, minimum=65, maximum=65)
+        if MATERIAL_RAG_UAT_SHARED_FILE.read_bytes() != payload:
+            _atomic_replace(MATERIAL_RAG_UAT_SHARED_FILE, payload)
+    else:
+        _exclusive_write(MATERIAL_RAG_UAT_SHARED_FILE, payload)
+    return digest
+
+
+def _material_rag_uat_assert_shared(expected: str) -> None:
+    observed = _material_rag_uat_foreign_fingerprint()
+    if observed != expected:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_SHARED_DRIFT")
+
+
+def _material_rag_uat_origin(state: dict[str, object]) -> str:
+    return f"http://127.0.0.1:{int(state['web_port'])}"
+
+
+def _material_rag_uat_ready(state: dict[str, object]) -> bool:
+    origin = _material_rag_uat_origin(state)
+    return _http_status(f"{origin}/") and _api_readiness_ready(f"{origin}/api/readyz")
+
+
+def _material_rag_uat_start(state: dict[str, object]) -> None:
+    _material_rag_uat_assert_mutation_safe(state, action="up")
+    _material_rag_uat_compose(
+        state, "run", "--rm", "--no-deps", "secret-init", timeout=180
+    )
+    _material_rag_uat_compose(
+        state, "build", "migrator", "web", timeout=1800
+    )
+    _material_rag_uat_assert_mutation_safe(state, action="up")
+    _material_rag_uat_compose(
+        state,
+        "up",
+        "-d",
+        "--force-recreate",
+        "--wait",
+        "--wait-timeout",
+        "360",
+        "postgres",
+        "keycloak",
+        "minio",
+        "redis",
+        "clamd",
+        timeout=420,
+    )
+    _material_rag_uat_compose(state, "run", "--rm", "migrator", timeout=600)
+    _material_rag_uat_compose(state, "run", "--rm", "seed", timeout=180)
+    _material_rag_uat_compose(
+        state, "run", "--rm", "keycloak-provisioner", timeout=180
+    )
+    _material_rag_uat_assert_mutation_safe(state, action="up")
+    _material_rag_uat_compose(
+        state,
+        "up",
+        "-d",
+        "--force-recreate",
+        "--wait",
+        "--wait-timeout",
+        "180",
+        "api",
+        "worker",
+        "dispatcher",
+        "web",
+        timeout=240,
+    )
+    deadline = time.monotonic() + 180
+    while True:
+        if _material_rag_uat_ready(state):
+            _material_rag_uat_record_owned(state)
+            return
+        if time.monotonic() >= deadline:
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_READY_FAILED")
+        time.sleep(2)
+
+
+def _material_rag_uat_remove_control_dir() -> None:
+    if not MATERIAL_RAG_UAT_CONTROL_DIR.exists():
+        return
+    _directory(MATERIAL_RAG_UAT_CONTROL_DIR)
+    if MATERIAL_RAG_UAT_STATE_FILE.exists():
+        _secure_file(MATERIAL_RAG_UAT_STATE_FILE, maximum=16384)
+        try:
+            payload = json.loads(MATERIAL_RAG_UAT_STATE_FILE.read_text(encoding="ascii"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_STATE_INVALID") from None
+        _material_rag_uat_validate_state(payload)
+    for directory in (
+        MATERIAL_RAG_UAT_SECRETS_DIR,
+        MATERIAL_RAG_UAT_HOME_DIR,
+        MATERIAL_RAG_UAT_TMP_DIR,
+    ):
+        if directory.exists():
+            _directory(directory)
+    if MATERIAL_RAG_UAT_LOCK_FILE.exists():
+        _secure_file(MATERIAL_RAG_UAT_LOCK_FILE, minimum=0, maximum=65536)
+    for path in (
+        MATERIAL_RAG_UAT_ENV_FILE,
+        MATERIAL_RAG_UAT_SHARED_FILE,
+        MATERIAL_RAG_UAT_OWNED_FILE,
+    ):
+        if path.exists():
+            _secure_file(path, maximum=65536)
+    shutil.rmtree(MATERIAL_RAG_UAT_CONTROL_DIR)
+
+
+def _material_rag_uat_stop(state: dict[str, object] | None) -> None:
+    project = f"anhuan-material-rag-uat-{MATERIAL_RAG_UAT_PROBE}"
+    if state is not None:
+        project = str(state["compose_project"])
+        _material_rag_uat_assert_mutation_safe(state, action="down")
+        _material_rag_uat_compose(
+            state,
+            "down",
+            "--volumes",
+            "--remove-orphans",
+            "--timeout",
+            "30",
+            timeout=180,
+        )
+    containers, volumes, networks = _material_rag_uat_inventory(project)
+    if containers or volumes or networks:
+        raise LocalError(
+            f"LOCAL_MATERIAL_RAG_UAT_RESIDUAL C={containers} V={volumes} N={networks}"
+        )
+
+
+def _material_rag_uat_read_secret(name: str) -> str:
+    if name not in TEXT_SECRET_NAMES:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_SECRET_NAME_INVALID")
+    path = MATERIAL_RAG_UAT_SECRETS_DIR / name
+    _secure_file(path, maximum=16384)
+    return path.read_text(encoding="ascii")
+
+
+def _material_rag_uat_token(origin: str, username: str, secret_name: str) -> str:
+    password = _material_rag_uat_read_secret(secret_name)
+    body = urlencode(
+        {
+            "grant_type": "password",
+            "client_id": "anhuan-web",
+            "username": username,
+            "password": password,
+        }
+    ).encode("ascii")
+    request = urllib.request.Request(
+        f"{origin}/realms/anhuan/protocol/openid-connect/token",
+        data=body,
+        method="POST",
+    )
+    request.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("ascii"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_TOKEN_FAILED") from None
+    token = payload.get("access_token") if isinstance(payload, dict) else None
+    if not isinstance(token, str) or not token:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_TOKEN_INVALID")
+    return token
+
+
+def _material_rag_uat_http(
+    origin: str,
+    path: str,
+    *,
+    token: str | None = None,
+    enterprise: str | None = None,
+    body: dict[str, object] | None = None,
+) -> tuple[int, dict[str, object]]:
+    data = None if body is None else json.dumps(body, separators=(",", ":")).encode("utf-8")
+    request = urllib.request.Request(f"{origin}{path}", data=data, method="POST")
+    request.add_header("Content-Type", "application/json")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    if enterprise:
+        request.add_header("X-Enterprise-Id", enterprise)
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            raw = response.read()
+            payload = json.loads(raw.decode("utf-8") or "{}")
+            status = int(response.status)
+    except urllib.error.HTTPError as error:
+        status = int(error.code)
+        try:
+            payload = json.loads(error.read().decode("utf-8") or "{}")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload = {}
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_HTTP_FAILED") from None
+    if not isinstance(payload, dict):
+        payload = {}
+    return status, payload
+
+
+def _material_rag_uat_json_get(
+    origin: str, path: str, *, token: str
+) -> tuple[int, object]:
+    request = urllib.request.Request(f"{origin}{path}", method="GET")
+    request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            payload = json.loads(response.read().decode("utf-8") or "null")
+            return int(response.status), payload
+    except urllib.error.HTTPError as error:
+        try:
+            payload = json.loads(error.read().decode("utf-8") or "null")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        return int(error.code), payload
+    except (OSError, urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_HTTP_FAILED") from None
+
+
+def _material_rag_uat_reverse_default_off() -> None:
+    source = str(ROOT / "src")
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = source
+    environment.pop("F1_MATERIAL_RAG_UAT_LOCAL", None)
+    environment.pop("F1_LOCAL_ENGINEERING", None)
+    environment["F1_KEYCLOAK_ISSUER_URL"] = "http://material-rag.invalid/realms/anhuan"
+    script = (
+        "import os,uuid\n"
+        "from fastapi import FastAPI\n"
+        "from fastapi.testclient import TestClient\n"
+        "from platform_foundation.f1.api.routers import material_qa_uat\n"
+        "os.environ.pop('F1_MATERIAL_RAG_UAT_LOCAL', None)\n"
+        "os.environ.pop('F1_LOCAL_ENGINEERING', None)\n"
+        "app = FastAPI()\n"
+        "assert material_qa_uat.mount_if_enabled(app) is False\n"
+        "client = TestClient(app)\n"
+        "response = client.post('/api/v1/local-uat/material-qa', json={"
+        "'query_id':'provider.shared','request_id': str(uuid.uuid4())})\n"
+        "raise SystemExit(0 if response.status_code == 404 else 1)\n"
+    )
+    python = Path(sys.executable)
+    venv_python = Path("/Users/lichenhao/Desktop/安环项目/.venv/bin/python")
+    candidates = [python]
+    if venv_python.exists() and venv_python != python:
+        candidates.append(venv_python)
+    last_code = 1
+    for executable in candidates:
+        result = subprocess.run(
+            [str(executable), "-B", "-c", script],
+            cwd=ROOT,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        last_code = result.returncode
+        if result.returncode == 0:
+            return
+    raise LocalError(f"LOCAL_MATERIAL_RAG_UAT_DEFAULT_NOT_404 exit={last_code}")
+
+
+def _material_rag_uat_reverse_live(origin: str) -> dict[str, int]:
+    status, _payload = _material_rag_uat_http(
+        origin,
+        "/api/v1/local-uat/material-qa",
+        body={
+            "query_id": "provider.shared",
+            "request_id": str(uuid.uuid4()),
+        },
+    )
+    if status != 401:
+        raise LocalError(f"LOCAL_MATERIAL_RAG_UAT_REVERSE_401_MISSING status={status}")
+    role_403 = 0
+    for username, secret_name in (
+        ("employee", "oidc_employee"),
+        ("auditor", "oidc_auditor"),
+    ):
+        token = _material_rag_uat_token(origin, username, secret_name)
+        membership_status, memberships = _material_rag_uat_json_get(
+            origin, "/api/v1/users/me/enterprises", token=token
+        )
+        if membership_status != 200 or not isinstance(memberships, list) or not memberships:
+            continue
+        first = memberships[0]
+        if not isinstance(first, dict):
+            continue
+        enterprise = str(first.get("enterprise_id", ""))
+        if not enterprise:
+            continue
+        status, _payload = _material_rag_uat_http(
+            origin,
+            "/api/v1/local-uat/material-qa",
+            token=token,
+            enterprise=enterprise,
+            body={
+                "query_id": "provider.shared",
+                "request_id": str(uuid.uuid4()),
+            },
+        )
+        if status == 403:
+            role_403 = 1
+            break
+    if role_403 != 1:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_REVERSE_403_MISSING")
+    admin_token = _material_rag_uat_token(
+        origin, "admin@anhuan.local", "oidc_admin_anhuan_local"
+    )
+    membership_status, memberships = _material_rag_uat_json_get(
+        origin, "/api/v1/users/me/enterprises", token=admin_token
+    )
+    if membership_status != 200 or not isinstance(memberships, list) or not memberships:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_ADMIN_MEMBERSHIP_MISSING")
+    admin_enterprise = str(memberships[0]["enterprise_id"])
+    foreign_status, _payload = _material_rag_uat_http(
+        origin,
+        "/api/v1/local-uat/material-qa",
+        token=admin_token,
+        enterprise="52000000-0000-4000-8000-00000000ffff",
+        body={
+            "query_id": "provider.shared",
+            "request_id": str(uuid.uuid4()),
+        },
+    )
+    unknown_status, unknown_payload = _material_rag_uat_http(
+        origin,
+        "/api/v1/local-uat/material-qa",
+        token=admin_token,
+        enterprise=admin_enterprise,
+        body={
+            "query_id": "client.current",
+            "request_id": str(uuid.uuid4()),
+            "client_account_id": "52000000-0000-4000-8000-00000000eeee",
+        },
+    )
+    if foreign_status != 404 or unknown_status != 404:
+        raise LocalError(
+            "LOCAL_MATERIAL_RAG_UAT_REVERSE_404_MISSING "
+            f"foreign={foreign_status} unknown={unknown_status}"
+        )
+    detail = unknown_payload.get("detail") if isinstance(unknown_payload, dict) else None
+    if detail != "MATERIAL_CONTEXT_NOT_FOUND":
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_REVERSE_404_DETAIL")
+    return {
+        "default_404": 1,
+        "unauth_401": 1,
+        "role_403": 1,
+        "foreign_404": 1,
+    }
+
+
+_UAT_BROWSER_EVIDENCE_KEYS = frozenset(
+    {
+        "journey",
+        "expected_phase",
+        "actual_phase",
+        "request_seen",
+        "http_status",
+        "action_stage",
+    }
+)
+_UAT_BROWSER_ACTION_STAGES = frozenset({"select", "ask", "observe_request"})
+_UAT_BROWSER_SUMMARY_KEYS = frozenset(
+    {
+        "stage",
+        "journeys_passed",
+        "cleared_on_failure",
+        "residual_count",
+        "authorization_header_present",
+        "enterprise_header_present",
+        "uat_actor_header_present",
+        "denied_404",
+        "conflict_409",
+        "unavailable_503",
+        "valid_tenant_count",
+        "cross_tenant_state_isolated",
+        "cross_tenant_citation_denied",
+        "cross_tenant_delete_isolated",
+        "human_uat_url_ready",
+        "j6_prior_answer",
+        "j6_prior_citations",
+        "j6_same_document",
+        "j6_answer_cleared",
+        "j6_citations_cleared",
+    }
+)
+_UAT_J6_CLEARANCE_KEYS = (
+    "j6_prior_answer",
+    "j6_prior_citations",
+    "j6_same_document",
+    "j6_answer_cleared",
+    "j6_citations_cleared",
+)
+
+
+def _validate_material_rag_uat_browser_summary(summary: object) -> dict[str, object]:
+    if not isinstance(summary, dict):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_BROWSER_SUMMARY_INVALID")
+    keys = set(summary)
+    extra = keys - _UAT_BROWSER_SUMMARY_KEYS
+    if extra:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_BROWSER_SUMMARY_INVALID")
+    missing = _UAT_BROWSER_SUMMARY_KEYS - keys
+    j6_missing = missing.intersection(_UAT_J6_CLEARANCE_KEYS)
+    if j6_missing or "cleared_on_failure" in missing:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_J6_CLEARANCE_INVALID")
+    if missing:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_BROWSER_SUMMARY_INVALID")
+    if any(summary.get(key) != 1 for key in _UAT_J6_CLEARANCE_KEYS):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_J6_CLEARANCE_INVALID")
+    if (
+        summary.get("j6_prior_answer") != 1
+        or summary.get("j6_prior_citations") != 1
+        or summary.get("j6_same_document") != 1
+        or summary.get("j6_answer_cleared") != 1
+        or summary.get("j6_citations_cleared") != 1
+        or summary.get("cleared_on_failure") is not True
+    ):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_J6_CLEARANCE_INVALID")
+    if (
+        summary.get("stage") != "material-rag-uat"
+        or summary.get("journeys_passed") != 6
+        or summary.get("residual_count") != 0
+        or summary.get("authorization_header_present") != 1
+        or summary.get("enterprise_header_present") != 1
+        or summary.get("uat_actor_header_present") != 0
+        or summary.get("valid_tenant_count") != 2
+        or summary.get("cross_tenant_state_isolated") != 1
+        or summary.get("cross_tenant_citation_denied") != 2
+        or summary.get("cross_tenant_delete_isolated") != 1
+        or summary.get("unavailable_503") != 1
+        or summary.get("denied_404") != 1
+        or summary.get("conflict_409") != 1
+        or summary.get("human_uat_url_ready") != 1
+    ):
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_BROWSER_SUMMARY_INVALID")
+    return summary
+
+
+def _parse_material_rag_uat_browser_evidence(stderr: str) -> list[str]:
+    lines: list[str] = []
+    for line in stderr.splitlines() if stderr else []:
+        if not line.startswith("{"):
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        keys = set(payload)
+        if not (keys & _UAT_BROWSER_EVIDENCE_KEYS):
+            continue
+        if keys != _UAT_BROWSER_EVIDENCE_KEYS:
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_BROWSER_EVIDENCE_INVALID")
+        if payload.get("action_stage") not in {*_UAT_BROWSER_ACTION_STAGES, None}:
+            raise LocalError("LOCAL_MATERIAL_RAG_UAT_BROWSER_EVIDENCE_INVALID")
+        lines.append(json.dumps(payload, separators=(",", ":"), sort_keys=True))
+    return lines
+
+
+def _material_rag_uat_browser(state: dict[str, object]) -> dict[str, object]:
+    origin = _material_rag_uat_origin(state)
+    command = [
+        _node(),
+        str(PWA_BROWSER_RUNNER),
+        origin,
+        str(MATERIAL_RAG_UAT_SECRETS_DIR),
+        "--stage",
+        "material-rag-uat",
+    ]
+    result = _material_rag_uat_run(command, capture=True, timeout=420, check=False)
+    lines = result.stdout.splitlines() if result.stdout else []
+    fail_tags = [
+        line
+        for line in (result.stderr.splitlines() if result.stderr else [])
+        if line.startswith("LOCAL_BROWSER_VERIFY_FAILED ")
+    ]
+    evidence_lines = _parse_material_rag_uat_browser_evidence(result.stderr or "")
+    if result.returncode != 0 or len(lines) < 2:
+        detail = fail_tags[-1] if fail_tags else "NO_TAG"
+        if evidence_lines:
+            detail = f"{detail} {evidence_lines[-1]}"
+        raise LocalError(f"LOCAL_MATERIAL_RAG_UAT_BROWSER_FAILED {detail}")
+    if lines[-1] != "LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK":
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_BROWSER_TAG_MISSING")
+    try:
+        summary = json.loads(lines[-2])
+    except json.JSONDecodeError:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_BROWSER_JSON_INVALID") from None
+    return _validate_material_rag_uat_browser_summary(summary)
+
+
+def _material_rag_uat_print_url(state: dict[str, object]) -> str:
+    origin = _material_rag_uat_origin(state)
+    print(f"HUMAN_UAT_URL {origin}/qa")
+    return origin
+
+
+def _material_rag_uat_open(state: dict[str, object]) -> None:
+    origin = _material_rag_uat_origin(state)
+    command = [
+        _node(),
+        str(PWA_BROWSER_RUNNER),
+        origin,
+        str(MATERIAL_RAG_UAT_SECRETS_DIR),
+        "--stage",
+        "material-rag-uat-human",
+        "--headed",
+    ]
+    result = _material_rag_uat_run(command, capture=True, timeout=180, check=False)
+    lines = result.stdout.splitlines() if result.stdout else []
+    if result.returncode != 0 or not lines:
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_HUMAN_SESSION_FAILED")
+    if lines[-1] != "LOCAL_MATERIAL_RAG_UAT_HUMAN_SESSION_READY":
+        raise LocalError("LOCAL_MATERIAL_RAG_UAT_HUMAN_SESSION_TAG_MISSING")
+    _material_rag_uat_print_url(state)
+    print(lines[-1])
+
+
+def _material_rag_uat_command(command: str) -> int:
+    shared = _material_rag_uat_foreign_fingerprint()
+    with _material_rag_uat_lock():
+        if command == "material-rag-uat-stop":
+            state = None
+            if MATERIAL_RAG_UAT_STATE_FILE.exists():
+                state = _material_rag_uat_initialize()
+            _material_rag_uat_stop(state)
+            _material_rag_uat_remove_control_dir()
+            _material_rag_uat_assert_shared(shared)
+            print("C=0 V=0 N=0")
+            print("shared_identity_unchanged=1")
+            print("LOCAL_MATERIAL_RAG_UAT_STOPPED")
+            return 0
+        state = _material_rag_uat_initialize()
+        _material_rag_uat_record_shared()
+        if command == "material-rag-uat-start":
+            _material_rag_uat_start(state)
+            _material_rag_uat_assert_shared(shared)
+            _material_rag_uat_print_url(state)
+            print("resource_identity_verified=1")
+            print("shared_identity_unchanged=1")
+            print("human_uat_url_ready=1")
+            print("LOCAL_MATERIAL_RAG_UAT_STARTED")
+            return 0
+        if command == "material-rag-uat-open":
+            if not _material_rag_uat_ready(state):
+                raise LocalError("LOCAL_MATERIAL_RAG_UAT_NOT_READY")
+            _material_rag_uat_open(state)
+            _material_rag_uat_assert_shared(shared)
+            print("human_uat_url_ready=1")
+            return 0
+        primary_error: LocalError | None = None
+        try:
+            _material_rag_uat_assert_mutation_safe(state, action="check")
+            if not _material_rag_uat_ready(state):
+                _material_rag_uat_start(state)
+            _material_rag_uat_reverse_default_off()
+            reverse = _material_rag_uat_reverse_live(_material_rag_uat_origin(state))
+            print(
+                "LOCAL_MATERIAL_RAG_UAT_REVERSE "
+                + json.dumps(reverse, separators=(",", ":"), sort_keys=True)
+            )
+            summary = _material_rag_uat_browser(state)
+            summary["resource_identity_verified"] = 1
+            summary["shared_identity_unchanged"] = 1
+            summary["human_uat_url_ready"] = 1
+            _material_rag_uat_assert_shared(shared)
+            print(json.dumps(summary, separators=(",", ":"), sort_keys=True))
+            print("LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK")
+            return 0
+        except LocalError as error:
+            primary_error = error
+        finally:
+            if primary_error is not None:
+                try:
+                    _material_rag_uat_stop(state)
+                    _material_rag_uat_remove_control_dir()
+                except LocalError as cleanup_error:
+                    raise primary_error from cleanup_error
+                raise primary_error
+        return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="localctl")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -8457,6 +9645,10 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("material-verify")
     subparsers.add_parser("material-rag-verify")
     subparsers.add_parser("material-rag-diagnose-clamd")
+    subparsers.add_parser("material-rag-uat-start")
+    subparsers.add_parser("material-rag-uat-check")
+    subparsers.add_parser("material-rag-uat-stop")
+    subparsers.add_parser("material-rag-uat-open")
     subparsers.add_parser("verify")
     browser_verify = subparsers.add_parser("browser-verify")
     browser_verify.add_argument(
@@ -8470,6 +9662,13 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     arguments = _parser().parse_args()
     try:
+        if arguments.command in {
+            "material-rag-uat-start",
+            "material-rag-uat-check",
+            "material-rag-uat-stop",
+            "material-rag-uat-open",
+        }:
+            return _material_rag_uat_command(arguments.command)
         if arguments.command == "material-rag-verify":
             state = _initialize_material_rag_control()
             verification_error: LocalError | None = None

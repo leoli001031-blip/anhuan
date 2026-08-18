@@ -16,6 +16,10 @@ from .contracts import (
 def __getattr__(name: str):
     # Avoid importing database/network adapters when callers only need the
     # value contracts (including migration and parser verification code).
+    if name == "uat_local":
+        import importlib
+
+        return importlib.import_module(".uat_local", __name__)
     if name in {
         "derive_retrieval_context",
         "retrieve_authorized_demo_fragment",

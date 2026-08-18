@@ -10,6 +10,8 @@ WORKDIR /app
 COPY src/web/package.json src/web/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY src/web/ ./
+ARG VITE_MATERIAL_RAG_UAT_LOCAL=""
+ENV VITE_MATERIAL_RAG_UAT_LOCAL=$VITE_MATERIAL_RAG_UAT_LOCAL
 ARG ANHUAN_PWA_UPDATE_PROBE=""
 RUN if [ -n "${ANHUAN_PWA_UPDATE_PROBE}" ]; then \
       test "${#ANHUAN_PWA_UPDATE_PROBE}" -eq 24; \

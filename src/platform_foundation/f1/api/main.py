@@ -14,6 +14,7 @@ from .routers import (
     findings,
     invitation,
     material_qa,
+    material_qa_uat,
     p3_controlled_ingestion,
     p4_views_reports,
     p5_policy_workflow,
@@ -90,6 +91,7 @@ app.include_router(
     prefix="/api/v1/workbench",
     tags=["workbench"],
 )
+material_qa_uat.mount_if_enabled(app)
 
 
 @app.get("/healthz")
