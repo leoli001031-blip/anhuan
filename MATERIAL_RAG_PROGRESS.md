@@ -1,5 +1,27 @@
 # MATERIAL RAG Progress
 
+## 2026-08-19｜发布与 Ark 边界｜AUTHORIZED
+
+- 用户已授权将本后端检查点提交并推送 GitHub；具体 commit/PR 以 GitHub 为准，不部署、不写生产。
+- Ark key 轮换不再作为离线、本地后端及其他非 live 开发的 blocker。真实 live retrieval 继续记为 `LIVE_RETRIEVAL_UAT_DEFERRED / NOT_TESTED`，不得冒充通过，也不得使用未知或旧凭证。
+- 现役：`BACKEND_RETRIEVAL_TRUST_BOUNDARY_PASSED / BACKEND_PUBLIC_QA_FAIL_CLOSED_PASSED / BACKEND_CLEAN_CLONE_REPRODUCIBLE / BACKEND_CHECKPOINT_READY / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。
+
+## 2026-08-19｜生产检索信任边界｜PASSED_BACKEND_GATE
+
+- 从 checkpoint `6dd4b9158af3f8eb15922fff5bc715c9a3848f68` 出发。branch=`codex/material-rag-scanner-protocol`。未 checkout/stash/reset/clean/amend。未 commit/push。未跑 headed UAT / Ark / Docker / 部署。不重跑 checkpoint UAT。
+- 离线合同先红 `Ran 11 tests in 0.410s / FAILED (errors=8)`，一跳后绿 `Ran 11 tests in 0.282s / OK`。中间一次 `Ran 11 / FAILED (failures=1)`：重复候选在校验前去重会丢掉后续合法副本；改为仅在成功写入证据后去重。
+- 公共 `/api/v1/material-qa` 行为测试已绿，未改 `qa_service.py` / `material_qa.py`。未开放 Ark 或新公开接口。
+- 主仓合并门一次：`Ran 89 tests in 1.581s / OK`，exit=0，failures/errors/skipped=0。`git diff --check=0`。
+- clean-clone：原始 HEAD 隔离 clone，binary patch + 新文件，hash 全同后 chmod 对账 8/8 mismatch=0；clone 合并门一次 `Ran 89 tests in 1.628s / OK`。
+- 现役：`BACKEND_RETRIEVAL_TRUST_BOUNDARY_PASSED / BACKEND_PUBLIC_QA_FAIL_CLOSED_PASSED / BACKEND_CLEAN_CLONE_REPRODUCIBLE / BACKEND_CHECKPOINT_READY / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。未写 `UAT_PASSED` / `RELEASE_VERIFIED` / production。checkpoint 机器门仅为历史证据。
+
+## 2026-08-19｜生产检索信任边界｜STARTED
+
+- 从 checkpoint `6dd4b9158af3f8eb15922fff5bc715c9a3848f68` 出发。branch=`codex/material-rag-scanner-protocol`。工作树 clean、staged=0、untracked=0。未 checkout/stash/reset/clean/amend。
+- 本窗口只做纯离线后端合同门 + clean-clone 可重建。不跑 headed UAT，不连接 Ark/RAGFlow，不启动 Docker，不部署，不 commit/push。不重跑、不冒充 checkpoint UAT。
+- 现役保持 `UAT_MACHINE_GATE_PASSED / LOCAL_SYNTHETIC_BROWSER_UAT_PASSED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。未写 `BACKEND_*_PASSED`、`UAT_PASSED`、`RELEASE_VERIFIED` 或 production。
+- 顺序：任务0基线（已核）→ 先写 `tests/test_material_rag_service_offline.py` 取一次红灯 → 最小抽取 ports → 绿灯 → 公共 QA 仅证据驱动 → 合并门一次 → clean-clone 一次。
+
 ## 2026-08-18 23:22｜租户 Select 时序/定位｜PASSED_MACHINE_GATE
 
 - 现役：`UAT_MACHINE_GATE_PASSED / LOCAL_SYNTHETIC_BROWSER_UAT_PASSED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`。未写 `HUMAN_UAT_READY`。未 commit。Ark 外发=0。未跑 headed open。

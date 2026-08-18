@@ -2,8 +2,10 @@
 
 日期：2026-08-18 23:22
 起点：checkpoint `a72fdb186de2ab53f6c8d72983f1b24fc99dac1e`，branch=`codex/material-rag-scanner-protocol`
-现役状态：`UAT_MACHINE_GATE_PASSED / LOCAL_SYNTHETIC_BROWSER_UAT_PASSED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_BLOCKED_BY_KEY_ROTATION / NOT_PRODUCTION`
-禁止标签：未写 `HUMAN_UAT_READY` / `UAT_PASSED` / `RELEASE_VERIFIED` / production。未 commit / push / 部署。不代替领导签字。未跑 `material-rag-uat-open`。
+现役状态：`UAT_MACHINE_GATE_PASSED / LOCAL_SYNTHETIC_BROWSER_UAT_PASSED / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+禁止标签：未写 `HUMAN_UAT_READY` / `UAT_PASSED` / `RELEASE_VERIFIED` / production。2026-08-18 机器门运行当时未 commit / push / 部署；不代替领导签字；未跑 `material-rag-uat-open`。
+
+2026-08-19 口径更新：Ark key 轮换不再阻塞其他开发；真实 live retrieval 仍未测试，保持延后，不改变本报告 2026-08-18 的历史运行证据。
 
 ## 2026-08-18 23:22 收口（机器门通过；本窗口）
 

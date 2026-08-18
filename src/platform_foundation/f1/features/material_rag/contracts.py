@@ -44,6 +44,10 @@ class MaterialRagUnavailable(MaterialRagError):
     """The local retrieval or remote embedding adapter is unavailable."""
 
 
+class MaterialRagRequestConflict(MaterialRagError):
+    """The same request was reused with a different tenant, client, or query."""
+
+
 class MaterialRagIntegrityError(MaterialRagError):
     """Persisted and adapter identities could not be reconciled."""
 
@@ -282,6 +286,7 @@ __all__ = (
     "MaterialRagIntegrityError",
     "MaterialRagJobClaim",
     "MaterialRagLeaseLost",
+    "MaterialRagRequestConflict",
     "MaterialRagUnavailable",
     "MaterialRetrievalResult",
     "REFUSE_CONTEXT_INVALID",
