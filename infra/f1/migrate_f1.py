@@ -65,6 +65,16 @@ LEGACY_DEFINER_OWNERS = {
     "f1.verify_citations(uuid[],bytea,text)": "f0d_migration",
 }
 ALL_DEFINER_OWNERS = {**DEFINER_OWNERS, **LEGACY_DEFINER_OWNERS}
+F1_ALLOWED_MIGRATE_TARGETS = frozenset({"f1_0014", "f1_0015"})
+F1_DEFAULT_MIGRATE_TARGET = "f1_0014"
+F1_MATERIAL_RAG_MIGRATE_TARGET = "f1_0015"
+
+
+def _closed_f1_migrate_target(target: object) -> str:
+    if type(target) is not str or target not in F1_ALLOWED_MIGRATE_TARGETS:
+        raise RuntimeError("F1_MIGRATE_TARGET_INVALID")
+    return target
+
 
 
 def _read_secret(name: str) -> str:
@@ -378,14 +388,17 @@ def migrate_with_connection(
     connection: Connection,
     *,
     after_upgrade: object | None = None,
+    target: object = F1_DEFAULT_MIGRATE_TARGET,
 ) -> None:
-    """Run all F1 DDL and owner finalization in the caller's transaction.
+    """Run F1 DDL and owner finalization in the caller's transaction.
 
-    The optional callback is intentionally Python-only and is used by the
-    closeout failure-atomicity test.  It is not exposed through argv or an
-    environment switch, so production-like invocations cannot enable a
-    migration failpoint accidentally.
+    ``target`` is an internal closed set: default engineering stays at
+    ``f1_0014``; only the dedicated material-RAG migrator may request
+    ``f1_0015``.  The optional callback is intentionally Python-only and is
+    used by the closeout failure-atomicity test.  Neither the target nor the
+    callback is exposed through argv or an environment switch.
     """
+    target = _closed_f1_migrate_target(target)
     raw = connection.connection.driver_connection
     if not isinstance(raw, psycopg.Connection):
         raise RuntimeError("F1_EXTERNAL_CONNECTION_DRIVER_INVALID")
@@ -409,7 +422,7 @@ def migrate_with_connection(
         alembic_ini = str(Path(__file__).resolve().parent / "alembic.ini")
         alembic_config = Config(alembic_ini)
         alembic_config.attributes["connection"] = connection
-        command.upgrade(alembic_config, "head")
+        command.upgrade(alembic_config, target)
     finally:
         connection.exec_driver_sql("RESET ROLE")
 

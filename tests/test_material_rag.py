@@ -7,6 +7,7 @@ import hashlib
 import importlib.machinery
 import importlib.util
 import io
+import ipaddress
 import json
 import os
 import socket
@@ -702,6 +703,70 @@ class MaterialRagVerifierContractTests(unittest.TestCase):
             }.issubset(names)
         )
         self.assertNotIn("sibling_delete_leak_count", names)
+        localctl = _load_localctl()
+        self.assertTrue(hasattr(localctl, "_material_rag_verifier_metrics"))
+        metrics = dict(localctl.EXPECTED_MATERIAL_RAG_FIXED_METRICS)
+        metrics["canonical_unit_count"] = 136
+        metrics["citation_count"] = 7
+        metrics["client_a_indexed_remote_chunk_count"] = 136
+        metrics["egress_forwarded_embedding_request_count"] = 1
+        payload = json.dumps(metrics, sort_keys=True, separators=(",", ":"))
+        ok = payload + "\nLOCAL_MATERIAL_RAG_VERIFY_OK\n"
+        parsed = localctl._material_rag_verifier_metrics(ok)
+        self.assertEqual(parsed["rebuild_job_count"], 4)
+        enveloped = (
+            "\x1b[0mAttaching to material-rag-verifier\n"
+            + "material-rag-verifier exited with code 0\n"
+            + "material-rag-verifier-1 exited with code 0\n"
+            + ok
+            + "container anhuan-material-rag-deadbeef12-material-rag-verifier-1 exited with code 0\n"
+            + "container anhuan-material-rag-deadbeef12-material-rag-verifier-1 exited (0)\n"
+            + "Container anhuan-material-rag-deadbeef12-material-rag-postgres-1  Exited (0) Less than a second ago\n"
+        )
+        self.assertEqual(
+            localctl._material_rag_verifier_metrics(enveloped)["rebuild_job_count"],
+            4,
+        )
+        with contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(localctl.LocalError) as raised:
+                localctl._material_rag_verifier_metrics(ok + "unexpected-line\n")
+            self.assertEqual(str(raised.exception), "LOCAL_MATERIAL_RAG_OUTPUT_INVALID")
+            extra_json = ok + payload + "\n"
+            with self.assertRaises(localctl.LocalError):
+                localctl._material_rag_verifier_metrics(extra_json)
+            extra_ok = ok + "LOCAL_MATERIAL_RAG_VERIFY_OK\n"
+            with self.assertRaises(localctl.LocalError):
+                localctl._material_rag_verifier_metrics(extra_ok)
+            long_tail = (
+                ok
+                + "Container anhuan-material-rag-deadbeef12-material-rag-verifier-1  "
+                "Exited (0) 1 second ago with extra-unbounded-tail\n"
+            )
+            with self.assertRaises(localctl.LocalError):
+                localctl._material_rag_verifier_metrics(long_tail)
+        bad = dict(metrics)
+        bad["rebuild_job_count"] = 3
+        bad_payload = json.dumps(bad, sort_keys=True, separators=(",", ":"))
+        printed = io.StringIO()
+        with contextlib.redirect_stderr(printed):
+            with self.assertRaises(localctl.LocalError):
+                localctl._material_rag_verifier_metrics(
+                    bad_payload + "\nLOCAL_MATERIAL_RAG_VERIFY_OK\n"
+                )
+        evidence_lines = [
+            line
+            for line in printed.getvalue().splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_OUTPUT_EVIDENCE ")
+        ]
+        self.assertEqual(len(evidence_lines), 1)
+        evidence = json.loads(
+            evidence_lines[0][len("LOCAL_MATERIAL_RAG_OUTPUT_EVIDENCE ") :]
+        )
+        self.assertEqual(evidence["mismatch"], "VALUE")
+        self.assertEqual(evidence["mismatch_key"], "rebuild_job_count")
+        self.assertEqual(evidence["other_kind"], "NONE")
+        self.assertNotIn("unexpected-line", printed.getvalue())
+
 
     def test_remote_snapshot_semantics_ignore_only_physical_ids(self) -> None:
         from infra.f1.local_material_rag_verify import (
@@ -1024,6 +1089,19 @@ class MaterialRagStaticBoundaryTests(unittest.TestCase):
         self.assertIn("material_rag_unit_scope_delete_worker_select", migration)
         self.assertNotIn("BYPASSRLS", migration)
 
+    def test_dedicated_migrate_requests_closed_f1_0015_not_head(self) -> None:
+        migrator = (
+            ROOT / "infra/f1/material-rag/migrate.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("F1_MATERIAL_RAG_MIGRATE_TARGET", migrator)
+        self.assertIn("target=migrate_f1.F1_MATERIAL_RAG_MIGRATE_TARGET", migrator)
+        self.assertIn('"f1_0015"', migrator)
+        self.assertNotIn("command.upgrade", migrator)
+        self.assertNotIn('"head"', migrator)
+        self.assertNotIn("os.environ", migrator)
+        self.assertNotIn("sys.argv", migrator)
+        self.assertIn('"f1_0015"', migrator.split("def _verify_catalog", 1)[1])
+
     def test_worker_requires_claim_bound_manifest_and_live_release(self) -> None:
         worker = (
             ROOT / "src/platform_foundation/f1/features/material_rag/worker.py"
@@ -1156,6 +1234,55 @@ class MaterialRagStaticBoundaryTests(unittest.TestCase):
         ):
             self.assertIn(f"/demo/{digest}.pdf", compose)
 
+        proxy = compose.split("  material-rag-egress-proxy:", 1)[1].split(
+            "\n  material-rag-ocr:", 1
+        )[0]
+        self.assertIn('user: "65532:65532"', proxy)
+        self.assertNotIn('user: "0:0"', proxy)
+        self.assertIn(
+            "networks: [material_rag_proxy, material_rag_egress]", proxy
+        )
+        authorizer = compose.split("  material-rag-authorizer:", 1)[1].split(
+            "\n  material-rag-provider-provisioner:", 1
+        )[0]
+        self.assertIn('user: "65532:65532"', authorizer)
+        self.assertNotIn('user: "0:0"', authorizer)
+        self.assertNotIn("material_rag_egress", authorizer)
+        egress_network_lines = [
+            line
+            for line in compose.splitlines()
+            if line.startswith("    networks:") and "material_rag_egress" in line
+        ]
+        self.assertEqual(
+            egress_network_lines,
+            ["    networks: [material_rag_proxy, material_rag_egress]"],
+        )
+        dockerfile = (ROOT / "infra/f1/local.Dockerfile").read_text(encoding="utf-8")
+        self.assertIn(
+            "python:3.11-slim@sha256:"
+            "90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff",
+            dockerfile,
+        )
+        self.assertIn("--require-hashes", dockerfile)
+        self.assertIn("--mount=type=cache,target=/root/.cache/pip", dockerfile)
+        self.assertIn("--timeout 60", dockerfile)
+        self.assertIn("--retries 5", dockerfile)
+        self.assertNotIn("chmod 777", dockerfile)
+        last_copy = dockerfile.find("COPY scripts/localctl /app/scripts/localctl")
+        self.assertNotEqual(last_copy, -1)
+        after_copy = dockerfile[last_copy:]
+        self.assertIn(
+            "chmod -R a+rX /app/src /app/migrations /app/infra /app/scripts",
+            after_copy,
+        )
+        self.assertIn("chmod a+r /app/alembic.ini", after_copy)
+        self.assertGreater(
+            dockerfile.find(
+                "chmod -R a+rX /app/src /app/migrations /app/infra /app/scripts"
+            ),
+            last_copy,
+        )
+
     def test_scanner_ignores_link_local_and_prefers_private_ipv4(self) -> None:
         _ensure_p3_namespace()
         from platform_foundation.f1.features.p3 import scanner
@@ -1255,6 +1382,2542 @@ class MaterialRagStaticBoundaryTests(unittest.TestCase):
         self.assertEqual(report["CONNECT_ERRNO"], "ECONNREFUSED")
         self.assertEqual(report["ADDR_CLASS"], "PRIVATE_IPV4")
         self.assertNotIn("172.18.0.8", "".join(report.values()))
+
+        captured: list[dict[str, object]] = []
+
+        def sink(payload: object) -> None:
+            captured.append(dict(payload))  # type: ignore[arg-type]
+
+        silent_out = io.StringIO()
+        silent_err = io.StringIO()
+        with contextlib.redirect_stdout(silent_out), contextlib.redirect_stderr(
+            silent_err
+        ):
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner.parse_clamd_version(b"")
+        self.assertEqual(raised.exception.code, "P3_SCAN_PROTOCOL_ERROR")
+        self.assertEqual(silent_out.getvalue(), "")
+        self.assertEqual(silent_err.getvalue(), "")
+
+        with scanner.scanner_evidence_sink(sink):
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner.parse_clamd_version(b"")
+            self.assertEqual(raised.exception.code, "P3_SCAN_PROTOCOL_ERROR")
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner.parse_clamd_version(b"x" * (scanner.MAX_RESPONSE_BYTES + 1))
+            self.assertEqual(raised.exception.code, "P3_SCAN_PROTOCOL_ERROR")
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner.parse_clamd_version(b"not-a-clam-version\n")
+            self.assertEqual(raised.exception.code, "P3_SCAN_PROTOCOL_ERROR")
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner.parse_clamd_response(b"")
+            self.assertEqual(raised.exception.code, "P3_SCAN_PROTOCOL_ERROR")
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner.parse_clamd_response(b"x" * (scanner.MAX_RESPONSE_BYTES + 1))
+            self.assertEqual(raised.exception.code, "P3_SCAN_PROTOCOL_ERROR")
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner.parse_clamd_response(b"stream: unexpected\n")
+            self.assertEqual(raised.exception.code, "P3_SCAN_PROTOCOL_ERROR")
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner.parse_clamd_response(b"stream: engine ERROR\n")
+            self.assertEqual(raised.exception.code, "P3_SCAN_ENGINE_ERROR")
+            class _OversizeSocket:
+                def recv(self, size: int) -> bytes:
+                    return b"a" * size
+
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner._receive_response(_OversizeSocket())  # type: ignore[arg-type]
+            self.assertEqual(raised.exception.code, "P3_SCAN_PROTOCOL_ERROR")
+
+        expected = (
+            ("VERSION", "PARSE", "EMPTY", "P3_SCAN_PROTOCOL_ERROR"),
+            ("VERSION", "PARSE", "OVERSIZE", "P3_SCAN_PROTOCOL_ERROR"),
+            ("VERSION", "PARSE", "FORMAT_MISMATCH", "P3_SCAN_PROTOCOL_ERROR"),
+            ("INSTREAM", "PARSE", "EMPTY", "P3_SCAN_PROTOCOL_ERROR"),
+            ("INSTREAM", "PARSE", "OVERSIZE", "P3_SCAN_PROTOCOL_ERROR"),
+            ("INSTREAM", "PARSE", "FORMAT_MISMATCH", "P3_SCAN_PROTOCOL_ERROR"),
+            ("INSTREAM", "PARSE", "ENGINE_ERROR", "P3_SCAN_ENGINE_ERROR"),
+            ("VERSION", "RECV", "OVERSIZE", "P3_SCAN_PROTOCOL_ERROR"),
+        )
+        self.assertEqual(len(captured), len(expected))
+        for payload, (operation, phase, response_class, scan_code) in zip(
+            captured, expected
+        ):
+            self.assertEqual(
+                payload,
+                {
+                    "attempt_count": 1,
+                    "operation": operation,
+                    "phase": phase,
+                    "response_class": response_class,
+                    "scan_code": scan_code,
+                },
+            )
+            dumped = json.dumps(payload)
+            self.assertNotIn("ClamAV", dumped)
+            self.assertNotIn("stream:", dumped)
+
+        localctl = _load_localctl()
+        valid = {
+            "attempt_count": 2,
+            "operation": "VERSION",
+            "phase": "PARSE",
+            "response_class": "EMPTY",
+            "scan_code": "P3_SCAN_PROTOCOL_ERROR",
+        }
+        valid_line = (
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE "
+            + json.dumps(valid, separators=(",", ":"), sort_keys=True)
+        )
+        self.assertLessEqual(len(valid_line.encode("utf-8")), 1024)
+        secret = "leak-token-must-not-print"
+        address = "172.18.0.8"
+        version_body = "ClamAV 1.4.6/27632/Wed Aug 13"
+        stream_body = "stream: OK"
+        url = "http://evil.example/scan"
+        header = "Authorization: Bearer secret"
+        path = "/run/material-rag-clamd/clamd.sock"
+        padding = "PAD" * 3000
+        stderr_text = (
+            padding
+            + "\n"
+            + valid_line
+            + "\n"
+            + secret
+            + "\n"
+            + address
+            + "\n"
+            + version_body
+            + "\n"
+        )
+        stdout_text = "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED\n"
+        self.assertGreater(len(stderr_text.encode("utf-8")), 8192)
+        reprinted = io.StringIO()
+        with contextlib.redirect_stderr(reprinted):
+            reason = localctl._emit_material_rag_verifier_diagnostics(
+                stdout_text,
+                stderr_text,
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        printed = reprinted.getvalue()
+        self.assertEqual(reason, "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED")
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_VERIFIER_REASON "
+            "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED",
+            printed.splitlines(),
+        )
+        self.assertIn(valid_line, printed.splitlines())
+        for bait in (secret, address, version_body, stream_body, url, header, path, "PAD"):
+            self.assertNotIn(bait, printed)
+
+        other = dict(valid)
+        other["attempt_count"] = 4
+        other_line = (
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE "
+            + json.dumps(other, separators=(",", ":"), sort_keys=True)
+        )
+        duplicate_err = io.StringIO()
+        with contextlib.redirect_stderr(duplicate_err):
+            duplicate_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED\n",
+                valid_line + "\n" + other_line + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        malformed = (
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE {"
+            + secret
+            + ","
+            + address
+            + ","
+            + version_body
+            + ","
+            + stream_body
+            + ","
+            + url
+            + ","
+            + header
+            + ","
+            + path
+            + "}"
+        )
+        malformed_err = io.StringIO()
+        with contextlib.redirect_stderr(malformed_err):
+            malformed_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED\n",
+                malformed + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        self.assertEqual(duplicate_reason, "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED")
+        self.assertEqual(malformed_reason, "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED")
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED DUPLICATE",
+            duplicate_err.getvalue().splitlines(),
+        )
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED MALFORMED",
+            malformed_err.getvalue().splitlines(),
+        )
+        self.assertNotIn(valid_line, duplicate_err.getvalue())
+        for bait in (secret, address, version_body, stream_body, url, header, path):
+            self.assertNotIn(bait, malformed_err.getvalue())
+            self.assertNotIn(bait, duplicate_err.getvalue())
+
+        verify = _load_material_rag_verify()
+        self.assertEqual(
+            scanner.SCANNER_EVIDENCE_CODE_TO_REASON,
+            verify._SCANNER_EVIDENCE_CODE_TO_REASON,
+        )
+        self.assertEqual(
+            scanner.SCANNER_EVIDENCE_CODE_TO_REASON,
+            localctl._MATERIAL_RAG_SCANNER_EVIDENCE_CODE_TO_REASON,
+        )
+        self.assertEqual(
+            frozenset(scanner.SCANNER_EVIDENCE_CODE_TO_REASON),
+            localctl._MATERIAL_RAG_SCANNER_EVIDENCE_SCAN_CODES,
+        )
+        self.assertEqual(
+            frozenset(scanner.SCANNER_EVIDENCE_CODE_TO_REASON.values()),
+            localctl._MATERIAL_RAG_SCANNER_EVIDENCE_REASONS,
+        )
+        self.assertEqual(
+            frozenset(scanner.SCANNER_EVIDENCE_CODE_TO_REASON.values()),
+            verify._P3_SCAN_EVIDENCE_REASONS,
+        )
+        for status_reason in (
+            "LOCAL_MATERIAL_RAG_P3_SCAN_INFECTED_FAILED",
+            "LOCAL_MATERIAL_RAG_P3_SCAN_INCOMPLETE_FAILED",
+            "LOCAL_MATERIAL_RAG_P3_SCAN_ERROR_FAILED",
+            "LOCAL_MATERIAL_RAG_P3_SCAN_FAILED",
+            "LOCAL_MATERIAL_RAG_P3_SCAN_UNAVAILABLE_FAILED",
+        ):
+            self.assertNotIn(status_reason, verify._P3_SCAN_EVIDENCE_REASONS)
+            self.assertNotIn(
+                status_reason, localctl._MATERIAL_RAG_SCANNER_EVIDENCE_REASONS
+            )
+        for status_code in (
+            "P3_SCAN_SIZE_INVALID",
+            "P3_SCAN_TIMEOUT_INVALID",
+            "P3_SCANNER_REFUSED",
+            "P3_SOURCE_IDENTITY_MISMATCH",
+            "P3_SOURCE_READ_FAILED",
+        ):
+            self.assertNotIn(status_code, scanner.SCANNER_EVIDENCE_CODE_TO_REASON)
+
+        buffer = verify._ScannerEvidenceBuffer()
+        with scanner.scanner_evidence_sink(buffer):
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner.parse_clamd_version(b"")
+            self.assertEqual(raised.exception.code, "P3_SCAN_PROTOCOL_ERROR")
+            self.assertEqual(buffer._group[-1]["operation"], "VERSION")
+            parsed = scanner.parse_clamd_version(b"ClamAV 1.4.6/1")
+            self.assertEqual(parsed.engine_version, "1.4.6")
+            self.assertEqual(buffer._group, [])
+            with self.assertRaises(scanner.ScanFailure) as raised:
+                scanner.parse_clamd_response(b"stream: unexpected\n")
+            self.assertEqual(raised.exception.code, "P3_SCAN_PROTOCOL_ERROR")
+            self.assertEqual(buffer._group[-1]["operation"], "INSTREAM")
+        recovered = io.StringIO()
+        with contextlib.redirect_stderr(recovered):
+            buffer.emit_for_reason("LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED")
+        recovered_lines = [
+            line
+            for line in recovered.getvalue().splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE ")
+        ]
+        self.assertEqual(len(recovered_lines), 1)
+        recovered_payload = json.loads(
+            recovered_lines[0][len("LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE ") :]
+        )
+        self.assertEqual(recovered_payload["operation"], "INSTREAM")
+        self.assertEqual(recovered_payload["phase"], "PARSE")
+        self.assertEqual(recovered_payload["response_class"], "FORMAT_MISMATCH")
+        self.assertEqual(recovered_payload["scan_code"], "P3_SCAN_PROTOCOL_ERROR")
+        self.assertEqual(recovered_payload["attempt_count"], 1)
+        self.assertNotEqual(recovered_payload["operation"], "VERSION")
+        self.assertNotIn("VERSION", recovered.getvalue())
+
+        mismatch = {
+            "attempt_count": 1,
+            "operation": "INSTREAM",
+            "phase": "PARSE",
+            "response_class": "ENGINE_ERROR",
+            "scan_code": "P3_SCAN_ENGINE_ERROR",
+        }
+        mismatch_line = (
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE "
+            + json.dumps(mismatch, separators=(",", ":"), sort_keys=True)
+        )
+        mismatch_err = io.StringIO()
+        with contextlib.redirect_stderr(mismatch_err):
+            mismatch_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED\n",
+                mismatch_line + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        mismatch_printed = mismatch_err.getvalue()
+        self.assertEqual(
+            mismatch_reason, "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED"
+        )
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED MALFORMED",
+            mismatch_printed.splitlines(),
+        )
+        self.assertNotIn(mismatch_line, mismatch_printed.splitlines())
+        for bait in (secret, address, version_body, stream_body, url, header, path):
+            self.assertNotIn(bait, mismatch_printed)
+
+        stale_version = valid_line
+        for status_reason in (
+            "LOCAL_MATERIAL_RAG_P3_SCAN_INFECTED_FAILED",
+            "LOCAL_MATERIAL_RAG_P3_SCAN_INCOMPLETE_FAILED",
+        ):
+            status_err = io.StringIO()
+            with contextlib.redirect_stderr(status_err):
+                status_emitted = localctl._emit_material_rag_verifier_diagnostics(
+                    status_reason + "\n",
+                    stale_version + "\n",
+                    fallback_reason="LOCAL_COMMAND_FAILED",
+                )
+            status_printed = status_err.getvalue()
+            self.assertEqual(status_emitted, status_reason)
+            self.assertNotIn(stale_version, status_printed.splitlines())
+            self.assertFalse(
+                any(
+                    line.startswith("LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE")
+                    for line in status_printed.splitlines()
+                )
+            )
+            for bait in (secret, address, version_body, stream_body, url, header, path):
+                self.assertNotIn(bait, status_printed)
+
+        original_import = __import__
+
+        def _fail_scanner_import(
+            name: str,
+            globals: object | None = None,
+            locals: object | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> object:
+            if name == "platform_foundation.f1.features.p3.scanner":
+                raise ImportError("simulated-scanner-import")
+            return original_import(name, globals, locals, fromlist, level)
+
+        import_out = io.StringIO()
+        import_err = io.StringIO()
+        with patch("builtins.__import__", side_effect=_fail_scanner_import):
+            with contextlib.redirect_stdout(import_out), contextlib.redirect_stderr(
+                import_err
+            ):
+                import_rc = verify.main()
+        self.assertEqual(import_rc, 1)
+        self.assertEqual(import_out.getvalue(), "")
+        self.assertEqual(
+            import_err.getvalue(),
+            "LOCAL_MATERIAL_RAG_INTERNAL_ERROR\n"
+            "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE "
+            '{"db_token":"NONE","error_class":"IMPORT_ERROR",'
+            '"operation":"UNKNOWN","phase":"IMPORT_SCANNER",'
+            '"primary_preserved":true,"sqlstate":"NONE"}\n',
+        )
+        self.assertNotIn("Traceback", import_err.getvalue())
+        self.assertNotIn("ImportError", import_err.getvalue())
+        self.assertNotIn("simulated-scanner-import", import_err.getvalue())
+        self.assertNotIn("simulated-scanner-import", import_out.getvalue())
+
+        reach_state = {"project_id": "10000000-0000-4000-8000-000000000001"}
+        project, project_id, _database, _probe = localctl._material_rag_identity(
+            reach_state
+        )
+
+        def _inspect_payload(service: str, status: str) -> str:
+            return json.dumps(
+                [
+                    {
+                        "Config": {
+                            "Labels": {
+                                "com.docker.compose.project": project,
+                                "com.docker.compose.service": service,
+                                "io.anhuan.project-id": project_id,
+                                "io.anhuan.parent-project-id": reach_state[
+                                    "project_id"
+                                ],
+                                "io.anhuan.scope": "material-rag-verification",
+                            }
+                        },
+                        "State": {"Status": status},
+                    }
+                ],
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+
+        def _docker_result(returncode: int, stdout: str) -> MagicMock:
+            result = MagicMock()
+            result.returncode = returncode
+            result.stdout = stdout
+            return result
+
+        def _partial_inspect_run(arguments: list[str], **_kwargs: object) -> MagicMock:
+            if "ps" in arguments and any(
+                item.endswith("=material-rag-verifier") for item in arguments
+            ):
+                return _docker_result(1, "")
+            if arguments[1:3] == ["inspect", "cid-clamd"]:
+                return _docker_result(
+                    0, _inspect_payload("material-rag-clamd", "running")
+                )
+            if arguments[1:3] == ["inspect", "cid-partial"]:
+                raise localctl.LocalError("LOCAL_COMMAND_FAILED")
+            raise AssertionError(arguments)
+
+        with patch.object(localctl, "_docker", return_value="docker"), patch.object(
+            localctl, "_resource_ids", return_value=["cid-clamd", "cid-partial"]
+        ), patch.object(localctl, "_run", side_effect=_partial_inspect_run):
+            self.assertIsNone(
+                localctl._material_rag_complete_container_snapshot(reach_state)
+            )
+            self.assertEqual(
+                localctl._material_rag_verifier_reach(reach_state), "unknown"
+            )
+            partial_err = io.StringIO()
+            with contextlib.redirect_stderr(partial_err):
+                localctl._emit_material_rag_scanner_reach_evidence(reach_state)
+        partial_printed = partial_err.getvalue().splitlines()
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED MISSING",
+            partial_printed,
+        )
+        self.assertNotIn(
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE_NOT_REACHED",
+            partial_printed,
+        )
+
+        def _reached_run(arguments: list[str], **_kwargs: object) -> MagicMock:
+            if "ps" in arguments and any(
+                item.endswith("=material-rag-verifier") for item in arguments
+            ):
+                return _docker_result(0, "cid-verifier\n")
+            if arguments[1:3] == ["inspect", "cid-verifier"]:
+                return _docker_result(
+                    0, _inspect_payload("material-rag-verifier", "exited")
+                )
+            raise AssertionError(arguments)
+
+        with patch.object(localctl, "_docker", return_value="docker"), patch.object(
+            localctl, "_run", side_effect=_reached_run
+        ):
+            self.assertEqual(
+                localctl._material_rag_verifier_reach(reach_state), "reached"
+            )
+            reached_err = io.StringIO()
+            with contextlib.redirect_stderr(reached_err):
+                localctl._emit_material_rag_scanner_reach_evidence(reach_state)
+        reached_printed = reached_err.getvalue().splitlines()
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED MISSING",
+            reached_printed,
+        )
+        self.assertNotIn(
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE_NOT_REACHED",
+            reached_printed,
+        )
+
+        dockerfile = (ROOT / "infra/f1/local.Dockerfile").read_text(encoding="utf-8")
+        self.assertIn(
+            "python:3.11-slim@sha256:"
+            "90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff",
+            dockerfile,
+        )
+        self.assertIn("--require-hashes", dockerfile)
+        self.assertIn("--mount=type=cache,target=/root/.cache/pip", dockerfile)
+        self.assertIn("--disable-pip-version-check", dockerfile)
+        self.assertIn("--timeout 60", dockerfile)
+        self.assertIn("--retries 5", dockerfile)
+        self.assertNotIn("--index-url", dockerfile)
+        self.assertNotIn("trusted-host", dockerfile)
+        self.assertNotIn("PIP_TRUSTED_HOST", dockerfile)
+
+        build_secret = "leak-token-must-not-print"
+        build_url = "https://files.pythonhosted.org/packages/cryptography.whl"
+        build_wheel = "cryptography-46.0.5-cp311-abi3-manylinux.whl"
+        build_path = "/root/.cache/pip/http-v2/deadbeef"
+        build_header = "Authorization: Bearer secret"
+        build_stderr = (
+            "ERROR: Could not install packages due to an OSError: "
+            "HTTPSConnectionPool(host='files.pythonhosted.org', port=443): "
+            "Read timed out.\n"
+            + build_secret
+            + "\n"
+            + build_url
+            + "\n"
+            + build_wheel
+            + "\n"
+            + build_path
+            + "\n"
+            + build_header
+            + "\n"
+        )
+        build_result = MagicMock()
+        build_result.returncode = 1
+        build_result.stdout = ""
+        build_result.stderr = build_stderr
+        build_err = io.StringIO()
+        with patch.object(
+            localctl, "_material_rag_compose", return_value=build_result
+        ):
+            with contextlib.redirect_stderr(build_err):
+                with self.assertRaises(localctl.LocalError) as raised:
+                    localctl._material_rag_compose_stage(
+                        {"project_id": "10000000-0000-4000-8000-000000000001"},
+                        ROOT / "infra/f1/docker-compose.material-rag.yml",
+                        "build",
+                        "material-rag-migrator",
+                        timeout=1800,
+                        failure_reason="LOCAL_MATERIAL_RAG_BUILD_FAILED",
+                    )
+        self.assertEqual(str(raised.exception), "LOCAL_MATERIAL_RAG_BUILD_FAILED")
+        build_printed = build_err.getvalue()
+        build_lines = [
+            line
+            for line in build_printed.splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_BUILD_EVIDENCE ")
+        ]
+        self.assertEqual(len(build_lines), 1)
+        build_payload = json.loads(
+            build_lines[0][len("LOCAL_MATERIAL_RAG_BUILD_EVIDENCE ") :]
+        )
+        self.assertEqual(
+            set(build_payload),
+            {"detail_class", "exit_class", "exit_code", "phase"},
+        )
+        self.assertEqual(build_payload["exit_class"], "TIMEOUT")
+        self.assertEqual(build_payload["phase"], "DEPENDENCY_INSTALL")
+        self.assertEqual(build_payload["detail_class"], "NETWORK_TIMEOUT")
+        self.assertEqual(build_payload["exit_code"], 1)
+        for bait in (
+            build_secret,
+            build_url,
+            build_wheel,
+            build_path,
+            build_header,
+            "files.pythonhosted.org",
+            "Read timed out",
+            "cryptography",
+        ):
+            self.assertNotIn(bait, build_printed)
+
+        expected_internal_phases = frozenset(
+            {
+                "ASSERT_RUNTIME",
+                "DISPOSE_ENGINES",
+                "FINAL_AUDIT",
+                "IMPORT_SCANNER",
+                "LOAD_FIXTURES",
+                "PJ_CONTEXT_GUARDS",
+                "PJ_DELETE",
+                "PJ_FINAL_AUDIT",
+                "PJ_IMPORT_INIT",
+                "PJ_INDEX_REPLAY",
+                "PJ_PRIMARY_ATTEST",
+                "PJ_PRIMARY_INDEX",
+                "PJ_REBUILD",
+                "PJ_SCOPED_RETRIEVAL",
+                "PJ_SCOPE_ISOLATION",
+                "PJ_SYNTHETIC_INDEX",
+                "PROVIDER_ATTESTATION",
+                "SEED_DATABASE",
+                "SETUP_UPLOAD",
+                "STORAGE_ACTIVATE",
+                "STORAGE_CLEANUP",
+                "UNKNOWN",
+            }
+        )
+        expected_internal_error_classes = frozenset(
+            {
+                "ASSERTION_ERROR",
+                "ATTRIBUTE_ERROR",
+                "CANCELLED_ERROR",
+                "DB_DATA",
+                "DB_INTEGRITY",
+                "DB_INTERFACE",
+                "DB_INTERNAL",
+                "DB_INVALID_REQUEST",
+                "DB_MISSING_GREENLET",
+                "DB_NOT_SUPPORTED",
+                "DB_OPERATIONAL",
+                "DB_OTHER",
+                "DB_PENDING_ROLLBACK",
+                "DB_PROGRAMMING",
+                "DB_STATEMENT",
+                "EXCEPTION_GROUP",
+                "IMPORT_ERROR",
+                "INDEX_ERROR",
+                "KEY_ERROR",
+                "OS_ERROR",
+                "OTHER",
+                "RUNTIME_ERROR",
+                "TIMEOUT",
+                "TYPE_ERROR",
+                "UNKNOWN",
+                "VALUE_ERROR",
+            }
+        )
+        expected_internal_db_tokens = frozenset(
+            {
+                "MATERIAL_RAG_BINDING_IDENTITY_IMMUTABLE",
+                "MATERIAL_RAG_DOWNGRADE_DATA_PRESENT",
+                "MATERIAL_RAG_JOB_CLAIM_INVALID",
+                "MATERIAL_RAG_JOB_IDENTITY_IMMUTABLE",
+                "MATERIAL_RAG_JOB_OUTCOME_INVALID",
+                "MATERIAL_RAG_JOB_SOURCE_IDENTITY_INVALID",
+                "MATERIAL_RAG_JOB_SOURCE_NOT_RELEASED",
+                "MATERIAL_RAG_JOB_TRANSITION_INVALID",
+                "MATERIAL_RAG_UNIT_IMMUTABLE",
+                "MATERIAL_RAG_UNIT_SOURCE_NOT_RELEASED",
+                "QA_CLAIM_INVALID",
+                "QA_COMPLETE_INVALID",
+                "QA_OUTCOME_STATE_INVALID",
+                "TEXT_NUL",
+            }
+        )
+        expected_internal_operations = frozenset(
+            {
+                "CANDIDATE_VERIFY",
+                "CLAIM_JOB",
+                "CLAIMED_SESSION",
+                "CONTEXT_DERIVE",
+                "CRYPTO_PROBE",
+                "DB_SNAPSHOT_EXIT",
+                "DB_SNAPSHOT_LOAD",
+                "DB_SNAPSHOT_OPEN",
+                "EGRESS_AUDIT",
+                "ENQUEUE_JOB",
+                "FINAL_RESIDUE",
+                "IMPORTS",
+                "JOB_ROW",
+                "LOAD_UNITS",
+                "MUTATION_FENCE",
+                "PERSIST_UNITS",
+                "PROCESS_DEMO_JOB",
+                "QA_COMPLETE",
+                "QA_RESERVE",
+                "REMOTE_SNAPSHOT",
+                "RETRIEVAL",
+                "RLS_CHECK",
+                "SCOPE_LOCK",
+                "UNIT_COUNTS",
+                "UNKNOWN",
+            }
+        )
+        self.assertEqual(verify._INTERNAL_EVIDENCE_PHASES, expected_internal_phases)
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INTERNAL_EVIDENCE_PHASES, expected_internal_phases
+        )
+        self.assertEqual(
+            verify._INTERNAL_EVIDENCE_ERROR_CLASSES, expected_internal_error_classes
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INTERNAL_EVIDENCE_ERROR_CLASSES,
+            expected_internal_error_classes,
+        )
+        self.assertEqual(
+            verify._INTERNAL_EVIDENCE_OPERATIONS, expected_internal_operations
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INTERNAL_EVIDENCE_OPERATIONS,
+            expected_internal_operations,
+        )
+        self.assertEqual(
+            verify._INTERNAL_EVIDENCE_DB_TOKENS, expected_internal_db_tokens
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INTERNAL_EVIDENCE_DB_TOKENS,
+            expected_internal_db_tokens,
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INTERNAL_EVIDENCE_KEYS,
+            frozenset(
+                {
+                    "db_token",
+                    "error_class",
+                    "operation",
+                    "phase",
+                    "primary_preserved",
+                    "sqlstate",
+                }
+            ),
+        )
+        self.assertNotIn("PROCESS_JOBS", verify._INTERNAL_EVIDENCE_PHASES)
+        verify_source = (
+            ROOT / "infra/f1/local_material_rag_verify.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn('_internal_phase("PROCESS_JOBS")', verify_source)
+        for process_jobs_phase in (
+            "PJ_IMPORT_INIT",
+            "PJ_PRIMARY_INDEX",
+            "PJ_PRIMARY_ATTEST",
+            "PJ_INDEX_REPLAY",
+            "PJ_CONTEXT_GUARDS",
+            "PJ_SYNTHETIC_INDEX",
+            "PJ_SCOPE_ISOLATION",
+            "PJ_SCOPED_RETRIEVAL",
+            "PJ_REBUILD",
+            "PJ_DELETE",
+            "PJ_FINAL_AUDIT",
+        ):
+            self.assertIn(
+                f'_enter_internal_phase("{process_jobs_phase}")',
+                verify_source,
+            )
+        for internal_operation in (
+            "CANDIDATE_VERIFY",
+            "CONTEXT_DERIVE",
+            "CRYPTO_PROBE",
+            "DB_SNAPSHOT_EXIT",
+            "DB_SNAPSHOT_LOAD",
+            "DB_SNAPSHOT_OPEN",
+            "EGRESS_AUDIT",
+            "ENQUEUE_JOB",
+            "FINAL_RESIDUE",
+            "IMPORTS",
+            "JOB_ROW",
+            "LOAD_UNITS",
+            "CLAIM_JOB",
+            "CLAIMED_SESSION",
+            "MUTATION_FENCE",
+            "PERSIST_UNITS",
+            "PROCESS_DEMO_JOB",
+            "QA_COMPLETE",
+            "QA_RESERVE",
+            "REMOTE_SNAPSHOT",
+            "RETRIEVAL",
+            "RLS_CHECK",
+            "SCOPE_LOCK",
+            "UNIT_COUNTS",
+        ):
+            self.assertIn(
+                f'_enter_internal_operation("{internal_operation}")',
+                verify_source,
+            )
+        run_async_source = verify_source.split("async def _run_async")[1].split(
+            "def _assert_runtime_authorization"
+        )[0]
+        self.assertIn("_INTERNAL_EVIDENCE.record(", run_async_source)
+        self.assertIn("primary = error", run_async_source)
+        internal_payload = {
+            "db_token": "NONE",
+            "error_class": "IMPORT_ERROR",
+            "operation": "UNKNOWN",
+            "phase": "IMPORT_SCANNER",
+            "primary_preserved": True,
+            "sqlstate": "NONE",
+        }
+        internal_line = (
+            "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE "
+            + json.dumps(internal_payload, separators=(",", ":"), sort_keys=True)
+        )
+        internal_secret = "internal-leak-token-must-not-print"
+        internal_url = "https://ark.cn-beijing.volces.com/api/plan/v3"
+        internal_path = "/app/infra/f1/local_material_rag_verify.py"
+        internal_trace = 'Traceback (most recent call last): File "<stdin>"'
+        internal_repr = "TypeError('boom')"
+        padded_internal = (
+            ("PAD" * 3000)
+            + "\n"
+            + internal_line
+            + "\n"
+            + internal_secret
+            + "\n"
+            + internal_url
+            + "\n"
+            + internal_path
+            + "\n"
+            + internal_trace
+            + "\n"
+            + internal_repr
+            + "\n"
+        )
+        self.assertGreater(len(padded_internal.encode("utf-8")), 8192)
+        internal_err = io.StringIO()
+        with contextlib.redirect_stderr(internal_err):
+            internal_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR\n",
+                padded_internal,
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        internal_printed = internal_err.getvalue()
+        self.assertEqual(internal_reason, "LOCAL_MATERIAL_RAG_INTERNAL_ERROR")
+        self.assertIn(internal_line, internal_printed.splitlines())
+        for bait in (
+            internal_secret,
+            internal_url,
+            internal_path,
+            internal_trace,
+            internal_repr,
+            "PAD",
+        ):
+            self.assertNotIn(bait, internal_printed)
+
+        other_internal = dict(internal_payload)
+        other_internal["phase"] = "UNKNOWN"
+        other_internal_line = (
+            "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE "
+            + json.dumps(other_internal, separators=(",", ":"), sort_keys=True)
+        )
+        duplicate_internal = io.StringIO()
+        with contextlib.redirect_stderr(duplicate_internal):
+            duplicate_internal_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR\n",
+                internal_line + "\n" + other_internal_line + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        malformed_internal = (
+            "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE {"
+            + internal_secret
+            + ","
+            + internal_url
+            + ","
+            + internal_path
+            + "}"
+        )
+        malformed_internal_err = io.StringIO()
+        with contextlib.redirect_stderr(malformed_internal_err):
+            malformed_internal_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR\n",
+                malformed_internal + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        self.assertEqual(
+            duplicate_internal_reason, "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+        )
+        self.assertEqual(
+            malformed_internal_reason, "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+        )
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE_DEGRADED DUPLICATE",
+            duplicate_internal.getvalue().splitlines(),
+        )
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE_DEGRADED MALFORMED",
+            malformed_internal_err.getvalue().splitlines(),
+        )
+        self.assertNotIn(internal_line, duplicate_internal.getvalue())
+        for bait in (internal_secret, internal_url, internal_path):
+            self.assertNotIn(bait, malformed_internal_err.getvalue())
+            self.assertNotIn(bait, duplicate_internal.getvalue())
+
+        oversized_internal = "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE " + ("A" * 1100)
+        self.assertGreater(len(oversized_internal.encode("utf-8")), 1024)
+        oversized_internal_err = io.StringIO()
+        with contextlib.redirect_stderr(oversized_internal_err):
+            oversized_internal_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR\n",
+                oversized_internal + "\n" + internal_line + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        oversized_printed = oversized_internal_err.getvalue()
+        self.assertEqual(
+            oversized_internal_reason, "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+        )
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE_DEGRADED MALFORMED",
+            oversized_printed.splitlines(),
+        )
+        self.assertNotIn(internal_line, oversized_printed)
+        self.assertNotIn("A" * 32, oversized_printed)
+
+        primary = verify.MaterialRagVerifyError(
+            "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED"
+        )
+        preserved = verify._preserve_primary_error(primary, RuntimeError("dispose-boom"))
+        self.assertIs(preserved, primary)
+        self.assertEqual(
+            preserved.reason, "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED"
+        )
+        verify._INTERNAL_EVIDENCE.clear()
+        overlay = verify._preserve_primary_error(None, TypeError("dispose-only"))
+        self.assertEqual(overlay.reason, "LOCAL_MATERIAL_RAG_INTERNAL_ERROR")
+        dispose_err = io.StringIO()
+        with contextlib.redirect_stderr(dispose_err):
+            verify._INTERNAL_EVIDENCE.emit_for_reason(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+            )
+        dispose_lines = [
+            line
+            for line in dispose_err.getvalue().splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ")
+        ]
+        self.assertEqual(len(dispose_lines), 1)
+        dispose_payload = json.loads(
+            dispose_lines[0][len("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ") :]
+        )
+        self.assertEqual(dispose_payload["phase"], "DISPOSE_ENGINES")
+        self.assertEqual(dispose_payload["operation"], "UNKNOWN")
+        self.assertEqual(dispose_payload["error_class"], "TYPE_ERROR")
+        self.assertEqual(dispose_payload["db_token"], "NONE")
+        self.assertEqual(dispose_payload["sqlstate"], "NONE")
+        self.assertIs(dispose_payload["primary_preserved"], False)
+        self.assertNotIn("dispose-only", dispose_err.getvalue())
+        self.assertNotIn("dispose-boom", dispose_err.getvalue())
+
+        class OperationalError(Exception):
+            pass
+
+        OperationalError.__module__ = "sqlalchemy.exc"
+        db_error = OperationalError("SELECT 1 FROM secret_table")
+        self.assertEqual(verify._classify_internal_error(db_error), "DB_OPERATIONAL")
+
+        class InvalidRequestError(Exception):
+            pass
+
+        InvalidRequestError.__module__ = "sqlalchemy.exc"
+        self.assertEqual(
+            verify._classify_internal_error(InvalidRequestError("invalid-bait")),
+            "DB_INVALID_REQUEST",
+        )
+
+        class PendingRollbackError(InvalidRequestError):
+            pass
+
+        PendingRollbackError.__module__ = "sqlalchemy.exc"
+        self.assertEqual(
+            verify._classify_internal_error(PendingRollbackError("rollback-bait")),
+            "DB_PENDING_ROLLBACK",
+        )
+
+        class MissingGreenlet(Exception):
+            pass
+
+        MissingGreenlet.__module__ = "sqlalchemy.exc"
+        self.assertEqual(
+            verify._classify_internal_error(MissingGreenlet("greenlet-bait")),
+            "DB_MISSING_GREENLET",
+        )
+
+        class DataError(Exception):
+            pass
+
+        DataError.__module__ = "sqlalchemy.exc"
+        self.assertEqual(
+            verify._classify_internal_error(DataError("data-bait")),
+            "DB_DATA",
+        )
+        self.assertEqual(
+            verify._classify_internal_error(AssertionError("assert-bait")),
+            "ASSERTION_ERROR",
+        )
+        self.assertEqual(
+            verify._classify_internal_error(IndexError("idx-bait")),
+            "INDEX_ERROR",
+        )
+        self.assertEqual(
+            verify._classify_internal_error(asyncio.CancelledError()),
+            "CANCELLED_ERROR",
+        )
+        grouped = ExceptionGroup("group-bait", [RuntimeError("group-runtime")])
+        self.assertEqual(
+            verify._classify_internal_error(grouped), "EXCEPTION_GROUP"
+        )
+        verify._INTERNAL_EVIDENCE.clear()
+        verify._INTERNAL_EVIDENCE.record(
+            verify._classify_internal_error(db_error),
+            "PJ_PRIMARY_INDEX",
+            True,
+        )
+        db_err = io.StringIO()
+        with contextlib.redirect_stderr(db_err):
+            verify._INTERNAL_EVIDENCE.emit_for_reason(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+            )
+        db_printed = db_err.getvalue()
+        db_lines = [
+            line
+            for line in db_printed.splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ")
+        ]
+        self.assertEqual(len(db_lines), 1)
+        db_payload = json.loads(
+            db_lines[0][len("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ") :]
+        )
+        self.assertEqual(db_payload["error_class"], "DB_OPERATIONAL")
+        self.assertEqual(db_payload["phase"], "PJ_PRIMARY_INDEX")
+        self.assertEqual(db_payload["operation"], "UNKNOWN")
+        self.assertEqual(db_payload["db_token"], "NONE")
+        self.assertEqual(db_payload["sqlstate"], "NONE")
+        for bait in (
+            "OperationalError",
+            "sqlalchemy",
+            "SELECT",
+            "secret_table",
+            "assert-bait",
+            "idx-bait",
+            "group-bait",
+            "group-runtime",
+            "ExceptionGroup",
+            "CancelledError",
+            "invalid-bait",
+            "rollback-bait",
+            "greenlet-bait",
+            "data-bait",
+        ):
+            self.assertNotIn(bait, db_printed)
+
+        class _RaiseDiag:
+            sqlstate = "P0001"
+            message_primary = "MATERIAL_RAG_UNIT_SOURCE_NOT_RELEASED"
+
+        class RaiseException(Exception):
+            sqlstate = "P0001"
+            diag = _RaiseDiag()
+
+        RaiseException.__module__ = "psycopg.errors"
+        raise_error = RaiseException("SELECT leak from secret_table")
+        self.assertEqual(verify._classify_internal_error(raise_error), "DB_OTHER")
+        self.assertEqual(verify._safe_sqlstate(raise_error), "P0001")
+        self.assertEqual(
+            verify._safe_db_token(raise_error),
+            "MATERIAL_RAG_UNIT_SOURCE_NOT_RELEASED",
+        )
+        verify._INTERNAL_EVIDENCE.clear()
+        verify._enter_internal_operation("PROCESS_DEMO_JOB")
+        verify._INTERNAL_EVIDENCE.record(
+            verify._classify_internal_error(raise_error),
+            "PJ_PRIMARY_INDEX",
+            True,
+            source=raise_error,
+        )
+        raise_err = io.StringIO()
+        with contextlib.redirect_stderr(raise_err):
+            verify._INTERNAL_EVIDENCE.emit_for_reason(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+            )
+        raise_printed = raise_err.getvalue()
+        raise_lines = [
+            line
+            for line in raise_printed.splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ")
+        ]
+        self.assertEqual(len(raise_lines), 1)
+        raise_payload = json.loads(
+            raise_lines[0][len("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ") :]
+        )
+        self.assertEqual(raise_payload["error_class"], "DB_OTHER")
+        self.assertEqual(raise_payload["operation"], "PROCESS_DEMO_JOB")
+        self.assertEqual(raise_payload["phase"], "PJ_PRIMARY_INDEX")
+        self.assertEqual(raise_payload["sqlstate"], "P0001")
+        self.assertEqual(
+            raise_payload["db_token"], "MATERIAL_RAG_UNIT_SOURCE_NOT_RELEASED"
+        )
+        for bait in (
+            "SELECT leak",
+            "secret_table",
+            "RaiseException",
+            "psycopg",
+            "message_primary",
+        ):
+            self.assertNotIn(bait, raise_printed)
+
+        class _SqlDiag:
+            sqlstate = "p0001"
+            message_primary = "SELECT 1 FROM secret_table"
+
+        class SqlBaitError(Exception):
+            sqlstate = "p0001"
+            diag = _SqlDiag()
+
+        SqlBaitError.__module__ = "psycopg.errors"
+        sql_bait = SqlBaitError("SELECT 1 FROM secret_table")
+        self.assertEqual(verify._safe_sqlstate(sql_bait), "NONE")
+        self.assertEqual(verify._safe_db_token(sql_bait), "NONE")
+        verify._INTERNAL_EVIDENCE.clear()
+        verify._INTERNAL_EVIDENCE.record(
+            verify._classify_internal_error(sql_bait),
+            "PJ_PRIMARY_INDEX",
+            True,
+            source=sql_bait,
+        )
+        sql_bait_err = io.StringIO()
+        with contextlib.redirect_stderr(sql_bait_err):
+            verify._INTERNAL_EVIDENCE.emit_for_reason(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+            )
+        sql_bait_printed = sql_bait_err.getvalue()
+        sql_bait_payload = json.loads(
+            [
+                line
+                for line in sql_bait_printed.splitlines()
+                if line.startswith("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ")
+            ][0][len("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ") :]
+        )
+        self.assertEqual(sql_bait_payload["sqlstate"], "NONE")
+        self.assertEqual(sql_bait_payload["db_token"], "NONE")
+        self.assertNotIn("SELECT", sql_bait_printed)
+        self.assertNotIn("secret_table", sql_bait_printed)
+        self.assertNotIn("p0001", sql_bait_printed)
+        verify._enter_internal_operation("UNKNOWN")
+
+        nul_message = "PostgreSQL text fields cannot contain NUL (0x00) bytes"
+
+        class DataError(Exception):
+            pass
+
+        DataError.__module__ = "psycopg.errors"
+        nul_error = DataError(nul_message)
+        self.assertEqual(verify._classify_internal_error(nul_error), "DB_DATA")
+        self.assertEqual(verify._safe_sqlstate(nul_error), "NONE")
+        self.assertEqual(verify._safe_db_token(nul_error), "TEXT_NUL")
+        verify._INTERNAL_EVIDENCE.clear()
+        verify._enter_internal_operation("PERSIST_UNITS")
+        verify._INTERNAL_EVIDENCE.record(
+            verify._classify_internal_error(nul_error),
+            "PJ_PRIMARY_INDEX",
+            True,
+            source=nul_error,
+        )
+        nul_err = io.StringIO()
+        with contextlib.redirect_stderr(nul_err):
+            verify._INTERNAL_EVIDENCE.emit_for_reason(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+            )
+        nul_printed = nul_err.getvalue()
+        nul_payload = json.loads(
+            [
+                line
+                for line in nul_printed.splitlines()
+                if line.startswith("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ")
+            ][0][len("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ") :]
+        )
+        self.assertEqual(nul_payload["error_class"], "DB_DATA")
+        self.assertEqual(nul_payload["operation"], "PERSIST_UNITS")
+        self.assertEqual(nul_payload["db_token"], "TEXT_NUL")
+        self.assertEqual(nul_payload["sqlstate"], "NONE")
+        self.assertNotIn(nul_message, nul_printed)
+        self.assertNotIn("0x00", nul_printed)
+        self.assertNotIn("PostgreSQL text fields", nul_printed)
+        verify._enter_internal_operation("UNKNOWN")
+
+        async def _fake_setup(_fixtures: object) -> object:
+            return object()
+
+        async def _fake_jobs_ok(_fixtures: object, _setup: object) -> object:
+            return object()
+
+        async def _fake_jobs_scan(_fixtures: object, _setup: object) -> object:
+            raise verify.MaterialRagVerifyError(
+                "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED"
+            )
+
+        class DatabaseError(Exception):
+            pass
+
+        DatabaseError.__module__ = "sqlalchemy.engine"
+
+        async def _fake_jobs_db(_fixtures: object, _setup: object) -> object:
+            verify._enter_internal_phase("PJ_PRIMARY_INDEX")
+            verify._enter_internal_operation("ENQUEUE_JOB")
+            raise DatabaseError("SELECT leak from secret_table")
+
+        async def _dispose_type_error() -> None:
+            raise TypeError("dispose-only")
+
+        async def _dispose_runtime_error() -> None:
+            raise RuntimeError("dispose-boom")
+
+        verify._INTERNAL_EVIDENCE.clear()
+        with (
+            patch.object(verify, "_setup_and_upload", _fake_setup),
+            patch.object(verify, "_process_jobs", _fake_jobs_scan),
+            patch.object(verify, "_dispose_engines", _dispose_runtime_error),
+        ):
+            with self.assertRaises(verify.MaterialRagVerifyError) as raised:
+                asyncio.run(verify._run_async(()))
+        self.assertEqual(
+            raised.exception.reason, "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED"
+        )
+        scan_dispose_err = io.StringIO()
+        with contextlib.redirect_stderr(scan_dispose_err):
+            verify._INTERNAL_EVIDENCE.emit_for_reason(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+            )
+        self.assertEqual(scan_dispose_err.getvalue(), "")
+        self.assertNotIn("dispose-boom", scan_dispose_err.getvalue())
+
+        verify._INTERNAL_EVIDENCE.clear()
+        with (
+            patch.object(verify, "_setup_and_upload", _fake_setup),
+            patch.object(verify, "_process_jobs", _fake_jobs_ok),
+            patch.object(verify, "_dispose_engines", _dispose_type_error),
+        ):
+            with self.assertRaises(verify.MaterialRagVerifyError) as raised:
+                asyncio.run(verify._run_async(()))
+        self.assertEqual(raised.exception.reason, "LOCAL_MATERIAL_RAG_INTERNAL_ERROR")
+        run_dispose_err = io.StringIO()
+        with contextlib.redirect_stderr(run_dispose_err):
+            verify._INTERNAL_EVIDENCE.emit_for_reason(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+            )
+        run_dispose_lines = [
+            line
+            for line in run_dispose_err.getvalue().splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ")
+        ]
+        self.assertEqual(len(run_dispose_lines), 1)
+        run_dispose_payload = json.loads(
+            run_dispose_lines[0][len("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ") :]
+        )
+        self.assertEqual(run_dispose_payload["phase"], "DISPOSE_ENGINES")
+        self.assertEqual(run_dispose_payload["operation"], "UNKNOWN")
+        self.assertEqual(run_dispose_payload["error_class"], "TYPE_ERROR")
+        self.assertEqual(run_dispose_payload["db_token"], "NONE")
+        self.assertEqual(run_dispose_payload["sqlstate"], "NONE")
+        self.assertIs(run_dispose_payload["primary_preserved"], False)
+        self.assertNotIn("dispose-only", run_dispose_err.getvalue())
+
+        verify._INTERNAL_EVIDENCE.clear()
+        with (
+            patch.object(verify, "_setup_and_upload", _fake_setup),
+            patch.object(verify, "_process_jobs", _fake_jobs_db),
+            patch.object(verify, "_dispose_engines", _dispose_type_error),
+        ):
+            with self.assertRaises(DatabaseError):
+                asyncio.run(verify._run_async(()))
+        primary_dispose_err = io.StringIO()
+        with contextlib.redirect_stderr(primary_dispose_err):
+            verify._INTERNAL_EVIDENCE.emit_for_reason(
+                "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
+            )
+        primary_dispose_lines = [
+            line
+            for line in primary_dispose_err.getvalue().splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ")
+        ]
+        self.assertEqual(len(primary_dispose_lines), 1)
+        primary_dispose_payload = json.loads(
+            primary_dispose_lines[0][len("LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE ") :]
+        )
+        self.assertEqual(primary_dispose_payload["phase"], "PJ_PRIMARY_INDEX")
+        self.assertEqual(primary_dispose_payload["operation"], "ENQUEUE_JOB")
+        self.assertEqual(primary_dispose_payload["error_class"], "DB_OTHER")
+        self.assertEqual(primary_dispose_payload["db_token"], "NONE")
+        self.assertEqual(primary_dispose_payload["sqlstate"], "NONE")
+        self.assertIs(primary_dispose_payload["primary_preserved"], True)
+        for bait in (
+            "idx-boom",
+            "dispose-only",
+            "SELECT leak",
+            "secret_table",
+            "DatabaseError",
+            "sqlalchemy",
+        ):
+            self.assertNotIn(bait, primary_dispose_err.getvalue())
+
+        persist_source = (
+            ROOT / "src/platform_foundation/f1/features/material_rag/repository.py"
+        ).read_text(encoding="utf-8").split(
+            "async def persist_canonical_units", 1
+        )[1].split("async def load_dataset_binding", 1)[0]
+        self.assertIn("bindparam", persist_source)
+        self.assertIn("LargeBinary", persist_source)
+        self.assertIn('bindparam("body_ciphertext"', persist_source)
+        self.assertIn("type_=LargeBinary()", persist_source)
+        lock_source = (
+            ROOT / "src/platform_foundation/f1/features/material_rag/repository.py"
+        ).read_text(encoding="utf-8").split(
+            "def live_scope_job_lock", 1
+        )[1].split("async def persist_canonical_units", 1)[0]
+        self.assertIn("hashbyteaextended", lock_source)
+        self.assertIn(".encode(", lock_source)
+        self.assertNotIn("hashtextextended", lock_source)
+        fence_source = (
+            ROOT / "src/platform_foundation/f1/features/material_rag/repository.py"
+        ).read_text(encoding="utf-8").split(
+            "def live_source_mutation_fence", 1
+        )[1].split("def live_scope_job_lock", 1)[0]
+        self.assertIn("FOR SHARE OF active_job, task", fence_source)
+        self.assertNotIn("FOR SHARE OF active_job, version", fence_source)
+        self.assertNotIn("FOR SHARE OF record", fence_source)
+        self.assertNotIn(
+            "FOR SHARE OF active_job, version, record, task", fence_source
+        )
+        self.assertIn("JOIN f1.document_version AS version", fence_source)
+        self.assertIn("JOIN f1.document_record AS record", fence_source)
+        self.assertIn("JOIN f1.upload_task AS task", fence_source)
+        expected_index_job_statuses = frozenset(
+            {"done", "failed", "queued", "retry_wait", "running"}
+        )
+        expected_index_reason_tokens = frozenset(
+            {
+                "MATERIAL_RAG_BINDING_MISSING",
+                "MATERIAL_RAG_DATASET_BINDING_CONFLICT",
+                "MATERIAL_RAG_DATASET_BINDING_DELETING",
+                "MATERIAL_RAG_DATASET_BINDING_INVALID",
+                "MATERIAL_RAG_DATASET_FINALIZE_FAILED",
+                "MATERIAL_RAG_DELETE_UNITS_FORBIDDEN",
+                "MATERIAL_RAG_IDEMPOTENCY_CONFLICT",
+                "MATERIAL_RAG_INTEGRITY_FAILED",
+                "MATERIAL_RAG_JOB_ACTION_INVALID",
+                "MATERIAL_RAG_LOCAL_FAILED",
+                "MATERIAL_RAG_MANIFEST_INVALID",
+                "MATERIAL_RAG_MANIFEST_REQUIRED",
+                "MATERIAL_RAG_RELEASE_FENCE_FORBIDDEN",
+                "MATERIAL_RAG_REMOTE_DATASET_DELETE_MISMATCH",
+                "MATERIAL_RAG_REMOTE_DATASET_IDENTITY_INVALID",
+                "MATERIAL_RAG_REMOTE_DATASET_NOT_EMPTY",
+                "MATERIAL_RAG_SOURCE_NOT_AUTHORIZED",
+                "MATERIAL_RAG_STORED_MANIFEST_MISMATCH",
+                "MATERIAL_RAG_NETWORK_FAILED",
+                "MATERIAL_RAG_PROBE_FAILED",
+                "MATERIAL_RAG_PROVISION_FAILED",
+                "MATERIAL_RAG_UNAVAILABLE",
+                "MATERIAL_RAG_UNITS_MISSING",
+                "MATERIAL_RAG_UNIT_JOB_MISMATCH",
+                "MATERIAL_UNIT_IDENTITY_CONFLICT",
+                "MATERIAL_VERSION_NOT_FOUND",
+                "MATERIAL_VERSION_NOT_INDEXABLE",
+            }
+        )
+        expected_index_checkpoints = frozenset(
+            {
+                "CANONICAL_UNITS_EMPTY",
+                "CONFLICT_ACCEPTED",
+                "CONFLICT_IDENTITY",
+                "CONFLICT_MUTATED",
+                "CONFLICT_PERSIST",
+                "JOB_ROW_MISSING",
+                "NONE",
+                "PRIMARY_ATTEST_COUNTS",
+                "PRIMARY_ATTEST_REMOTE",
+                "PRIMARY_FINGERPRINT",
+                "PRIMARY_JOB",
+                "PRIMARY_PROCESS",
+                "REMOTE_SNAPSHOT",
+                "REMOTE_TAGS",
+                "SNAPSHOT_EXIT",
+                "SNAPSHOT_LOAD",
+                "SNAPSHOT_OPEN",
+                "REPLAY_COUNTS",
+                "REPLAY_JOB",
+                "REPLAY_PROCESS",
+                "REPLAY_REMOTE",
+                "SYNTHETIC_COUNTS",
+                "SYNTHETIC_JOB",
+                "SYNTHETIC_PROCESS",
+                "SYNTHETIC_REMOTE",
+                "SYNTHETIC_SCOPES",
+                "UNKNOWN",
+            }
+        )
+        self.assertEqual(verify._INDEX_JOB_STATUSES, expected_index_job_statuses)
+        self.assertEqual(
+            verify._INDEX_REASON_TOKENS,
+            expected_index_reason_tokens
+            | verify._INDEX_PROBE_STATUS_TOKENS
+            | verify._INDEX_CHUNK_ADD_CODE_TOKENS,
+        )
+        self.assertEqual(verify._INDEX_EVIDENCE_CHECKPOINTS, expected_index_checkpoints)
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INDEX_JOB_STATUSES,
+            expected_index_job_statuses | {"NONE"},
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INDEX_REASON_TOKENS,
+            expected_index_reason_tokens
+            | {"NONE"}
+            | localctl._MATERIAL_RAG_INDEX_PROBE_STATUS_TOKENS
+            | localctl._MATERIAL_RAG_INDEX_CHUNK_ADD_CODE_TOKENS,
+        )
+        self.assertEqual(
+            verify._INDEX_PROBE_STATUS_TOKENS,
+            localctl._MATERIAL_RAG_INDEX_PROBE_STATUS_TOKENS,
+        )
+        self.assertEqual(
+            verify._INDEX_CHUNK_ADD_CODE_TOKENS,
+            localctl._MATERIAL_RAG_INDEX_CHUNK_ADD_CODE_TOKENS,
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INDEX_EVIDENCE_CHECKPOINTS,
+            expected_index_checkpoints,
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INDEX_EVIDENCE_KEYS,
+            frozenset(
+                {
+                    "checkpoint",
+                    "finish_sqlstate",
+                    "job_status",
+                    "lease_live",
+                    "lease_present",
+                    "lease_source",
+                    "operation",
+                    "outcome",
+                    "phase",
+                    "reason_token",
+                    "token_match",
+                }
+            ),
+        )
+        expected_index_outcomes = frozenset(
+            {
+                "CLAIM_NONE",
+                "FINISH_EXCEPTION",
+                "FINISH_FALSE",
+                "FINISH_TRUE",
+                "LEASE_LOST",
+                "NONE",
+            }
+        )
+        expected_index_lease_sources = frozenset(
+            {
+                "ADAPTER",
+                "FINISH_DONE",
+                "MUTATION_FENCE",
+                "NONE",
+                "RENEW",
+                "SCOPE_LOCK",
+                "UNKNOWN",
+            }
+        )
+        self.assertEqual(verify._INDEX_OUTCOMES, expected_index_outcomes)
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INDEX_OUTCOMES, expected_index_outcomes
+        )
+        self.assertEqual(verify._INDEX_LEASE_SOURCES, expected_index_lease_sources)
+        self.assertEqual(
+            localctl._MATERIAL_RAG_INDEX_LEASE_SOURCES,
+            expected_index_lease_sources,
+        )
+        main_source = verify_source.split("def main()", 1)[1].split(
+            'if __name__ == "__main__":', 1
+        )[0]
+        self.assertIn("_INDEX_EVIDENCE.clear()", main_source)
+        self.assertIn("_INDEX_EVIDENCE.emit_for_reason(reason)", main_source)
+        self.assertNotIn("_emit_index_failure_evidence", verify_source)
+        self.assertIn('await _raise_index_failed(job_id, "PRIMARY_PROCESS")', verify_source)
+        self.assertIn("_fail_index(", verify_source)
+        record_source = verify_source.split("class _IndexEvidenceBuffer", 1)[1].split(
+            "def emit_for_reason", 1
+        )[0]
+        self.assertNotIn("print(", record_source)
+        index_payload = {
+            "checkpoint": "PRIMARY_PROCESS",
+            "finish_sqlstate": "NONE",
+            "job_status": "failed",
+            "lease_live": False,
+            "lease_present": True,
+            "lease_source": "MUTATION_FENCE",
+            "operation": "MUTATION_FENCE",
+            "outcome": "LEASE_LOST",
+            "phase": "PJ_PRIMARY_INDEX",
+            "reason_token": "MATERIAL_VERSION_NOT_INDEXABLE",
+            "token_match": False,
+        }
+        index_line = (
+            "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE "
+            + json.dumps(index_payload, separators=(",", ":"), sort_keys=True)
+        )
+        index_secret = "index-leak-token-must-not-print"
+        index_url = "https://ark.cn-beijing.volces.com/api/plan/v3"
+        index_path = "/app/infra/f1/local_material_rag_verify.py"
+        index_sql = "SELECT leak from secret_table"
+        index_err = io.StringIO()
+        with contextlib.redirect_stderr(index_err):
+            index_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INDEX_FAILED\n",
+                index_line
+                + "\n"
+                + index_secret
+                + "\n"
+                + index_url
+                + "\n"
+                + index_path
+                + "\n"
+                + index_sql
+                + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        index_printed = index_err.getvalue()
+        self.assertEqual(index_reason, "LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        self.assertIn(index_line, index_printed.splitlines())
+        for bait in (index_secret, index_url, index_path, "SELECT leak", "secret_table"):
+            self.assertNotIn(bait, index_printed)
+
+        other_index = dict(index_payload)
+        other_index["checkpoint"] = "REPLAY_PROCESS"
+        other_index_line = (
+            "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE "
+            + json.dumps(other_index, separators=(",", ":"), sort_keys=True)
+        )
+        duplicate_index = io.StringIO()
+        with contextlib.redirect_stderr(duplicate_index):
+            duplicate_index_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INDEX_FAILED\n",
+                index_line + "\n" + other_index_line + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        malformed_index = (
+            "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE {"
+            + index_secret
+            + ","
+            + index_url
+            + ","
+            + index_path
+            + "}"
+        )
+        malformed_index_err = io.StringIO()
+        with contextlib.redirect_stderr(malformed_index_err):
+            malformed_index_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INDEX_FAILED\n",
+                malformed_index + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        self.assertEqual(duplicate_index_reason, "LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        self.assertEqual(malformed_index_reason, "LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE_DEGRADED DUPLICATE",
+            duplicate_index.getvalue().splitlines(),
+        )
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE_DEGRADED MALFORMED",
+            malformed_index_err.getvalue().splitlines(),
+        )
+        self.assertNotIn(index_line, duplicate_index.getvalue())
+        for bait in (index_secret, index_url, index_path):
+            self.assertNotIn(bait, malformed_index_err.getvalue())
+            self.assertNotIn(bait, duplicate_index.getvalue())
+
+        oversized_index = "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE " + ("A" * 1100)
+        self.assertGreater(len(oversized_index.encode("utf-8")), 1024)
+        oversized_index_err = io.StringIO()
+        with contextlib.redirect_stderr(oversized_index_err):
+            oversized_index_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INDEX_FAILED\n",
+                oversized_index + "\n" + index_line + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        oversized_index_printed = oversized_index_err.getvalue()
+        self.assertEqual(oversized_index_reason, "LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE_DEGRADED MALFORMED",
+            oversized_index_printed.splitlines(),
+        )
+        self.assertNotIn(index_line, oversized_index_printed)
+        self.assertNotIn("A" * 32, oversized_index_printed)
+
+        def _index_run_recorded() -> object:
+            print(index_sql, file=sys.stderr)
+            print(index_url, file=sys.stderr)
+            print(index_path, file=sys.stderr)
+            verify._enter_internal_operation("MUTATION_FENCE")
+            verify._enter_internal_phase("PJ_PRIMARY_INDEX")
+            verify._INDEX_EVIDENCE.record(
+                "PRIMARY_PROCESS",
+                job_status="failed",
+                reason_token="MATERIAL_VERSION_NOT_INDEXABLE",
+            )
+            raise verify.MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+
+        verify._INDEX_EVIDENCE.clear()
+        verify._INTERNAL_EVIDENCE.clear()
+        index_main_out = io.StringIO()
+        index_main_err = io.StringIO()
+        with patch.object(verify, "run", _index_run_recorded):
+            with contextlib.redirect_stdout(index_main_out), contextlib.redirect_stderr(
+                index_main_err
+            ):
+                index_main_rc = verify.main()
+        self.assertEqual(index_main_rc, 1)
+        self.assertEqual(index_main_out.getvalue(), "")
+        index_main_printed = index_main_err.getvalue()
+        self.assertIn("LOCAL_MATERIAL_RAG_INDEX_FAILED", index_main_printed.splitlines())
+        index_main_lines = [
+            line
+            for line in index_main_printed.splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_INDEX_EVIDENCE ")
+        ]
+        self.assertEqual(len(index_main_lines), 1)
+        index_main_payload = json.loads(
+            index_main_lines[0][len("LOCAL_MATERIAL_RAG_INDEX_EVIDENCE ") :]
+        )
+        self.assertEqual(index_main_payload["checkpoint"], "PRIMARY_PROCESS")
+        self.assertEqual(index_main_payload["job_status"], "failed")
+        self.assertEqual(index_main_payload["operation"], "MUTATION_FENCE")
+        self.assertEqual(index_main_payload["phase"], "PJ_PRIMARY_INDEX")
+        self.assertEqual(
+            index_main_payload["reason_token"], "MATERIAL_VERSION_NOT_INDEXABLE"
+        )
+        self.assertEqual(index_main_payload["outcome"], "NONE")
+        self.assertEqual(index_main_payload["lease_source"], "NONE")
+        self.assertIs(index_main_payload["lease_present"], False)
+        self.assertIs(index_main_payload["lease_live"], False)
+        self.assertIs(index_main_payload["token_match"], False)
+        self.assertEqual(index_main_payload["finish_sqlstate"], "NONE")
+        for bait in (index_sql, "SELECT leak", "secret_table", index_url, index_path):
+            self.assertNotIn(bait, index_main_printed)
+
+        def _index_run_empty() -> object:
+            verify._enter_internal_operation("UNKNOWN")
+            verify._enter_internal_phase("UNKNOWN")
+            raise verify.MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+
+        verify._INDEX_EVIDENCE.clear()
+        verify._INTERNAL_EVIDENCE.clear()
+        fallback_out = io.StringIO()
+        fallback_err = io.StringIO()
+        with patch.object(verify, "run", _index_run_empty):
+            with contextlib.redirect_stdout(fallback_out), contextlib.redirect_stderr(
+                fallback_err
+            ):
+                fallback_rc = verify.main()
+        self.assertEqual(fallback_rc, 1)
+        self.assertEqual(fallback_out.getvalue(), "")
+        fallback_printed = fallback_err.getvalue()
+        fallback_lines = [
+            line
+            for line in fallback_printed.splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_INDEX_EVIDENCE ")
+        ]
+        self.assertEqual(len(fallback_lines), 1)
+        fallback_payload = json.loads(
+            fallback_lines[0][len("LOCAL_MATERIAL_RAG_INDEX_EVIDENCE ") :]
+        )
+        self.assertEqual(fallback_payload["checkpoint"], "NONE")
+        self.assertEqual(fallback_payload["job_status"], "NONE")
+        self.assertEqual(fallback_payload["operation"], "UNKNOWN")
+        self.assertEqual(fallback_payload["phase"], "UNKNOWN")
+        self.assertEqual(fallback_payload["reason_token"], "NONE")
+        self.assertEqual(fallback_payload["outcome"], "NONE")
+        self.assertEqual(fallback_payload["lease_source"], "NONE")
+        self.assertIs(fallback_payload["lease_present"], False)
+        self.assertIs(fallback_payload["lease_live"], False)
+        self.assertIs(fallback_payload["token_match"], False)
+        self.assertEqual(fallback_payload["finish_sqlstate"], "NONE")
+        record_err = io.StringIO()
+        verify._INDEX_EVIDENCE.clear()
+        with contextlib.redirect_stderr(record_err):
+            verify._INDEX_EVIDENCE.record("PRIMARY_PROCESS")
+            verify._INDEX_EVIDENCE.record("REPLAY_PROCESS")
+        self.assertEqual(record_err.getvalue(), "")
+        first_wins_err = io.StringIO()
+        with contextlib.redirect_stderr(first_wins_err):
+            verify._INDEX_EVIDENCE.emit_for_reason("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        first_wins_lines = [
+            line
+            for line in first_wins_err.getvalue().splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_INDEX_EVIDENCE ")
+        ]
+        self.assertEqual(len(first_wins_lines), 1)
+        first_wins_payload = json.loads(
+            first_wins_lines[0][len("LOCAL_MATERIAL_RAG_INDEX_EVIDENCE ") :]
+        )
+        self.assertEqual(first_wins_payload["checkpoint"], "PRIMARY_PROCESS")
+        self.assertEqual(first_wins_payload["outcome"], "NONE")
+        self.assertIs(first_wins_payload["lease_present"], False)
+
+        from platform_foundation.f1.features.material_rag import worker as rag_worker
+        from platform_foundation.f1.features.material_rag.contracts import (
+            MaterialRagIntegrityError,
+            MaterialRagJobClaim,
+            MaterialRagLeaseLost,
+        )
+
+        worker_source = (
+            ROOT / "src/platform_foundation/f1/features/material_rag/worker.py"
+        ).read_text(encoding="utf-8")
+        locked_source = worker_source.split(
+            "async def _process_claimed_demo_job_locked", 1
+        )[1].split("async def process_claimed_demo_job", 1)[0]
+        self.assertNotIn("except MaterialRagLeaseLost:\n        return False", locked_source)
+        self.assertNotIn("UPDATE f1.document_record", worker_source)
+        claimed_source = worker_source.split(
+            "async def process_claimed_demo_job", 1
+        )[1].split("async def process_demo_job", 1)[0]
+        self.assertNotIn("except MaterialRagLeaseLost:\n        return False", claimed_source)
+        self.assertIn("ProcessOutcome", worker_source)
+        self.assertEqual(
+            rag_worker.PROCESS_OUTCOME_KINDS,
+            frozenset(
+                {
+                    "CLAIM_NONE",
+                    "FINISH_EXCEPTION",
+                    "FINISH_FALSE",
+                    "FINISH_TRUE",
+                    "LEASE_LOST",
+                    "SUCCESS",
+                }
+            ),
+        )
+
+        claim = MaterialRagJobClaim(
+            id=uuid.UUID("10000000-0000-4000-8000-000000000011"),
+            enterprise_id=uuid.UUID("10000000-0000-4000-8000-000000000001"),
+            knowledge_scope_id=uuid.UUID("10000000-0000-4000-8000-000000000002"),
+            document_record_id=uuid.UUID("10000000-0000-4000-8000-000000000003"),
+            document_version_id=uuid.UUID("10000000-0000-4000-8000-000000000004"),
+            upload_task_id=uuid.UUID("10000000-0000-4000-8000-000000000005"),
+            source_sha256=(
+                "e64cb41465eaf3fc550dbc881c06d687275a8d2b6850f34c703c111a4a3cfc46"
+            ),
+            action="index",
+            lease_token=uuid.UUID("10000000-0000-4000-8000-000000000006"),
+            attempt=1,
+        )
+
+        async def _claim_none(job_id: uuid.UUID, *, worker_id: str):
+            return None
+
+        with patch.object(rag_worker, "claim_demo_job", _claim_none):
+            none_outcome = asyncio.run(
+                rag_worker.process_demo_job(
+                    uuid.uuid4(), worker_id="material-rag-verifier"
+                )
+            )
+        self.assertEqual(none_outcome.kind, "CLAIM_NONE")
+        self.assertFalse(none_outcome)
+        self.assertEqual(none_outcome.lease_source, "NONE")
+        self.assertIs(none_outcome.lease_present, False)
+        self.assertIs(none_outcome.lease_live, False)
+        self.assertIs(none_outcome.token_match, False)
+
+        finish_calls: list[dict[str, object]] = []
+
+        async def _finish_track(*args: object, **kwargs: object):
+            finish_calls.append(dict(kwargs))
+            return True
+
+        def _scope_lock_lost(claim_obj: object):
+            raise rag_worker.lease_lost("SCOPE_LOCK")
+
+        with (
+            patch.object(rag_worker, "live_scope_job_lock", _scope_lock_lost),
+            patch.object(rag_worker, "finish_job", _finish_track),
+        ):
+            lost_outcome = asyncio.run(rag_worker.process_claimed_demo_job(claim))
+        self.assertEqual(lost_outcome.kind, "LEASE_LOST")
+        self.assertEqual(lost_outcome.lease_source, "SCOPE_LOCK")
+        self.assertFalse(lost_outcome)
+        self.assertEqual(finish_calls, [])
+
+        async def _integrity_locked(claim_obj: object, **kwargs: object):
+            raise MaterialRagIntegrityError("MATERIAL_VERSION_NOT_INDEXABLE")
+
+        async def _finish_false(*args: object, **kwargs: object):
+            return False
+
+        with (
+            patch.object(
+                rag_worker, "live_scope_job_lock", lambda claim_obj: contextlib.nullcontext()
+            ),
+            patch.object(
+                rag_worker, "_process_claimed_demo_job_locked", _integrity_locked
+            ),
+            patch.object(rag_worker, "finish_job", _finish_false),
+        ):
+            finish_false_outcome = asyncio.run(
+                rag_worker.process_claimed_demo_job(claim)
+            )
+        self.assertEqual(finish_false_outcome.kind, "FINISH_FALSE")
+        self.assertEqual(finish_false_outcome.finish_sqlstate, "NONE")
+
+        class ProgrammingError(Exception):
+            sqlstate = "42501"
+
+        ProgrammingError.__module__ = "psycopg.errors"
+        finish_bait = "SELECT leak from secret_table"
+
+        async def _finish_exception(*args: object, **kwargs: object):
+            raise ProgrammingError(finish_bait)
+
+        with (
+            patch.object(
+                rag_worker, "live_scope_job_lock", lambda claim_obj: contextlib.nullcontext()
+            ),
+            patch.object(
+                rag_worker, "_process_claimed_demo_job_locked", _integrity_locked
+            ),
+            patch.object(rag_worker, "finish_job", _finish_exception),
+        ):
+            finish_exc_outcome = asyncio.run(
+                rag_worker.process_claimed_demo_job(claim)
+            )
+        self.assertEqual(finish_exc_outcome.kind, "FINISH_EXCEPTION")
+        self.assertEqual(finish_exc_outcome.finish_sqlstate, "42501")
+        self.assertNotIn(finish_bait, repr(finish_exc_outcome))
+        self.assertNotIn(finish_bait, str(finish_exc_outcome))
+
+        verify._INDEX_EVIDENCE.clear()
+        verify._enter_internal_operation("MUTATION_FENCE")
+        verify._enter_internal_phase("PJ_PRIMARY_INDEX")
+        verify._INDEX_EVIDENCE.record(
+            "PRIMARY_PROCESS",
+            job_status="running",
+            reason_token="NONE",
+            outcome="LEASE_LOST",
+            lease_source="MUTATION_FENCE",
+            lease_present=True,
+            lease_live=True,
+            token_match=False,
+        )
+        injected_err = io.StringIO()
+        with contextlib.redirect_stderr(injected_err):
+            verify._INDEX_EVIDENCE.emit_for_reason("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        injected_printed = injected_err.getvalue()
+        self.assertNotIn(finish_bait, injected_printed)
+        self.assertNotIn(str(claim.lease_token), injected_printed)
+        self.assertNotIn(str(claim.id), injected_printed)
+        injected_lines = [
+            line
+            for line in injected_printed.splitlines()
+            if line.startswith("LOCAL_MATERIAL_RAG_INDEX_EVIDENCE ")
+        ]
+        self.assertEqual(len(injected_lines), 1)
+        injected_payload = json.loads(
+            injected_lines[0][len("LOCAL_MATERIAL_RAG_INDEX_EVIDENCE ") :]
+        )
+        self.assertEqual(injected_payload["outcome"], "LEASE_LOST")
+        self.assertEqual(injected_payload["lease_source"], "MUTATION_FENCE")
+        self.assertIs(injected_payload["lease_present"], True)
+        self.assertIs(injected_payload["lease_live"], True)
+        self.assertIs(injected_payload["token_match"], False)
+
+        malformed_outcome = dict(index_payload)
+        malformed_outcome["outcome"] = finish_bait
+        malformed_outcome_line = (
+            "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE "
+            + json.dumps(malformed_outcome, separators=(",", ":"), sort_keys=True)
+        )
+        malformed_outcome_err = io.StringIO()
+        with contextlib.redirect_stderr(malformed_outcome_err):
+            localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INDEX_FAILED\n",
+                malformed_outcome_line + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE_DEGRADED MALFORMED",
+            malformed_outcome_err.getvalue().splitlines(),
+        )
+        self.assertNotIn(finish_bait, malformed_outcome_err.getvalue())
+
+        scope_source = (
+            ROOT / "src/platform_foundation/f1/features/p3/service.py"
+        ).read_text(encoding="utf-8").split(
+            "async def set_document_knowledge_scope", 1
+        )[1].split("async def get_version", 1)[0]
+        self.assertIn("FOR UPDATE OF task", scope_source)
+        self.assertIn("ORDER BY task.id", scope_source)
+        self.assertLess(
+            scope_source.find("FOR UPDATE OF task"),
+            scope_source.find("UPDATE f1.document_record"),
+        )
+        self.assertLess(
+            scope_source.find("FOR UPDATE OF task"),
+            scope_source.find("quarantine_status='released'"),
+        )
+        release_source = (
+            ROOT / "src/platform_foundation/f1/features/p3/service.py"
+        ).read_text(encoding="utf-8").split(
+            'if action == "release":', 1
+        )[1].split('elif action == "reject":', 1)[0]
+        self.assertIn("FOR UPDATE OF task",
+            (
+                ROOT / "src/platform_foundation/f1/features/p3/service.py"
+            ).read_text(encoding="utf-8").split("async def act_on_version", 1)[1].split(
+                'if action == "release":', 1
+            )[0]
+        )
+        self.assertIn("quarantine_status='released'", release_source)
+        migration_source = (
+            ROOT / "infra/f1/alembic/versions/f1_0015_material_rag.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("guard_document_record_scope", migration_source)
+        self.assertIn("P3_KNOWLEDGE_SCOPE_LOCKED", migration_source)
+        self.assertIn(
+            "record.knowledge_scope_id = active_job.knowledge_scope_id",
+            fence_source,
+        )
+
+    def test_material_rag_finish_policy_allows_terminal_without_broadening(self) -> None:
+        migration = (
+            ROOT / "infra/f1/alembic/versions/f1_0015_material_rag.py"
+        ).read_text(encoding="utf-8")
+        repository = (
+            ROOT
+            / "src/platform_foundation/f1/features/material_rag/repository.py"
+        ).read_text(encoding="utf-8")
+        rls_source = migration.split("def _rls_and_grants()", 1)[1].split(
+            "def downgrade()", 1
+        )[0]
+        self.assertIn("job_target = ", rls_source)
+        self.assertIn("job_after_update = ", rls_source)
+        self.assertIn(
+            'job_select_target = "(" + job_target + ") OR (" + job_after_update + ")"',
+            rls_source,
+        )
+        self.assertIn(
+            '"FOR SELECT TO f1_worker USING (" + job_select_target + ")"',
+            rls_source,
+        )
+        self.assertNotIn(
+            '"FOR SELECT TO f1_worker USING (" + job_target + ")"',
+            rls_source,
+        )
+        self.assertIn(
+            '"FOR UPDATE TO f1_worker USING (" + job_target + ") WITH CHECK ("',
+            rls_source,
+        )
+        self.assertIn('+ job_after_update + ")"', rls_source)
+        self.assertNotIn("USING (true)", rls_source)
+        self.assertNotIn("USING(true)", rls_source)
+        self.assertNotIn("USING (true)", rls_source.replace(" ", ""))
+        self.assertIn("status IN ('done','retry_wait','failed')", rls_source)
+        finish_fn = migration.split(
+            "CREATE FUNCTION f1.finish_material_rag_job", 1
+        )[1].split("CREATE FUNCTION", 1)[0]
+        self.assertIn("SECURITY INVOKER", finish_fn)
+        self.assertNotIn("SECURITY DEFINER", finish_fn)
+        self.assertIn("set_config('f1.material_rag_job_id'", finish_fn)
+        self.assertIn("set_config(\n            'f1.material_rag_lease_token'", finish_fn)
+        self.assertNotIn("BYPASSRLS", migration)
+        self.assertIn(
+            "GRANT SELECT, UPDATE ON f1.material_rag_job TO f1_worker",
+            migration,
+        )
+        self.assertNotIn(
+            "GRANT SELECT, INSERT, UPDATE ON f1.material_rag_job",
+            migration,
+        )
+        self.assertNotIn("GRANT UPDATE ON f1.document_record TO f1_worker", migration)
+        self.assertNotIn("GRANT UPDATE ON f1.upload_task TO f1_worker", migration)
+        worker_execute = [
+            line
+            for line in migration.splitlines()
+            if "GRANT EXECUTE ON FUNCTION" in line and "f1_worker" in line
+        ]
+        self.assertIn(
+            '        op.execute(f"GRANT EXECUTE ON FUNCTION {signature} TO f1_worker")',
+            migration,
+        )
+        self.assertTrue(
+            any("f1_api, f1_worker" in line or "f1_worker" in line for line in worker_execute)
+            or 'GRANT EXECUTE ON FUNCTION {signature} TO f1_worker' in migration
+        )
+        finish_job = repository.split("async def finish_job", 1)[1].split(
+            "__all__", 1
+        )[0]
+        self.assertIn("finish_material_rag_job", finish_job)
+        self.assertNotIn("set_config('f1.material_rag_job_id'", finish_job)
+        self.assertNotIn("set_config('f1.material_rag_lease_token'", finish_job)
+        fence = repository.split("def live_source_mutation_fence", 1)[1].split(
+            "def live_scope_job_lock", 1
+        )[0]
+        self.assertIn("FOR SHARE OF active_job, task", fence)
+        self.assertNotIn("set_config('f1.enterprise_id'", fence)
+        self.assertIn("material_rag_source_upload_worker_update", rls_source)
+        self.assertIn(
+            '"f1.upload_task FOR UPDATE TO f1_worker USING ("',
+            rls_source,
+        )
+        upload_update = rls_source.split(
+            "material_rag_source_upload_worker_update", 1
+        )[1].split("binding_worker", 1)[0]
+        self.assertIn("+ source_upload_worker", upload_update)
+        self.assertIn("WITH CHECK (", upload_update)
+        self.assertNotIn("USING (true)", upload_update)
+        self.assertNotIn("USING(true)", upload_update)
+
+    def test_index_failure_transfers_egress_audit_without_text(self) -> None:
+        verify = _load_material_rag_verify()
+        localctl = _load_localctl()
+        verify_source = (
+            ROOT / "infra/f1/local_material_rag_verify.py"
+        ).read_text(encoding="utf-8")
+        localctl_source = (ROOT / "scripts/localctl").read_text(encoding="utf-8")
+        main_source = verify_source.split("def main()", 1)[1].split(
+            'if __name__ == "__main__":', 1
+        )[0]
+        self.assertIn("redirect_stderr(_DiscardText())", main_source)
+        self.assertIn("_EGRESS_EVIDENCE.clear()", main_source)
+        self.assertIn("_EGRESS_EVIDENCE.emit_for_reason(reason)", main_source)
+        self.assertLess(
+            main_source.find("redirect_stderr(_DiscardText())"),
+            main_source.find("_EGRESS_EVIDENCE.emit_for_reason(reason)"),
+        )
+        diagnostics = localctl_source.split(
+            "def _emit_material_rag_verifier_diagnostics", 1
+        )[1].split("def _emit_material_rag_unreachable", 1)[0]
+        self.assertIn(
+            "_emit_material_rag_egress_evidence(stdout, stderr, reason)",
+            diagnostics,
+        )
+        self.assertIn(
+            "_emit_material_rag_retrieval_evidence(stdout, stderr, reason)",
+            diagnostics,
+        )
+        self.assertIn("_RETRIEVAL_EVIDENCE.clear()", main_source)
+        self.assertIn("_RETRIEVAL_EVIDENCE.emit_for_reason(reason)", main_source)
+        expected_retrieval_keys = frozenset(
+            {
+                "checkpoint",
+                "citation_mismatch_count",
+                "client_a_hit_count",
+                "client_a_overlap",
+                "client_a_refusal",
+                "client_a_refusal_token",
+                "client_b_hit_count",
+                "client_b_refusal",
+                "client_b_refusal_token",
+                "cross_ab",
+                "cross_ba",
+                "fragment_hit_count",
+                "provider_hit_count",
+                "provider_refusal",
+                "provider_refusal_token",
+            }
+        )
+        expected_retrieval_checkpoints = frozenset(
+            {
+                "CITATION_MATCH",
+                "DEMO_FRAGMENT",
+                "EXPECTED_COUNT",
+                "NONE",
+                "SCOPED_SET",
+                "UNKNOWN",
+            }
+        )
+        self.assertEqual(verify._RETRIEVAL_EVIDENCE_KEYS, expected_retrieval_keys)
+        self.assertEqual(
+            verify._RETRIEVAL_EVIDENCE_CHECKPOINTS, expected_retrieval_checkpoints
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_RETRIEVAL_EVIDENCE_KEYS, expected_retrieval_keys
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_RETRIEVAL_EVIDENCE_CHECKPOINTS,
+            expected_retrieval_checkpoints,
+        )
+        expected_retrieval_refusal_tokens = frozenset(
+            {
+                "NONE",
+                "NO_HITS",
+                "NOT_CONFIGURED",
+                "REJECTED",
+                "UNAVAILABLE",
+                "UNKNOWN",
+            }
+        )
+        self.assertEqual(
+            verify._RETRIEVAL_REFUSAL_TOKENS, expected_retrieval_refusal_tokens
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_RETRIEVAL_REFUSAL_TOKENS,
+            expected_retrieval_refusal_tokens,
+        )
+        self.assertIn("LOCAL_MATERIAL_RAG_RETRIEVAL_EVIDENCE ", verify_source)
+        self.assertIn("_fail_retrieval(", verify_source)
+        self.assertIn(
+            "_emit_material_rag_rebuild_evidence(stdout, stderr, reason)",
+            diagnostics,
+        )
+        self.assertIn("_REBUILD_EVIDENCE.clear()", main_source)
+        self.assertIn("_REBUILD_EVIDENCE.emit_for_reason(reason)", main_source)
+        expected_rebuild_keys = frozenset(
+            {
+                "checkpoint",
+                "chunk_count",
+                "document_count",
+                "fingerprint_match",
+                "job_status",
+                "manifest_match",
+                "outcome",
+                "reason_token",
+                "unit_count_match",
+            }
+        )
+        expected_rebuild_checkpoints = frozenset(
+            {
+                "FINGERPRINT",
+                "JOB_ROW",
+                "NONE",
+                "PROCESS",
+                "REMOTE_SNAPSHOT",
+                "REMOTE_TAGS",
+                "UNKNOWN",
+            }
+        )
+        expected_rebuild_outcomes = frozenset(
+            {
+                "CLAIM_NONE",
+                "FINISH_EXCEPTION",
+                "FINISH_FALSE",
+                "FINISH_TRUE",
+                "LEASE_LOST",
+                "NONE",
+                "SUCCESS",
+            }
+        )
+        expected_rebuild_extra_reasons = frozenset(
+            {
+                "MATERIAL_RAG_RELEASE_FENCE_REQUIRED",
+                "MATERIAL_RAG_REMOTE_BODY_MISMATCH",
+                "MATERIAL_RAG_REMOTE_CHUNK_INVALID",
+                "MATERIAL_RAG_REMOTE_COUNT_MISMATCH",
+                "MATERIAL_RAG_REMOTE_DELETE_MISMATCH",
+                "MATERIAL_RAG_REMOTE_DOCUMENT_AMBIGUOUS",
+                "MATERIAL_RAG_REMOTE_DOCUMENT_INVALID",
+                "MATERIAL_RAG_REMOTE_EXTRA_UNIT",
+                "MATERIAL_RAG_REMOTE_IDENTITY_INVALID",
+                "MATERIAL_RAG_UNIT_DUPLICATE",
+                "MATERIAL_RAG_UNIT_SCOPE_MISMATCH",
+            }
+        )
+        self.assertEqual(verify._REBUILD_EVIDENCE_KEYS, expected_rebuild_keys)
+        self.assertEqual(
+            verify._REBUILD_EVIDENCE_CHECKPOINTS, expected_rebuild_checkpoints
+        )
+        self.assertEqual(verify._REBUILD_OUTCOMES, expected_rebuild_outcomes)
+        self.assertEqual(
+            localctl._MATERIAL_RAG_REBUILD_EVIDENCE_KEYS, expected_rebuild_keys
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_REBUILD_EVIDENCE_CHECKPOINTS,
+            expected_rebuild_checkpoints,
+        )
+        self.assertEqual(
+            localctl._MATERIAL_RAG_REBUILD_OUTCOMES, expected_rebuild_outcomes
+        )
+        self.assertTrue(
+            expected_rebuild_extra_reasons.issubset(verify._REBUILD_REASON_TOKENS)
+        )
+        self.assertTrue(
+            expected_rebuild_extra_reasons.issubset(
+                localctl._MATERIAL_RAG_REBUILD_REASON_TOKENS
+            )
+        )
+        self.assertIn("LOCAL_MATERIAL_RAG_REBUILD_EVIDENCE ", verify_source)
+        self.assertIn("_fail_rebuild(", verify_source)
+        rebuild_source = verify_source.split(
+            '_enter_internal_phase("PJ_REBUILD")', 1
+        )[1].split('_enter_internal_phase("PJ_DELETE")', 1)[0]
+        self.assertIn("_fail_rebuild(", rebuild_source)
+        self.assertIn('processed = await process_demo_job(', rebuild_source)
+        self.assertIn('_fail_rebuild("PROCESS"', rebuild_source)
+        self.assertIn('_fail_rebuild("JOB_ROW"', rebuild_source)
+        self.assertIn('_fail_rebuild("FINGERPRINT"', rebuild_source)
+        self.assertIn(
+            "knowledge_scope_id=setup.client_a_scope_id",
+            rebuild_source.split("await _remote_snapshot(", 1)[1].split(")", 1)[0],
+        )
+        rebuild_payload = {
+            "checkpoint": "PROCESS",
+            "chunk_count": 0,
+            "document_count": 0,
+            "fingerprint_match": 0,
+            "job_status": "failed",
+            "manifest_match": 0,
+            "outcome": "FINISH_TRUE",
+            "reason_token": "MATERIAL_RAG_REMOTE_IDENTITY_INVALID",
+            "unit_count_match": 0,
+        }
+        rebuild_line = (
+            "LOCAL_MATERIAL_RAG_REBUILD_EVIDENCE "
+            + json.dumps(rebuild_payload, separators=(",", ":"), sort_keys=True)
+        )
+        rebuild_secret = "rebuild-leak-token-must-not-print"
+        rebuild_err = io.StringIO()
+        with contextlib.redirect_stderr(rebuild_err):
+            rebuild_reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_REBUILD_FAILED\n",
+                rebuild_line + "\n" + rebuild_secret + "\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        self.assertEqual(rebuild_reason, "LOCAL_MATERIAL_RAG_REBUILD_FAILED")
+        self.assertIn(rebuild_line, rebuild_err.getvalue().splitlines())
+        self.assertNotIn(rebuild_secret, rebuild_err.getvalue())
+        expected_keys = frozenset(
+            {
+                "audit_status",
+                "authorized_embedding_request_count",
+                "forwarded_embedding_request_count",
+                "rejected_json_count",
+                "rejected_model_count",
+                "rejected_non_text_input_count",
+                "rejected_path_count",
+                "rejected_request_count",
+                "rejected_unauthorized_text_count",
+                "upstream_2xx_count",
+                "upstream_4xx_count",
+                "upstream_5xx_count",
+            }
+        )
+        expected_statuses = frozenset(
+            {"INVALID", "MISSING", "READY", "UNAVAILABLE"}
+        )
+        self.assertEqual(verify._EGRESS_EVIDENCE_KEYS, expected_keys)
+        self.assertEqual(verify._EGRESS_AUDIT_STATUSES, expected_statuses)
+        self.assertEqual(localctl._MATERIAL_RAG_EGRESS_EVIDENCE_KEYS, expected_keys)
+        self.assertEqual(
+            localctl._MATERIAL_RAG_EGRESS_AUDIT_STATUSES, expected_statuses
+        )
+        self.assertIn("LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE ", verify_source)
+        self.assertNotIn("body_sha256", verify_source.split("def _index_failure_egress_payload", 1)[1].split("class ", 1)[0])
+        payload = {
+            "audit_status": "READY",
+            "authorized_embedding_request_count": 1,
+            "forwarded_embedding_request_count": 1,
+            "rejected_json_count": 0,
+            "rejected_model_count": 0,
+            "rejected_non_text_input_count": 0,
+            "rejected_path_count": 0,
+            "rejected_request_count": 2,
+            "rejected_unauthorized_text_count": 2,
+            "upstream_2xx_count": 0,
+            "upstream_4xx_count": 0,
+            "upstream_5xx_count": 0,
+        }
+        line = (
+            "LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE "
+            + json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        )
+        secret = "egress-leak-token-must-not-print"
+        url = "https://ark.cn-beijing.volces.com/api/plan/v3"
+        path = "/run/material-rag-egress/audit.json"
+        body = '{"input":[{"type":"text","text":"secret-demo-body"}]}'
+        stderr_text = (
+            ("PAD" * 3000)
+            + "\n"
+            + line
+            + "\n"
+            + secret
+            + "\n"
+            + url
+            + "\n"
+            + path
+            + "\n"
+            + body
+            + "\n"
+        )
+        self.assertGreater(len(stderr_text.encode("utf-8")), 8192)
+        reprinted = io.StringIO()
+        with contextlib.redirect_stderr(reprinted):
+            reason = localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INDEX_FAILED\n",
+                stderr_text,
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        printed = reprinted.getvalue()
+        self.assertEqual(reason, "LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        self.assertIn(line, printed.splitlines())
+        for bait in (secret, url, path, "secret-demo-body", "PAD"):
+            self.assertNotIn(bait, printed)
+        malformed = io.StringIO()
+        with contextlib.redirect_stderr(malformed):
+            localctl._emit_material_rag_verifier_diagnostics(
+                "LOCAL_MATERIAL_RAG_INDEX_FAILED\n",
+                "LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE {" + secret + "," + url + "}\n",
+                fallback_reason="LOCAL_COMMAND_FAILED",
+            )
+        self.assertIn(
+            "LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE_DEGRADED MALFORMED",
+            malformed.getvalue().splitlines(),
+        )
+        self.assertNotIn(secret, malformed.getvalue())
+        self.assertNotIn(url, malformed.getvalue())
+        audit = {
+            "aborted_embedding_request_count": 0,
+            "allowed_method": "POST",
+            "allowed_model": "doubao-embedding-vision",
+            "allowed_path": "/api/plan/v3/embeddings/multimodal",
+            "allowed_upstream_authority": "ark.cn-beijing.volces.com:443",
+            "authorized_embedding_request_count": 3,
+            "external_llm_call_count": 0,
+            "external_ocr_call_count": 0,
+            "forwarded_embedding_request_count": 1,
+            "forwarded_non_embedding_request_count": 0,
+            "inflight_embedding_request_count": 0,
+            "input_text_count": 3,
+            "process_start_count": 1,
+            "rejected_content_type_count": 0,
+            "rejected_json_count": 0,
+            "rejected_method_count": 0,
+            "rejected_model_count": 0,
+            "rejected_non_text_input_count": 1,
+            "rejected_path_count": 0,
+            "rejected_request_count": 2,
+            "rejected_unauthorized_text_count": 1,
+            "schema": "anhuan-material-rag-ark-relay-audit-v2",
+            "upstream_2xx_count": 0,
+            "upstream_4xx_count": 1,
+            "upstream_5xx_count": 0,
+            "upstream_request_byte_count": 99,
+            "upstream_response_byte_count": 0,
+        }
+        with tempfile.TemporaryDirectory() as raw_dir:
+            audit_path = Path(raw_dir) / "audit.json"
+            audit_path.write_text(
+                json.dumps(audit, separators=(",", ":"), sort_keys=True) + "\n",
+                encoding="ascii",
+            )
+            os.chmod(audit_path, 0o600)
+            emit_err = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"F1_MATERIAL_RAG_EGRESS_AUDIT_FILE": str(audit_path)},
+            ):
+                with contextlib.redirect_stderr(emit_err):
+                    verify._EGRESS_EVIDENCE.emit_for_reason(
+                        "LOCAL_MATERIAL_RAG_INDEX_FAILED"
+                    )
+            emit_lines = [
+                item
+                for item in emit_err.getvalue().splitlines()
+                if item.startswith("LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE ")
+            ]
+            self.assertEqual(len(emit_lines), 1)
+            emitted = json.loads(
+                emit_lines[0][len("LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE ") :]
+            )
+            self.assertEqual(set(emitted), expected_keys)
+            self.assertEqual(emitted["audit_status"], "READY")
+            self.assertEqual(emitted["authorized_embedding_request_count"], 3)
+            self.assertEqual(emitted["rejected_unauthorized_text_count"], 1)
+            self.assertEqual(emitted["rejected_json_count"], 0)
+            self.assertEqual(emitted["rejected_non_text_input_count"], 1)
+            self.assertEqual(emitted["upstream_4xx_count"], 1)
+            self.assertNotIn("secret-demo-body", emit_err.getvalue())
+            self.assertNotIn("body_sha256", emit_err.getvalue())
+            self.assertNotIn("/api/plan/v3", emit_err.getvalue())
+            missing_err = io.StringIO()
+            with patch.dict(
+                os.environ,
+                {"F1_MATERIAL_RAG_EGRESS_AUDIT_FILE": str(Path(raw_dir) / "missing.json")},
+            ):
+                with contextlib.redirect_stderr(missing_err):
+                    verify._EGRESS_EVIDENCE.emit_for_reason(
+                        "LOCAL_MATERIAL_RAG_INDEX_FAILED"
+                    )
+            missing_lines = [
+                item
+                for item in missing_err.getvalue().splitlines()
+                if item.startswith("LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE ")
+            ]
+            self.assertEqual(len(missing_lines), 1)
+            missing_payload = json.loads(
+                missing_lines[0][len("LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE ") :]
+            )
+            self.assertEqual(missing_payload["audit_status"], "MISSING")
+            self.assertEqual(missing_payload["authorized_embedding_request_count"], 0)
+            self.assertNotIn("No such file", missing_err.getvalue())
+
+    def test_ark_relay_allows_benchmark_fake_ip_without_opening_rfc1918(self) -> None:
+        source = (
+            ROOT / "infra/f1/material-rag/ark_connect_proxy.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('ipaddress.ip_network("198.18.0.0/15")', source)
+        self.assertIn("def _allowed_upstream_ip(", source)
+        self.assertIn("ARK_EGRESS_DNS_REJECTED", source)
+        self.assertIn("if not _allowed_upstream_ip(value):", source)
+        namespace: dict[str, object] = {}
+        exec(
+            compile(
+                source.replace("COUNTERS = _Counters()", "COUNTERS = None", 1),
+                str(ROOT / "infra/f1/material-rag/ark_connect_proxy.py"),
+                "exec",
+            ),
+            namespace,
+        )
+        allowed = namespace["_allowed_upstream_ip"]
+        assert callable(allowed)
+        self.assertTrue(allowed(ipaddress.ip_address("8.8.8.8")))
+        self.assertTrue(allowed(ipaddress.ip_address("198.18.0.1")))
+        self.assertTrue(allowed(ipaddress.ip_address("198.19.255.255")))
+        for blocked in (
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "127.0.0.1",
+            "169.254.169.254",
+            "0.0.0.0",
+        ):
+            self.assertFalse(allowed(ipaddress.ip_address(blocked)), blocked)
+
+    def test_remote_snapshot_reads_pinned_get_chunk_content_field(self) -> None:
+        verify = _load_material_rag_verify()
+        source = (
+            ROOT / "infra/f1/local_material_rag_verify.py"
+        ).read_text(encoding="utf-8")
+        snapshot_source = source.split("async def _remote_snapshot", 1)[1].split(
+            "async def _final_scope_residue", 1
+        )[0]
+        self.assertIn("_chunk_detail_content(", snapshot_source)
+        self.assertIn("_chunk_detail_tags(", snapshot_source)
+        helper_source = source.split("def _chunk_detail_content", 1)[1].split(
+            "async def _remote_snapshot", 1
+        )[0]
+        self.assertIn("content_with_weight", helper_source)
+        self.assertNotIn("print(", helper_source)
+        mapped = verify._chunk_detail_content(
+            {"content_with_weight": "canonical-body", "tag_kwd": ["canonical_unit_id=x"]}
+        )
+        self.assertEqual(mapped, "canonical-body")
+        preferred = verify._chunk_detail_content(
+            {
+                "content": "listed-body",
+                "content_with_weight": "canonical-body",
+            }
+        )
+        self.assertEqual(preferred, "listed-body")
+        nested = verify._chunk_detail_content(
+            {"chunk": {"content_with_weight": "nested-body"}}
+        )
+        self.assertEqual(nested, "nested-body")
+        self.assertIsNone(verify._chunk_detail_content({"id": "chunk-1"}))
+        adapter_source = (
+            ROOT
+            / "src/platform_foundation/f1/features/material_rag/ragflow_adapter.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("def _normalize_pinned_chunk(", adapter_source)
+        self.assertIn("content_with_weight", adapter_source)
+        self.assertIn("RagFlowClient.get_chunk =", adapter_source)
+        self.assertIn("RagFlowClient.retrieval =", adapter_source)
+        from platform_foundation.f1.features.material_rag import ragflow_adapter
+
+        self.assertEqual(
+            ragflow_adapter._pinned_chunk_content(
+                {"content_with_weight": "canonical-body"}
+            ),
+            "canonical-body",
+        )
+        nested_chunk = ragflow_adapter._normalize_pinned_chunk(
+            {"chunk": {"content_with_weight": "nested-body", "tag_kwd": ["a=b"]}}
+        )
+        self.assertEqual(nested_chunk.get("content"), "nested-body")
+        preserved = ragflow_adapter._normalize_pinned_chunk(
+            {
+                "tag_kwd": None,
+                "chunk": {
+                    "content_with_weight": "nested-body",
+                    "tag_kwd": ["canonical_unit_id=x"],
+                },
+            }
+        )
+        self.assertEqual(preserved.get("content"), "nested-body")
+        self.assertEqual(preserved.get("tag_kwd"), ["canonical_unit_id=x"])
+
+    def test_scope_unit_db_snapshot_uses_working_api_select_session(self) -> None:
+        source = (
+            ROOT / "infra/f1/local_material_rag_verify.py"
+        ).read_text(encoding="utf-8")
+        snapshot_source = source.split("async def _scope_unit_db_snapshot", 1)[1].split(
+            "async def _action_job_count", 1
+        )[0]
+        conflict_source = source.split(
+            "async def _prove_unit_identity_conflict_rejected", 1
+        )[1].split("def _egress_audit", 1)[0]
+        process_jobs_source = source.split("async def _process_jobs", 1)[1].split(
+            "def main(", 1
+        )[0]
+        counts_source = source.split("async def _unit_counts", 1)[1].split(
+            "async def _load_version_units", 1
+        )[0]
+        load_source = source.split("async def _load_version_units", 1)[1].split(
+            "def _unit_fingerprint", 1
+        )[0]
+        signature = snapshot_source.split(":\n", 1)[0]
+        self.assertIn("version_ids", signature)
+        self.assertIn("tuple(sorted(set(version_ids)))", snapshot_source)
+        self.assertIn("load_units_for_version", snapshot_source)
+        self.assertNotIn("SELECT DISTINCT", snapshot_source)
+        self.assertNotIn("FROM f1.material_rag_unit", snapshot_source)
+        self.assertNotIn("document_version_id FROM", snapshot_source)
+        self.assertNotIn("EMPLOYEE_SUB", snapshot_source)
+        self.assertNotIn("body_ciphertext", snapshot_source)
+        self.assertIn("local_seed.ADMIN_SUB", snapshot_source)
+        self.assertIn('role="f1_api"', snapshot_source)
+        self.assertIn('_enter_internal_operation("DB_SNAPSHOT_OPEN")', snapshot_source)
+        self.assertIn('_enter_internal_operation("DB_SNAPSHOT_LOAD")', snapshot_source)
+        self.assertIn('_enter_internal_operation("DB_SNAPSHOT_EXIT")', snapshot_source)
+        self.assertIn(
+            'operation_token = _enter_internal_operation("DB_SNAPSHOT_OPEN")',
+            snapshot_source,
+        )
+        self.assertIn("_INTERNAL_OPERATION.reset(operation_token)", snapshot_source)
+        self.assertIn("finally:", snapshot_source)
+        op_source = source.split("def _enter_internal_operation", 1)[1].split(
+            "\n\n", 1
+        )[0]
+        self.assertIn("return _INTERNAL_OPERATION.set(", op_source)
+        self.assertIn('_fail_index("SNAPSHOT_OPEN")', snapshot_source)
+        self.assertIn('_fail_index("SNAPSHOT_LOAD")', snapshot_source)
+        self.assertIn('_fail_index("SNAPSHOT_EXIT")', snapshot_source)
+        conflict_signature = conflict_source.split(")", 1)[0]
+        self.assertIn("claim", conflict_signature)
+        self.assertIn("version_ids", conflict_signature)
+        self.assertNotIn("scope_id: uuid.UUID", conflict_signature)
+        self.assertIn(
+            "_scope_unit_db_snapshot(scope_id, version_ids)",
+            conflict_source,
+        )
+        self.assertIn('_enter_internal_operation("PERSIST_UNITS")', conflict_source)
+        self.assertIn("live_scope_job_lock", conflict_source)
+        self.assertIn("live_source_mutation_fence", conflict_source)
+        self.assertIn("claimed_session", conflict_source)
+        self.assertIn("MATERIAL_UNIT_IDENTITY_CONFLICT", conflict_source)
+        self.assertIn("await session.rollback()", conflict_source)
+        self.assertNotIn('role="f1_api"', conflict_source)
+        self.assertNotIn("session_scope", conflict_source)
+        self.assertNotIn("EMPLOYEE_SUB", conflict_source)
+        self.assertIn("tuple(sorted(persisted_by_version))", process_jobs_source)
+        self.assertGreaterEqual(
+            process_jobs_source.count("_scope_unit_db_snapshot("),
+            2,
+        )
+        self.assertIn(
+            "_scope_unit_db_snapshot(setup.client_a_scope_id, known_versions)",
+            process_jobs_source,
+        )
+        replay_source = process_jobs_source.split("PJ_INDEX_REPLAY", 1)[1].split(
+            "PJ_CONTEXT_GUARDS", 1
+        )[0]
+        self.assertIn("claim_demo_job(", replay_source)
+        self.assertIn("process_claimed_demo_job(", replay_source)
+        self.assertNotIn("process_demo_job(", replay_source)
+        self.assertEqual(replay_source.count("enqueue_job("), 1)
+        self.assertIn("index_replay_job_count == 0", replay_source)
+        probe_at = replay_source.find("_prove_unit_identity_conflict_rejected(")
+        claimed_at = replay_source.find("process_claimed_demo_job(")
+        self.assertGreater(probe_at, 0)
+        self.assertGreater(claimed_at, probe_at)
+        after_counts = replay_source.split('REPLAY_COUNTS', 1)[1]
+        self.assertNotIn("_prove_unit_identity_conflict_rejected(", after_counts)
+        self.assertIn("count(*)", counts_source)
+        self.assertIn("count(DISTINCT id)", counts_source)
+        self.assertIn("PRIMARY_ATTEST_COUNTS", process_jobs_source)
+        self.assertIn("REPLAY_COUNTS", process_jobs_source)
+        self.assertIn("local_seed.ADMIN_SUB", load_source)
+        loop_src = snapshot_source.split("for version_id in known:", 1)[1]
+        before_loop = snapshot_source.split("for version_id in known:", 1)[0]
+        self.assertIn("async with session_scope(", loop_src)
+        self.assertNotIn("async with session_scope(", before_loop)
+        self.assertIn("await session.rollback()", loop_src)
+        self.assertIn("_unwrap_internal_errors(", snapshot_source)
+        self.assertIn("_classify_db_error(", snapshot_source)
+        localctl = (ROOT / "scripts/localctl").read_text(encoding="utf-8")
+        verify_source = localctl.split("def _material_rag_verify", 1)[1]
+        build_at = verify_source.find('"material-rag-migrator"')
+        prove_at = verify_source.find("_prove_material_rag_image_source(")
+        secret_at = verify_source.find("material-rag-secret-init")
+        self.assertTrue(0 < build_at < prove_at < secret_at)
+        image_source = localctl.split(
+            "def _prove_material_rag_image_source", 1
+        )[1].split("\ndef ", 1)[0]
+        self.assertIn("LOCAL_MATERIAL_RAG_IMAGE_SOURCE_EVIDENCE", image_source)
+        self.assertIn("network", image_source)
+        self.assertIn("none", image_source)
+        self.assertIn("65532", image_source)
+        self.assertIn("read-only", image_source)
+        self.assertIn('"MATCH"', image_source)
+        self.assertIn("MISMATCH", image_source)
 
     def test_clamd_diag_compose_stays_offline_and_matches_runtime_clamd(self) -> None:
         compose = (
@@ -1527,6 +4190,21 @@ def _load_localctl():
     )
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_material_rag_verify():
+    path = ROOT / "infra/f1/local_material_rag_verify.py"
+    name = "anhuan_material_rag_verify_static"
+    existing = sys.modules.get(name)
+    if existing is not None:
+        return existing
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module

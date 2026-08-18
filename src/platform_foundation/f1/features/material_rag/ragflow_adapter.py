@@ -12,7 +12,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Callable, Iterable
 
-from platform_foundation.f0j1.ragflow_client import RagFlowClient
+from platform_foundation.f0j1.ragflow_client import RagFlowClient, RagFlowProbeError
 
 from ...ragflow_provision import RAGFLOW_BASE, ragflow_lock, ragflow_token
 from .contracts import CanonicalUnit, MaterialRagIntegrityError, MaterialRagLeaseLost
@@ -26,6 +26,32 @@ from .security import (
 LeaseGuard = Callable[[], bool] | None
 MutationFence = Callable[[], AbstractContextManager[None]] | None
 _DATASET_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+_CHUNK_ADD_KNOWN_CODES = frozenset(
+    {
+        1,
+        2,
+        3,
+        4,
+        5,
+        100,
+        101,
+        102,
+        103,
+        104,
+        108,
+        109,
+        400,
+        401,
+        403,
+        404,
+        409,
+        422,
+        500,
+        501,
+        502,
+        503,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,9 +65,54 @@ class RemoteCandidate:
     body_sha256: str
 
 
+def _add_chunk_closed(
+    client: RagFlowClient,
+    token: str,
+    dataset_id: str,
+    document_id: str,
+    content: str,
+    *,
+    tag_kwd: list[str],
+) -> dict:
+    """Add one chunk; accept HTTP 200 with code 0 or \"0\" without widening auth.
+
+    The shared client treats any ``code != 0`` as failure, including string
+    ``\"0\"``.  Non-zero business codes stay probe errors with a fixed token.
+    """
+    payload = {
+        "content": content,
+        "important_keywords": [],
+        "questions": [],
+        "tag_kwd": tag_kwd,
+    }
+    status, data = client._request(
+        "POST",
+        f"/datasets/{dataset_id}/documents/{document_id}/chunks",
+        token,
+        payload,
+    )
+    if status != 200 or not isinstance(data, dict):
+        raise RagFlowProbeError("CHUNK_ADD_FAILED", status=status)
+    code = data.get("code")
+    if isinstance(code, str) and code.isdigit():
+        code = int(code)
+    if code == 0:
+        chunk = data.get("data")
+        if isinstance(chunk, dict):
+            return chunk
+        raise RagFlowProbeError("CHUNK_ADD_FAILED", status=status)
+    if code is None:
+        raise RagFlowProbeError("CHUNK_ADD_CODE_NONE", status=status)
+    if code in _CHUNK_ADD_KNOWN_CODES:
+        raise RagFlowProbeError(f"CHUNK_ADD_CODE_{code}", status=status)
+    raise RagFlowProbeError("CHUNK_ADD_CODE_OTHER", status=status)
+
+
 def _guard(lease_guard: LeaseGuard) -> None:
     if lease_guard is not None and not bool(lease_guard()):
-        raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+        error = MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+        error.source = "ADAPTER"
+        raise error
 
 
 def _authorize_mutation(
@@ -66,6 +137,98 @@ def _tags(value: object) -> dict[str, str]:
     return result
 
 
+def _pinned_chunk_content(detail: object) -> str | None:
+    if not isinstance(detail, dict):
+        return None
+    nested = detail.get("chunk")
+    if isinstance(nested, dict):
+        mapped = _pinned_chunk_content(nested)
+        if mapped is not None:
+            return mapped
+    for key in ("content", "content_with_weight"):
+        value = detail.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return None
+
+
+def _normalize_pinned_chunk(detail: object) -> dict:
+    if not isinstance(detail, dict):
+        return {}
+    nested = detail.get("chunk")
+    body = dict(detail)
+    if isinstance(nested, dict):
+        for key, value in nested.items():
+            current = body.get(key)
+            if key not in body or current in (None, "", []):
+                body[key] = value
+    content = _pinned_chunk_content(body)
+    if content is not None:
+        body["content"] = content
+    if body.get("dataset_id") in (None, "") and body.get("kb_id"):
+        body["dataset_id"] = body["kb_id"]
+    if body.get("document_id") in (None, "") and body.get("doc_id"):
+        body["document_id"] = body["doc_id"]
+    if body.get("chunk_id") in (None, "") and body.get("id"):
+        body["chunk_id"] = body["id"]
+    return body
+
+
+_PINNED_GET_CHUNK = RagFlowClient.get_chunk
+
+
+def _pinned_get_chunk(
+    self: RagFlowClient,
+    token: str,
+    dataset_id: str,
+    document_id: str,
+    chunk_id: str,
+) -> dict:
+    return _normalize_pinned_chunk(
+        _PINNED_GET_CHUNK(self, token, dataset_id, document_id, chunk_id)
+    )
+
+
+def _pinned_retrieval(
+    self: RagFlowClient,
+    token: str,
+    dataset_ids: list[str],
+    question: str,
+    page_size: int = 5,
+) -> list[dict]:
+    status, data = self._request(
+        "POST",
+        "/retrieval",
+        token,
+        {"question": question, "dataset_ids": dataset_ids, "page_size": page_size},
+    )
+    code = data.get("code") if isinstance(data, dict) else None
+    if isinstance(code, str) and code.isdigit():
+        code = int(code)
+    if status != 200 or code != 0 or not isinstance(data, dict):
+        raise RagFlowProbeError("RETRIEVAL_FAILED", status=status)
+    payload = data.get("data")
+    if isinstance(payload, list):
+        hits = payload
+    elif isinstance(payload, dict):
+        raw = payload.get("chunks", payload.get("chunk", []))
+        if isinstance(raw, dict):
+            hits = [raw]
+        elif isinstance(raw, list):
+            hits = raw
+        else:
+            hits = []
+    else:
+        hits = []
+    return [
+        _normalize_pinned_chunk(hit) for hit in hits if isinstance(hit, dict)
+    ]
+
+
+RagFlowClient.get_chunk = _pinned_get_chunk
+RagFlowClient.retrieval = _pinned_retrieval
+
+
 def _hydrate_chunks(
     client: RagFlowClient,
     token: str,
@@ -84,7 +247,12 @@ def _hydrate_chunks(
         _guard(lease_guard)
         detail = client.get_chunk(token, dataset_id, document_id, str(chunk_id))
         merged = dict(chunk)
-        merged.update(detail)
+        for key, value in detail.items():
+            if value not in (None, "", []):
+                merged[key] = value
+        content = _pinned_chunk_content(merged)
+        if content is not None:
+            merged["content"] = content
         hydrated.append(merged)
     return hydrated
 
@@ -111,6 +279,8 @@ def _remote_unit_map(
             raise MaterialRagIntegrityError("MATERIAL_RAG_REMOTE_IDENTITY_INVALID") from None
         body_sha = tags.get("body_sha256")
         content = chunk.get("content")
+        if not isinstance(content, str):
+            content = _pinned_chunk_content(chunk)
         actual_sha = (
             hashlib.sha256(content.encode("utf-8")).hexdigest()
             if isinstance(content, str)
@@ -230,7 +400,8 @@ def reconcile_version(
             body = unit.body.reveal()
             assert_external_text_safe(body)
             with _authorize_mutation(mutation_fence):
-                client.add_chunk(
+                _add_chunk_closed(
+                    client,
                     token,
                     dataset_id,
                     document_id,

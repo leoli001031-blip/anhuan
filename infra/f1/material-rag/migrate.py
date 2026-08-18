@@ -110,7 +110,10 @@ def migrate() -> None:
                     local_migrate._upgrade_f0(connection)
                 finally:
                     connection.exec_driver_sql("RESET ROLE")
-                migrate_f1.migrate_with_connection(connection)
+                migrate_f1.migrate_with_connection(
+                    connection,
+                    target=migrate_f1.F1_MATERIAL_RAG_MIGRATE_TARGET,
+                )
                 _verify_catalog(connection)
     finally:
         engine.dispose()

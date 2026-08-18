@@ -43,10 +43,11 @@ class P2Wave2MigrationContractTests(unittest.TestCase):
         config = Config(str(ROOT / "infra/f1/alembic.ini"))
         script = ScriptDirectory.from_config(config)
 
-        self.assertEqual(script.get_heads(), ["f1_0014"])
+        self.assertEqual(script.get_heads(), ["f1_0015"])
         revision = script.get_revision("f1_0005")
         self.assertIsNotNone(revision)
         self.assertEqual(revision.down_revision, "f1_0004")
+        self.assertEqual(script.get_revision("f1_0015").down_revision, "f1_0014")
 
     def test_all_wave2_tables_enable_and_force_rls(self) -> None:
         source = P2_MIGRATION.read_text(encoding="utf-8")

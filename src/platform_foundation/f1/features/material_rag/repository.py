@@ -7,13 +7,12 @@ import re
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Iterable, Iterator, Mapping
+from typing import TYPE_CHECKING, Iterable, Iterator, Mapping
 
-from sqlalchemy import text
+from sqlalchemy import LargeBinary, bindparam, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ...auth import Tenant
 from ...database import _worker_dsn, session_scope
 from .contracts import (
     CanonicalUnit,
@@ -31,10 +30,19 @@ from .security import (
     unit_aad_for_identity,
 )
 
+if TYPE_CHECKING:
+    from ...auth import Tenant
+
 
 _BINDING_NAMESPACE = uuid.UUID("fdc520dc-ffca-4ba3-a875-6ca74754655e")
 _JOB_ACTIONS = frozenset(("index", "rebuild", "delete"))
 _DATASET_REF_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+def _lease_lost(source: str) -> MaterialRagLeaseLost:
+    error = MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+    error.source = source
+    return error
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -64,13 +72,11 @@ class DatasetBindingState:
 def live_source_mutation_fence(
     claim: MaterialRagJobClaim, *, lease_seconds: int = 300
 ) -> Iterator[None]:
-    """Hold the exact live P3 source rows while one remote write executes.
+    """Hold the claimed job and live upload-task rows for one mutation.
 
-    Renewal, lifecycle proof, and ``FOR SHARE`` acquisition happen in one
-    worker transaction.  The caller must perform exactly one remote mutation
-    before leaving this context, so a concurrent P3 lifecycle update cannot
-    invalidate the release proof between the database check and the HTTP
-    request.
+    Renewal, lifecycle proof, and ``FOR SHARE`` on the job plus upload task
+    happen in one worker transaction.  Version and record rows stay
+    worker-select-only and are not locked here.
     """
     if claim.action not in {"index", "rebuild"}:
         raise MaterialRagIntegrityError("MATERIAL_RAG_RELEASE_FENCE_FORBIDDEN")
@@ -88,7 +94,7 @@ def live_source_mutation_fence(
             ).fetchone()[0]
         )
         if not renewed:
-            raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+            raise _lease_lost("MUTATION_FENCE")
         connection.execute(
             "SELECT set_config('f1.material_rag_job_id',%s,true),"
             "set_config('f1.material_rag_lease_token',%s,true)",
@@ -129,7 +135,7 @@ def live_source_mutation_fence(
               AND task.preview_status = 'ready'
               AND task.quarantine_status = 'released'
               AND task.released_at IS NOT NULL
-            FOR SHARE OF active_job, version, record, task
+            FOR SHARE OF active_job, task
             """,
             (
                 str(claim.id),
@@ -160,14 +166,14 @@ def live_scope_job_lock(claim: MaterialRagJobClaim) -> Iterator[None]:
     identity = (
         "material-rag-scope-v1\x00"
         f"{claim.enterprise_id}\x00{claim.knowledge_scope_id}"
-    )
+    ).encode("utf-8")
     dsn = _worker_dsn().replace("postgresql+psycopg://", "postgresql://", 1)
     import psycopg
 
     with psycopg.connect(dsn) as connection:
         lock_key = int(
             connection.execute(
-                "SELECT pg_catalog.hashtextextended(%s,0)", (identity,)
+                "SELECT pg_catalog.hashbyteaextended(%s,0)", (identity,)
             ).fetchone()[0]
         )
         connection.commit()
@@ -181,7 +187,7 @@ def live_scope_job_lock(claim: MaterialRagJobClaim) -> Iterator[None]:
             )
             connection.commit()
             if not renewed:
-                raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+                raise _lease_lost("SCOPE_LOCK")
             connection.execute(
                 "SELECT pg_catalog.pg_advisory_lock(%s)", (lock_key,)
             ).fetchone()
@@ -195,7 +201,7 @@ def live_scope_job_lock(claim: MaterialRagJobClaim) -> Iterator[None]:
             )
             connection.commit()
             if not renewed:
-                raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+                raise _lease_lost("SCOPE_LOCK")
             yield
         finally:
             if locked:
@@ -237,6 +243,8 @@ async def persist_canonical_units(
                     ":body_ciphertext,:body_sha,:aad_sha,:ocr_applied,:table_candidate,"
                     ":two_column_candidate) ON CONFLICT (enterprise_id,id) "
                     "DO NOTHING RETURNING id"
+                ).bindparams(
+                    bindparam("body_ciphertext", type_=LargeBinary()),
                 ),
                 {
                     "id": unit.id,

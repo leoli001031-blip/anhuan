@@ -189,6 +189,7 @@ class LocalVerifierContracts(unittest.TestCase):
                 "migration-atomicity",
                 "business-verifier",
                 "ingestion-verifier",
+                "material-verifier",
             },
         )
 
@@ -317,7 +318,7 @@ class LocalVerifierContracts(unittest.TestCase):
             )
             wrong_stage = next(
                 candidate
-                for candidate in localctl.BROWSER_STAGES
+                for candidate in sorted(localctl.BROWSER_STAGE_TAGS)
                 if candidate != stage
             )
             with self.assertRaisesRegex(
@@ -327,6 +328,13 @@ class LocalVerifierContracts(unittest.TestCase):
                 localctl._validate_browser_summary(
                     stdout, 0, stage=wrong_stage
                 )
+        with self.assertRaisesRegex(
+            localctl.LocalError,
+            "LOCAL_BROWSER_STAGE_INVALID",
+        ):
+            localctl._validate_browser_summary(
+                stdout, 0, stage="pwa-os"
+            )
 
     def test_every_browser_control_signal_is_read_from_a_private_file(self) -> None:
         localctl = _load_localctl()

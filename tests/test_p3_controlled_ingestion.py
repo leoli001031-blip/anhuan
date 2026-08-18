@@ -14,6 +14,7 @@ import inspect
 import io
 import json
 import struct
+import sys
 import unittest
 import zipfile
 from pathlib import Path
@@ -254,8 +255,14 @@ class P3MigrationAndTenantContractTests(unittest.TestCase):
         script = ScriptDirectory.from_config(
             Config(str(ROOT / "infra/f1/alembic.ini"))
         )
-        self.assertEqual(script.get_heads(), ["f1_0014"])
+        self.assertEqual(script.get_heads(), ["f1_0015"])
         self.assertEqual(script.get_revision("f1_0006").down_revision, "f1_0005")
+        self.assertEqual(script.get_revision("f1_0015").down_revision, "f1_0014")
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from infra.f1.migrate_f1 import F1_DEFAULT_MIGRATE_TARGET
+
+        self.assertEqual(F1_DEFAULT_MIGRATE_TARGET, "f1_0014")
 
     def test_p3_does_not_rewrite_frozen_f1_migrations(self) -> None:
         observed = {

@@ -46,6 +46,7 @@ AUTHORIZATION_PATH = Path(
     "/run/material-rag-authorization/body-sha256.json"
 )
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_BENCHMARK_FAKE_IP_NETWORK = ipaddress.ip_network("198.18.0.0/15")
 
 
 _COUNTER_KEYS = (
@@ -294,8 +295,18 @@ class _Counters:
 COUNTERS = _Counters()
 
 
+def _allowed_upstream_ip(value: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if value.is_global:
+        return True
+    return (
+        isinstance(value, ipaddress.IPv4Address)
+        and value in _BENCHMARK_FAKE_IP_NETWORK
+    )
+
+
 def _public_addresses() -> list[tuple[int, tuple[object, ...]]]:
-    result: list[tuple[int, tuple[object, ...]]] = []
+    global_addresses: list[tuple[int, tuple[object, ...]]] = []
+    fake_ip_addresses: list[tuple[int, tuple[object, ...]]] = []
     seen: set[tuple[int, str]] = set()
     for family, _socktype, _protocol, _canonname, address in socket.getaddrinfo(
         ALLOWED_HOST,
@@ -306,13 +317,15 @@ def _public_addresses() -> list[tuple[int, tuple[object, ...]]]:
         if family not in (socket.AF_INET, socket.AF_INET6):
             continue
         value = ipaddress.ip_address(str(address[0]))
-        if not value.is_global:
+        if not _allowed_upstream_ip(value):
             continue
         identity = (family, value.compressed)
         if identity in seen:
             continue
         seen.add(identity)
-        result.append((family, address))
+        bucket = global_addresses if value.is_global else fake_ip_addresses
+        bucket.append((family, address))
+    result = global_addresses + fake_ip_addresses
     if not result:
         raise OSError("ARK_EGRESS_DNS_REJECTED")
     return result

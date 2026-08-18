@@ -712,6 +712,52 @@ def _guards() -> None:
         "f1.material_rag_guard_binding()",
     ):
         op.execute(f"GRANT EXECUTE ON FUNCTION {signature} TO f1_api, f1_worker")
+    op.execute(
+        """
+        CREATE FUNCTION f1.guard_document_record_scope()
+        RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
+        SET search_path = pg_catalog AS $$
+        BEGIN
+          IF TG_OP = 'UPDATE'
+             AND NEW.knowledge_scope_id IS DISTINCT FROM OLD.knowledge_scope_id
+          THEN
+            PERFORM task.id
+              FROM f1.document_version AS version
+              JOIN f1.upload_task AS task
+                ON task.enterprise_id = version.enterprise_id
+               AND task.id = version.upload_task_id
+             WHERE version.enterprise_id = NEW.enterprise_id
+               AND version.document_record_id = NEW.id
+             ORDER BY task.id
+               FOR UPDATE OF task;
+            IF EXISTS (
+              SELECT 1
+                FROM f1.document_version AS version
+                JOIN f1.upload_task AS task
+                  ON task.enterprise_id = version.enterprise_id
+                 AND task.id = version.upload_task_id
+               WHERE version.enterprise_id = NEW.enterprise_id
+                 AND version.document_record_id = NEW.id
+                 AND task.quarantine_status = 'released'
+            ) THEN
+              RAISE EXCEPTION 'P3_KNOWLEDGE_SCOPE_LOCKED';
+            END IF;
+          END IF;
+          RETURN NEW;
+        END $$
+        """
+    )
+    op.execute(
+        "CREATE TRIGGER document_record_scope_guard BEFORE UPDATE "
+        "ON f1.document_record FOR EACH ROW "
+        "EXECUTE FUNCTION f1.guard_document_record_scope()"
+    )
+    op.execute(
+        "REVOKE ALL ON FUNCTION f1.guard_document_record_scope() FROM PUBLIC"
+    )
+    op.execute(
+        "GRANT EXECUTE ON FUNCTION f1.guard_document_record_scope() TO f1_api"
+    )
 
 
 def _job_functions() -> None:
@@ -1122,9 +1168,10 @@ def _rls_and_grants() -> None:
         )
       )
     """
+    job_select_target = "(" + job_target + ") OR (" + job_after_update + ")"
     op.execute(
         "CREATE POLICY material_rag_job_worker_select ON f1.material_rag_job "
-        "FOR SELECT TO f1_worker USING (" + job_target + ")"
+        "FOR SELECT TO f1_worker USING (" + job_select_target + ")"
     )
     op.execute(
         "CREATE POLICY material_rag_job_worker_update ON f1.material_rag_job "
@@ -1214,6 +1261,18 @@ def _rls_and_grants() -> None:
     op.execute(
         "CREATE POLICY material_rag_source_upload_worker_select ON "
         "f1.upload_task FOR SELECT TO f1_worker USING ("
+        + source_upload_worker
+        + ")"
+    )
+    # SELECT FOR SHARE is checked as UPDATE.  Without a lease-scoped UPDATE
+    # policy, tenant_boundary hides the claimed task (enterprise_id GUC is
+    # unset) and the fence JOIN returns no row.  Reuse the SELECT predicate so
+    # the worker can lock only the claimed upload task, not the tenant.
+    op.execute(
+        "CREATE POLICY material_rag_source_upload_worker_update ON "
+        "f1.upload_task FOR UPDATE TO f1_worker USING ("
+        + source_upload_worker
+        + ") WITH CHECK ("
         + source_upload_worker
         + ")"
     )
@@ -1326,7 +1385,12 @@ def downgrade() -> None:
         """
     )
     op.execute("SET LOCAL ROLE f0d_migration")
+    op.execute(
+        "DROP TRIGGER IF EXISTS document_record_scope_guard ON f1.document_record"
+    )
+    op.execute("DROP FUNCTION IF EXISTS f1.guard_document_record_scope()")
     for policy, table in (
+        ("material_rag_source_upload_worker_update", "upload_task"),
         ("material_rag_source_upload_worker_select", "upload_task"),
         ("material_rag_source_version_worker_select", "document_version"),
         ("material_rag_source_record_worker_select", "document_record"),

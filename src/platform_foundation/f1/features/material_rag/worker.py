@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import uuid
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Iterable
 
 from sqlalchemy import text
@@ -51,6 +53,161 @@ from .security import (
     AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256,
     verify_demo_unit_manifest_proof,
 )
+
+
+_SQLSTATE_RE = re.compile(r"^[A-Z0-9]{5}$")
+PROCESS_OUTCOME_KINDS = frozenset(
+    {
+        "CLAIM_NONE",
+        "FINISH_EXCEPTION",
+        "FINISH_FALSE",
+        "FINISH_TRUE",
+        "LEASE_LOST",
+        "SUCCESS",
+    }
+)
+LEASE_SOURCES = frozenset(
+    {
+        "ADAPTER",
+        "FINISH_DONE",
+        "MUTATION_FENCE",
+        "NONE",
+        "RENEW",
+        "SCOPE_LOCK",
+        "UNKNOWN",
+    }
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessOutcome:
+    kind: str
+    lease_source: str = "NONE"
+    finish_sqlstate: str = "NONE"
+    lease_present: bool = False
+    lease_live: bool = False
+    token_match: bool = False
+
+    def __bool__(self) -> bool:
+        return self.kind == "SUCCESS"
+
+
+_CHUNK_ADD_CODE_TOKENS = frozenset(
+    {
+        "CHUNK_ADD_CODE_NONE",
+        "CHUNK_ADD_CODE_OTHER",
+        *(
+            f"CHUNK_ADD_CODE_{code}"
+            for code in (
+                1,
+                2,
+                3,
+                4,
+                5,
+                100,
+                101,
+                102,
+                103,
+                104,
+                108,
+                109,
+                400,
+                401,
+                403,
+                404,
+                409,
+                422,
+                500,
+                501,
+                502,
+                503,
+            )
+        ),
+    }
+)
+
+
+def _probe_reason_token(error: RagFlowProbeError) -> str:
+    raw = getattr(error, "reason", "")
+    base = str(raw).split()[0] if raw else ""
+    if base in _CHUNK_ADD_CODE_TOKENS:
+        return base
+    if base not in {
+        "CHUNK_ADD_FAILED",
+        "CHUNK_DELETE_FAILED",
+        "CHUNK_GET_FAILED",
+        "CHUNK_LIST_FAILED",
+        "DATASET_CREATE_FAILED",
+        "DATASET_DELETE_FAILED",
+        "DATASET_LIST_FAILED",
+        "DOC_CREATE_FAILED",
+        "DOC_DELETE_FAILED",
+        "DOC_LIST_FAILED",
+        "PROVIDER_ADD_FAILED",
+        "RETRIEVAL_FAILED",
+    }:
+        return "MATERIAL_RAG_PROBE_FAILED"
+    status = getattr(error, "status", None)
+    if status in {200, 400, 401, 403, 404, 409, 422, 500, 502, 503}:
+        return f"{base}_{status}"
+    return f"{base}_NONE"
+
+
+def lease_lost(source: str) -> MaterialRagLeaseLost:
+    error = MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+    error.source = source if source in LEASE_SOURCES else "UNKNOWN"
+    return error
+
+
+def _safe_finish_sqlstate(error: BaseException) -> str:
+    candidates = [getattr(error, "sqlstate", None)]
+    orig = getattr(error, "orig", None)
+    if orig is not None:
+        candidates.append(getattr(orig, "sqlstate", None))
+        diag = getattr(orig, "diag", None)
+        if diag is not None:
+            candidates.append(getattr(diag, "sqlstate", None))
+    for value in candidates:
+        if isinstance(value, str) and _SQLSTATE_RE.fullmatch(value):
+            return value
+    return "NONE"
+
+
+def _outcome(
+    kind: str,
+    *,
+    lease_source: str = "NONE",
+    finish_sqlstate: str = "NONE",
+    lease_present: bool = False,
+    lease_live: bool = False,
+    token_match: bool = False,
+) -> ProcessOutcome:
+    return ProcessOutcome(
+        kind=kind if kind in PROCESS_OUTCOME_KINDS else "FINISH_EXCEPTION",
+        lease_source=lease_source if lease_source in LEASE_SOURCES else "UNKNOWN",
+        finish_sqlstate=(
+            finish_sqlstate
+            if finish_sqlstate == "NONE" or _SQLSTATE_RE.fullmatch(finish_sqlstate)
+            else "NONE"
+        ),
+        lease_present=lease_present if type(lease_present) is bool else False,
+        lease_live=lease_live if type(lease_live) is bool else False,
+        token_match=token_match if type(token_match) is bool else False,
+    )
+
+
+async def _finish_checked(
+    claim: MaterialRagJobClaim, **kwargs: object
+) -> ProcessOutcome | None:
+    try:
+        finished = await finish_job(claim, **kwargs)
+    except Exception as error:
+        return _outcome(
+            "FINISH_EXCEPTION", finish_sqlstate=_safe_finish_sqlstate(error)
+        )
+    if finished:
+        return None
+    return _outcome("FINISH_FALSE")
 
 
 @asynccontextmanager
@@ -147,7 +304,7 @@ def _compensate_unbound_scope_dataset_sync(claim: MaterialRagJobClaim) -> int:
     ):
         raise MaterialRagIntegrityError("MATERIAL_RAG_REMOTE_DATASET_NOT_EMPTY")
     if not _renew_sync(claim):
-        raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+        raise lease_lost("RENEW")
     if client.delete_datasets(token, [dataset_id]) != 1:
         raise MaterialRagIntegrityError(
             "MATERIAL_RAG_REMOTE_DATASET_DELETE_MISMATCH"
@@ -225,7 +382,7 @@ async def _process_claimed_demo_job_locked(
     *,
     units: Iterable[CanonicalUnit] | None = None,
     manifest_proof: DemoUnitManifestProof | None = None,
-) -> bool:
+) -> ProcessOutcome:
     """Process one already-claimed job after proof creation for this lease."""
     if not isinstance(claim, MaterialRagJobClaim):
         raise ValueError("MATERIAL_RAG_JOB_CLAIM_INVALID")
@@ -298,7 +455,7 @@ async def _process_claimed_demo_job_locked(
                     claim,
                 )
                 if not await asyncio.to_thread(_renew_sync, claim):
-                    raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+                    raise lease_lost("RENEW")
                 async with claimed_session(claim) as session:
                     binding = await persist_dataset_binding(
                         session,
@@ -316,7 +473,7 @@ async def _process_claimed_demo_job_locked(
                     claim,
                 )
                 if not await asyncio.to_thread(_renew_sync, claim):
-                    raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+                    raise lease_lost("RENEW")
                 async with claimed_session(claim) as session:
                     binding = await persist_dataset_binding(
                         session,
@@ -399,7 +556,7 @@ async def _process_claimed_demo_job_locked(
                         lease_guard=lease_guard,
                     )
                     if not await asyncio.to_thread(_renew_sync, claim):
-                        raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
+                        raise lease_lost("RENEW")
                     async with claimed_session(claim) as session:
                         finalized = await finalize_empty_scope_dataset_delete(
                             session,
@@ -428,16 +585,17 @@ async def _process_claimed_demo_job_locked(
             final_units = stored
             if not await asyncio.to_thread(_released_sync, claim):
                 raise MaterialRagIntegrityError("MATERIAL_VERSION_NOT_INDEXABLE")
-        if not await finish_job(
+        recorded = await _finish_checked(
             claim,
             status="done",
             result_manifest_sha256=_manifest(claim, final_units),
             indexed_unit_count=len(final_units),
-        ):
-            raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
-        return True
+        )
+        if recorded is not None:
+            return recorded
+        return _outcome("SUCCESS")
     except MaterialRagLeaseLost:
-        return False
+        raise
 
 
 async def process_claimed_demo_job(
@@ -445,7 +603,7 @@ async def process_claimed_demo_job(
     *,
     units: Iterable[CanonicalUnit] | None = None,
     manifest_proof: DemoUnitManifestProof | None = None,
-) -> bool:
+) -> ProcessOutcome:
     """Run one claimed job under a cross-process scope serialization lock."""
     if not isinstance(claim, MaterialRagJobClaim):
         raise ValueError("MATERIAL_RAG_JOB_CLAIM_INVALID")
@@ -456,36 +614,57 @@ async def process_claimed_demo_job(
                 units=units,
                 manifest_proof=manifest_proof,
             )
-    except MaterialRagLeaseLost:
-        return False
-    except (RagFlowProbeError, RagflowProvisionError, ConnectionError, OSError):
-        try:
-            await finish_job(
-                claim,
-                status="retry_wait",
-                reason="MATERIAL_RAG_UNAVAILABLE",
-                retry_seconds=min(300, 15 * max(1, claim.attempt)),
-            )
-        except Exception:  # Lease loss during failure recording is final here.
-            pass
-        return False
+    except MaterialRagLeaseLost as error:
+        source = getattr(error, "source", "UNKNOWN")
+        return _outcome(
+            "LEASE_LOST",
+            lease_source=source if source in LEASE_SOURCES else "UNKNOWN",
+        )
+    except RagFlowProbeError as error:
+        recorded = await _finish_checked(
+            claim,
+            status="retry_wait",
+            reason=_probe_reason_token(error),
+            retry_seconds=min(300, 15 * max(1, claim.attempt)),
+        )
+        if recorded is not None:
+            return recorded
+        return _outcome("FINISH_TRUE")
+    except RagflowProvisionError:
+        recorded = await _finish_checked(
+            claim,
+            status="retry_wait",
+            reason="MATERIAL_RAG_PROVISION_FAILED",
+            retry_seconds=min(300, 15 * max(1, claim.attempt)),
+        )
+        if recorded is not None:
+            return recorded
+        return _outcome("FINISH_TRUE")
+    except (ConnectionError, OSError):
+        recorded = await _finish_checked(
+            claim,
+            status="retry_wait",
+            reason="MATERIAL_RAG_NETWORK_FAILED",
+            retry_seconds=min(300, 15 * max(1, claim.attempt)),
+        )
+        if recorded is not None:
+            return recorded
+        return _outcome("FINISH_TRUE")
     except MaterialRagIntegrityError as error:
         reason = str(error)
         if not reason or len(reason) > 80:
             reason = "MATERIAL_RAG_INTEGRITY_FAILED"
-        try:
-            await finish_job(claim, status="failed", reason=reason)
-        except Exception:
-            pass
-        return False
+        recorded = await _finish_checked(claim, status="failed", reason=reason)
+        if recorded is not None:
+            return recorded
+        return _outcome("FINISH_TRUE")
     except (RuntimeError, ValueError):
-        try:
-            await finish_job(
-                claim, status="failed", reason="MATERIAL_RAG_LOCAL_FAILED"
-            )
-        except Exception:
-            pass
-        return False
+        recorded = await _finish_checked(
+            claim, status="failed", reason="MATERIAL_RAG_LOCAL_FAILED"
+        )
+        if recorded is not None:
+            return recorded
+        return _outcome("FINISH_TRUE")
 
 
 async def process_demo_job(
@@ -497,7 +676,7 @@ async def process_demo_job(
         tuple[Iterable[CanonicalUnit], DemoUnitManifestProof],
     ]
     | None = None,
-) -> bool:
+) -> ProcessOutcome:
     """Claim then let the isolated verifier attest this exact attempt.
 
     ``prepare`` is verifier-only and is invoked only after the lease token and
@@ -506,7 +685,7 @@ async def process_demo_job(
     """
     claim = await claim_demo_job(job_id, worker_id=worker_id)
     if claim is None:
-        return False
+        return _outcome("CLAIM_NONE")
     if claim.action == "delete":
         return await process_claimed_demo_job(claim)
     if prepare is None:
@@ -514,15 +693,14 @@ async def process_demo_job(
     try:
         units, proof = prepare(claim)
     except (MaterialRagIntegrityError, RuntimeError, ValueError):
-        try:
-            await finish_job(
-                claim,
-                status="failed",
-                reason="MATERIAL_RAG_MANIFEST_INVALID",
-            )
-        except Exception:
-            pass
-        return False
+        recorded = await _finish_checked(
+            claim,
+            status="failed",
+            reason="MATERIAL_RAG_MANIFEST_INVALID",
+        )
+        if recorded is not None:
+            return recorded
+        return _outcome("FINISH_TRUE")
     return await process_claimed_demo_job(
         claim, units=units, manifest_proof=proof
     )
@@ -530,8 +708,12 @@ async def process_demo_job(
 
 __all__ = (
     "AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256",
+    "LEASE_SOURCES",
+    "PROCESS_OUTCOME_KINDS",
+    "ProcessOutcome",
     "claim_demo_job",
     "claimed_session",
+    "lease_lost",
     "process_claimed_demo_job",
     "process_demo_job",
 )

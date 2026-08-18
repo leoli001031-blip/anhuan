@@ -1780,6 +1780,171 @@ def _material_rag_compose(
     )
 
 
+_MATERIAL_RAG_BUILD_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_BUILD_EVIDENCE "
+_MATERIAL_RAG_BUILD_EVIDENCE_KEYS = frozenset(
+    {"detail_class", "exit_class", "exit_code", "phase"}
+)
+_MATERIAL_RAG_BUILD_EXIT_CLASSES = frozenset(
+    {"DNS", "HASH", "NO_SPACE", "OTHER", "TIMEOUT", "TLS", "UNKNOWN"}
+)
+_MATERIAL_RAG_BUILD_PHASES = frozenset({"DEPENDENCY_INSTALL", "OTHER", "UNKNOWN"})
+_MATERIAL_RAG_BUILD_DETAIL_CLASSES = frozenset(
+    {
+        "DNS",
+        "HASH",
+        "NETWORK_TIMEOUT",
+        "NO_SPACE",
+        "OTHER",
+        "TLS_EOF",
+        "TLS_OTHER",
+        "UNKNOWN",
+    }
+)
+_MATERIAL_RAG_IMAGE_SOURCE_CLOSED = (
+    (
+        "infra/f1/alembic/versions/f1_0015_material_rag.py",
+        "/app/infra/f1/alembic/versions/f1_0015_material_rag.py",
+    ),
+    (
+        "infra/f1/local_material_rag_verify.py",
+        "/app/infra/f1/local_material_rag_verify.py",
+    ),
+    ("scripts/localctl", "/app/scripts/localctl"),
+    (
+        "src/platform_foundation/f1/database.py",
+        "/app/src/platform_foundation/f1/database.py",
+    ),
+    (
+        "src/platform_foundation/f1/features/material_rag/ragflow_adapter.py",
+        "/app/src/platform_foundation/f1/features/material_rag/ragflow_adapter.py",
+    ),
+    (
+        "src/platform_foundation/f1/features/material_rag/repository.py",
+        "/app/src/platform_foundation/f1/features/material_rag/repository.py",
+    ),
+    (
+        "src/platform_foundation/f1/features/material_rag/security.py",
+        "/app/src/platform_foundation/f1/features/material_rag/security.py",
+    ),
+    (
+        "src/platform_foundation/f1/features/material_rag/worker.py",
+        "/app/src/platform_foundation/f1/features/material_rag/worker.py",
+    ),
+)
+_MATERIAL_RAG_IMAGE_SOURCE_ROOT_RE = re.compile(r"\A[0-9a-f]{64}\Z")
+_MATERIAL_RAG_IMAGE_SOURCE_EVIDENCE_PREFIX = (
+    "LOCAL_MATERIAL_RAG_IMAGE_SOURCE_EVIDENCE "
+)
+
+
+def _material_rag_build_ascii(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.encode("ascii", "ignore").decode("ascii").lower()
+
+
+def _classify_material_rag_build_evidence(
+    stdout: str, stderr: str, exit_code: object
+) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "detail_class": "UNKNOWN",
+        "exit_class": "UNKNOWN",
+        "exit_code": 0,
+        "phase": "UNKNOWN",
+    }
+    if type(exit_code) is int and 0 <= exit_code <= 255:
+        payload["exit_code"] = exit_code
+    text = (
+        _material_rag_build_ascii(stdout)
+        + "\n"
+        + _material_rag_build_ascii(stderr)
+    )
+    dependency = (
+        "could not install packages" in text
+        or "pip install" in text
+        or "downloading " in text
+        or "requirement" in text
+    )
+    if "do not match the hashes" in text or "hash mismatch" in text:
+        payload["exit_class"] = "HASH"
+        payload["detail_class"] = "HASH"
+        payload["phase"] = "DEPENDENCY_INSTALL" if dependency else "OTHER"
+        return payload
+    if "no space left on device" in text or "enospc" in text:
+        payload["exit_class"] = "NO_SPACE"
+        payload["detail_class"] = "NO_SPACE"
+        payload["phase"] = "DEPENDENCY_INSTALL" if dependency else "OTHER"
+        return payload
+    if (
+        "read timed out" in text
+        or "readtimeout" in text
+        or "timed out" in text
+    ):
+        payload["exit_class"] = "TIMEOUT"
+        payload["detail_class"] = "NETWORK_TIMEOUT"
+        payload["phase"] = "DEPENDENCY_INSTALL" if dependency else "OTHER"
+        return payload
+    tls_eof = (
+        "ssleoferror" in text
+        or "unexpected_eof_while_reading" in text
+        or "eof occurred in violation of protocol" in text
+    )
+    if tls_eof or "sslerror" in text:
+        payload["exit_class"] = "TLS"
+        payload["detail_class"] = "TLS_EOF" if tls_eof else "TLS_OTHER"
+        payload["phase"] = "DEPENDENCY_INSTALL" if dependency else "OTHER"
+        return payload
+    if (
+        "getaddrinfo" in text
+        or "name or service not known" in text
+        or "temporary failure in name resolution" in text
+        or "nodename nor servname" in text
+    ):
+        payload["exit_class"] = "DNS"
+        payload["detail_class"] = "DNS"
+        payload["phase"] = "DEPENDENCY_INSTALL" if dependency else "OTHER"
+        return payload
+    if dependency:
+        payload["exit_class"] = "OTHER"
+        payload["detail_class"] = "OTHER"
+        payload["phase"] = "DEPENDENCY_INSTALL"
+        return payload
+    if type(exit_code) is int and exit_code != 0:
+        payload["exit_class"] = "OTHER"
+        payload["detail_class"] = "OTHER"
+        payload["phase"] = "OTHER"
+    return payload
+
+
+def _emit_material_rag_build_evidence(
+    stdout: str, stderr: str, exit_code: object
+) -> None:
+    payload = _classify_material_rag_build_evidence(stdout, stderr, exit_code)
+    if (
+        set(payload) != _MATERIAL_RAG_BUILD_EVIDENCE_KEYS
+        or payload["exit_class"] not in _MATERIAL_RAG_BUILD_EXIT_CLASSES
+        or payload["phase"] not in _MATERIAL_RAG_BUILD_PHASES
+        or payload["detail_class"] not in _MATERIAL_RAG_BUILD_DETAIL_CLASSES
+        or type(payload["exit_code"]) is not int
+        or not 0 <= int(payload["exit_code"]) <= 255
+    ):
+        payload = {
+            "detail_class": "UNKNOWN",
+            "exit_class": "UNKNOWN",
+            "exit_code": 0,
+            "phase": "UNKNOWN",
+        }
+    line = _MATERIAL_RAG_BUILD_EVIDENCE_PREFIX + json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if len(line.encode("utf-8")) > 1024:
+        return
+    print(line, file=sys.stderr, flush=True)
+
+
 def _material_rag_compose_stage(
     state: dict[str, object],
     env_file: Path,
@@ -1801,10 +1966,17 @@ def _material_rag_compose_stage(
             check=False,
         )
     except LocalError:
+        if failure_reason == "LOCAL_MATERIAL_RAG_BUILD_FAILED":
+            _emit_material_rag_build_evidence("", "", 0)
         if failure_reason in MATERIAL_RAG_OOM_EVIDENCE_STAGES:
             _raise_material_rag_oom_if_observed(state, failure_reason)
         raise LocalError(failure_reason) from None
     if result.returncode != 0:
+        if failure_reason == "LOCAL_MATERIAL_RAG_BUILD_FAILED":
+            _emit_material_rag_build_evidence(
+                result.stdout, result.stderr, result.returncode
+            )
+            raise LocalError(failure_reason)
         if failure_reason in MATERIAL_RAG_OOM_EVIDENCE_STAGES:
             _raise_material_rag_oom_if_observed(state, failure_reason)
         if allowed_reasons == MATERIAL_RAG_PROVIDER_FAILURE_REASONS:
@@ -2031,10 +2203,18 @@ def _emit_material_rag_verifier_diagnostics(
         file=sys.stderr,
         flush=True,
     )
+    _emit_material_rag_scanner_evidence(stdout, stderr, reason)
+    _emit_material_rag_internal_evidence(stdout, stderr, reason)
+    _emit_material_rag_index_evidence(stdout, stderr, reason)
+    _emit_material_rag_egress_evidence(stdout, stderr, reason)
+    _emit_material_rag_retrieval_evidence(stdout, stderr, reason)
+    _emit_material_rag_rebuild_evidence(stdout, stderr, reason)
     return reason
 
 
-def _emit_material_rag_unreachable_verifier_diagnostics() -> None:
+def _emit_material_rag_unreachable_verifier_diagnostics(
+    state: dict[str, object] | None = None,
+) -> None:
     print(
         _MATERIAL_RAG_PREVIEW_EVIDENCE_PREFIX
         + json.dumps(
@@ -2053,6 +2233,1238 @@ def _emit_material_rag_unreachable_verifier_diagnostics() -> None:
     print(
         "LOCAL_MATERIAL_RAG_VERIFIER_REASON "
         "LOCAL_MATERIAL_RAG_VERIFIER_NOT_REACHED",
+        file=sys.stderr,
+        flush=True,
+    )
+    _emit_material_rag_scanner_reach_evidence(state)
+
+
+_MATERIAL_RAG_SCANNER_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE "
+_MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED = (
+    "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED"
+)
+_MATERIAL_RAG_SCANNER_EVIDENCE_MAX_BYTES = 1024
+_MATERIAL_RAG_SCANNER_EVIDENCE_MAX_ATTEMPTS = 64
+_MATERIAL_RAG_SCANNER_EVIDENCE_KEYS = frozenset(
+    {
+        "attempt_count",
+        "operation",
+        "phase",
+        "response_class",
+        "scan_code",
+    }
+)
+_MATERIAL_RAG_SCANNER_EVIDENCE_OPERATIONS = frozenset({"INSTREAM", "VERSION"})
+_MATERIAL_RAG_SCANNER_EVIDENCE_PHASES = frozenset(
+    {"CONNECT", "PARSE", "RECV", "RESOLVE", "SEND"}
+)
+_MATERIAL_RAG_SCANNER_EVIDENCE_RESPONSE_CLASSES = frozenset(
+    {"EMPTY", "ENGINE_ERROR", "FORMAT_MISMATCH", "NOT_APPLICABLE", "OVERSIZE"}
+)
+_MATERIAL_RAG_SCANNER_EVIDENCE_CODE_TO_REASON = {
+    "P3_SCAN_ENGINE_ERROR": "LOCAL_MATERIAL_RAG_P3_SCAN_ENGINE_FAILED",
+    "P3_SCAN_PROTOCOL_ERROR": "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED",
+    "P3_SCANNER_CONNECT_PIPE": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_PIPE_FAILED",
+    "P3_SCANNER_CONNECT_REFUSED": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_REFUSED_FAILED",
+    "P3_SCANNER_CONNECT_RESET": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_RESET_FAILED",
+    "P3_SCANNER_DNS_FAILED": "LOCAL_MATERIAL_RAG_P3_SCAN_DNS_FAILED",
+    "P3_SCANNER_STREAM_PIPE": "LOCAL_MATERIAL_RAG_P3_SCAN_STREAM_PIPE_FAILED",
+    "P3_SCANNER_STREAM_REFUSED": "LOCAL_MATERIAL_RAG_P3_SCAN_STREAM_REFUSED_FAILED",
+    "P3_SCANNER_STREAM_RESET": "LOCAL_MATERIAL_RAG_P3_SCAN_STREAM_RESET_FAILED",
+    "P3_SCANNER_TARGET_INVALID": "LOCAL_MATERIAL_RAG_P3_SCAN_TARGET_FAILED",
+    "P3_SCANNER_TIMEOUT": "LOCAL_MATERIAL_RAG_P3_SCAN_TIMEOUT_FAILED",
+    "P3_SCANNER_UNAVAILABLE": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_FAILED",
+    "P3_SCANNER_VERSION_PIPE": "LOCAL_MATERIAL_RAG_P3_SCAN_VERSION_PIPE_FAILED",
+    "P3_SCANNER_VERSION_REFUSED": "LOCAL_MATERIAL_RAG_P3_SCAN_VERSION_REFUSED_FAILED",
+    "P3_SCANNER_VERSION_RESET": "LOCAL_MATERIAL_RAG_P3_SCAN_VERSION_RESET_FAILED",
+}
+_MATERIAL_RAG_SCANNER_EVIDENCE_SCAN_CODES = frozenset(
+    _MATERIAL_RAG_SCANNER_EVIDENCE_CODE_TO_REASON
+)
+_MATERIAL_RAG_SCANNER_EVIDENCE_REASONS = frozenset(
+    _MATERIAL_RAG_SCANNER_EVIDENCE_CODE_TO_REASON.values()
+)
+_MATERIAL_RAG_SCANNER_EVIDENCE_REASON_TO_CODE = {
+    reason: code
+    for code, reason in _MATERIAL_RAG_SCANNER_EVIDENCE_CODE_TO_REASON.items()
+}
+_MATERIAL_RAG_VERIFIER_STARTED_STATUSES = frozenset(
+    {"dead", "exited", "paused", "removing", "restarting", "running"}
+)
+
+
+def _sanitize_material_rag_scanner_evidence(
+    payload: object,
+) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    if set(payload) != _MATERIAL_RAG_SCANNER_EVIDENCE_KEYS:
+        return None
+    attempt_count = payload.get("attempt_count")
+    operation = payload.get("operation")
+    phase = payload.get("phase")
+    response_class = payload.get("response_class")
+    scan_code = payload.get("scan_code")
+    if (
+        type(attempt_count) is not int
+        or not 1 <= attempt_count <= _MATERIAL_RAG_SCANNER_EVIDENCE_MAX_ATTEMPTS
+        or operation not in _MATERIAL_RAG_SCANNER_EVIDENCE_OPERATIONS
+        or phase not in _MATERIAL_RAG_SCANNER_EVIDENCE_PHASES
+        or response_class not in _MATERIAL_RAG_SCANNER_EVIDENCE_RESPONSE_CLASSES
+        or scan_code not in _MATERIAL_RAG_SCANNER_EVIDENCE_SCAN_CODES
+    ):
+        return None
+    return {
+        "attempt_count": attempt_count,
+        "operation": operation,
+        "phase": phase,
+        "response_class": response_class,
+        "scan_code": scan_code,
+    }
+
+
+def _material_rag_exact_service_container_ids(
+    state: dict[str, object], service: str
+) -> tuple[str, ...] | None:
+    try:
+        project, _project_id, _database, _probe = _material_rag_identity(state)
+        result = _run(
+            [
+                _docker(),
+                "ps",
+                "-a",
+                "-q",
+                "--no-trunc",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+                "--filter",
+                f"label=com.docker.compose.service={service}",
+            ],
+            capture=True,
+            check=False,
+            material_rag=True,
+            timeout=10,
+        )
+    except (KeyError, LocalError, TypeError, ValueError):
+        return None
+    if result.returncode != 0:
+        return None
+    return tuple(line for line in result.stdout.splitlines() if line)
+
+
+def _material_rag_inspect_labeled_container(
+    state: dict[str, object], container_id: str
+) -> tuple[str, str] | None:
+    try:
+        project, project_id, _database, _probe = _material_rag_identity(state)
+        parent_id = str(state["project_id"])
+        inspected = _run(
+            [_docker(), "inspect", container_id],
+            capture=True,
+            check=False,
+            material_rag=True,
+            timeout=10,
+        )
+    except (KeyError, LocalError, TypeError, ValueError):
+        return None
+    if inspected.returncode != 0:
+        return None
+    try:
+        payload = json.loads(inspected.stdout)[0]
+        labels = payload["Config"]["Labels"]
+        service = labels["com.docker.compose.service"]
+        status = payload["State"]["Status"]
+    except (
+        AttributeError,
+        IndexError,
+        KeyError,
+        TypeError,
+        json.JSONDecodeError,
+    ):
+        return None
+    if (
+        not isinstance(service, str)
+        or not isinstance(status, str)
+        or labels.get("com.docker.compose.project") != project
+        or labels.get("io.anhuan.scope") != MATERIAL_RAG_SCOPE
+        or labels.get("io.anhuan.project-id") != project_id
+        or labels.get("io.anhuan.parent-project-id") != parent_id
+    ):
+        return None
+    return service, status
+
+
+def _material_rag_complete_container_snapshot(
+    state: dict[str, object],
+) -> tuple[dict[str, str], ...] | None:
+    try:
+        project, _project_id, _database, _probe = _material_rag_identity(state)
+        container_ids = _resource_ids(
+            "ps", project, material_rag=True, timeout=10
+        )
+    except (KeyError, LocalError, TypeError, ValueError):
+        return None
+    items: list[dict[str, str]] = []
+    for container_id in container_ids:
+        labeled = _material_rag_inspect_labeled_container(state, container_id)
+        if labeled is None:
+            return None
+        service, status = labeled
+        items.append({"service": service, "status": status})
+    return tuple(items)
+
+
+def _material_rag_reach_from_status(status: object) -> str:
+    if status in _MATERIAL_RAG_VERIFIER_STARTED_STATUSES:
+        return "reached"
+    if status == "created":
+        return "not_reached"
+    return "unknown"
+
+
+def _material_rag_verifier_reach(
+    state: dict[str, object] | None,
+) -> str:
+    if not isinstance(state, dict):
+        return "unknown"
+    exact_ids = _material_rag_exact_service_container_ids(
+        state, "material-rag-verifier"
+    )
+    if exact_ids is not None:
+        if len(exact_ids) == 0:
+            return "not_reached"
+        if len(exact_ids) != 1:
+            return "unknown"
+        labeled = _material_rag_inspect_labeled_container(state, exact_ids[0])
+        if labeled is None or labeled[0] != "material-rag-verifier":
+            return "unknown"
+        return _material_rag_reach_from_status(labeled[1])
+    snapshot = _material_rag_complete_container_snapshot(state)
+    if snapshot is None:
+        return "unknown"
+    verifier = next(
+        (
+            item
+            for item in snapshot
+            if item.get("service") == "material-rag-verifier"
+        ),
+        None,
+    )
+    if verifier is None:
+        return "not_reached"
+    return _material_rag_reach_from_status(verifier.get("status"))
+
+
+def _emit_material_rag_scanner_reach_evidence(
+    state: dict[str, object] | None,
+) -> None:
+    reach = _material_rag_verifier_reach(state)
+    if reach == "not_reached":
+        print(
+            "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE_NOT_REACHED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    print(
+        _MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED + " MISSING",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _emit_material_rag_scanner_evidence(
+    stdout: str, stderr: str, reason: str
+) -> None:
+    if reason not in _MATERIAL_RAG_SCANNER_EVIDENCE_REASONS:
+        return
+    evidence_lines = [
+        line
+        for line in _material_rag_captured_lines(stdout, stderr)
+        if line.startswith(_MATERIAL_RAG_SCANNER_EVIDENCE_PREFIX)
+        and len(line.encode("utf-8")) <= _MATERIAL_RAG_SCANNER_EVIDENCE_MAX_BYTES
+    ]
+    if len(evidence_lines) > 1:
+        print(
+            _MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED + " DUPLICATE",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) == 0:
+        print(
+            _MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED + " MISSING",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    try:
+        payload = json.loads(
+            evidence_lines[0][len(_MATERIAL_RAG_SCANNER_EVIDENCE_PREFIX) :]
+        )
+    except json.JSONDecodeError:
+        payload = None
+    sanitized = _sanitize_material_rag_scanner_evidence(payload)
+    if (
+        sanitized is None
+        or _MATERIAL_RAG_SCANNER_EVIDENCE_REASON_TO_CODE.get(reason)
+        != sanitized["scan_code"]
+    ):
+        print(
+            _MATERIAL_RAG_SCANNER_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    print(
+        _MATERIAL_RAG_SCANNER_EVIDENCE_PREFIX
+        + json.dumps(
+            sanitized,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+_MATERIAL_RAG_INTERNAL_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE "
+_MATERIAL_RAG_INTERNAL_EVIDENCE_DEGRADED = (
+    "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE_DEGRADED"
+)
+_MATERIAL_RAG_INTERNAL_EVIDENCE_MAX_BYTES = 1024
+_MATERIAL_RAG_INTERNAL_EVIDENCE_KEYS = frozenset(
+    {
+        "db_token",
+        "error_class",
+        "operation",
+        "phase",
+        "primary_preserved",
+        "sqlstate",
+    }
+)
+_MATERIAL_RAG_INTERNAL_EVIDENCE_SQLSTATE_RE = re.compile(r"\A[A-Z0-9]{5}\Z")
+_MATERIAL_RAG_INTERNAL_EVIDENCE_PHASES = frozenset(
+    {
+        "ASSERT_RUNTIME",
+        "DISPOSE_ENGINES",
+        "FINAL_AUDIT",
+        "IMPORT_SCANNER",
+        "LOAD_FIXTURES",
+        "PJ_CONTEXT_GUARDS",
+        "PJ_DELETE",
+        "PJ_FINAL_AUDIT",
+        "PJ_IMPORT_INIT",
+        "PJ_INDEX_REPLAY",
+        "PJ_PRIMARY_ATTEST",
+        "PJ_PRIMARY_INDEX",
+        "PJ_REBUILD",
+        "PJ_SCOPED_RETRIEVAL",
+        "PJ_SCOPE_ISOLATION",
+        "PJ_SYNTHETIC_INDEX",
+        "PROVIDER_ATTESTATION",
+        "SEED_DATABASE",
+        "SETUP_UPLOAD",
+        "STORAGE_ACTIVATE",
+        "STORAGE_CLEANUP",
+        "UNKNOWN",
+    }
+)
+_MATERIAL_RAG_INTERNAL_EVIDENCE_ERROR_CLASSES = frozenset(
+    {
+        "ASSERTION_ERROR",
+        "ATTRIBUTE_ERROR",
+        "CANCELLED_ERROR",
+        "DB_DATA",
+        "DB_INTEGRITY",
+        "DB_INTERFACE",
+        "DB_INTERNAL",
+        "DB_INVALID_REQUEST",
+        "DB_MISSING_GREENLET",
+        "DB_NOT_SUPPORTED",
+        "DB_OPERATIONAL",
+        "DB_OTHER",
+        "DB_PENDING_ROLLBACK",
+        "DB_PROGRAMMING",
+        "DB_STATEMENT",
+        "EXCEPTION_GROUP",
+        "IMPORT_ERROR",
+        "INDEX_ERROR",
+        "KEY_ERROR",
+        "OS_ERROR",
+        "OTHER",
+        "RUNTIME_ERROR",
+        "TIMEOUT",
+        "TYPE_ERROR",
+        "UNKNOWN",
+        "VALUE_ERROR",
+    }
+)
+_MATERIAL_RAG_INTERNAL_EVIDENCE_DB_TOKENS = frozenset(
+    {
+        "MATERIAL_RAG_BINDING_IDENTITY_IMMUTABLE",
+        "MATERIAL_RAG_DOWNGRADE_DATA_PRESENT",
+        "MATERIAL_RAG_JOB_CLAIM_INVALID",
+        "MATERIAL_RAG_JOB_IDENTITY_IMMUTABLE",
+        "MATERIAL_RAG_JOB_OUTCOME_INVALID",
+        "MATERIAL_RAG_JOB_SOURCE_IDENTITY_INVALID",
+        "MATERIAL_RAG_JOB_SOURCE_NOT_RELEASED",
+        "MATERIAL_RAG_JOB_TRANSITION_INVALID",
+        "MATERIAL_RAG_UNIT_IMMUTABLE",
+        "MATERIAL_RAG_UNIT_SOURCE_NOT_RELEASED",
+        "QA_CLAIM_INVALID",
+        "QA_COMPLETE_INVALID",
+        "QA_OUTCOME_STATE_INVALID",
+        "TEXT_NUL",
+    }
+)
+_MATERIAL_RAG_INTERNAL_EVIDENCE_OPERATIONS = frozenset(
+    {
+        "CANDIDATE_VERIFY",
+        "CONTEXT_DERIVE",
+        "CRYPTO_PROBE",
+        "DB_SNAPSHOT_EXIT",
+        "DB_SNAPSHOT_LOAD",
+        "DB_SNAPSHOT_OPEN",
+        "EGRESS_AUDIT",
+        "ENQUEUE_JOB",
+        "FINAL_RESIDUE",
+        "IMPORTS",
+        "JOB_ROW",
+        "LOAD_UNITS",
+        "CLAIM_JOB",
+        "CLAIMED_SESSION",
+        "MUTATION_FENCE",
+        "PERSIST_UNITS",
+        "PROCESS_DEMO_JOB",
+        "QA_COMPLETE",
+        "QA_RESERVE",
+        "REMOTE_SNAPSHOT",
+        "RETRIEVAL",
+        "RLS_CHECK",
+        "SCOPE_LOCK",
+        "UNIT_COUNTS",
+        "UNKNOWN",
+    }
+)
+
+
+def _sanitize_material_rag_internal_evidence(
+    payload: object,
+) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    if set(payload) != _MATERIAL_RAG_INTERNAL_EVIDENCE_KEYS:
+        return None
+    error_class = payload.get("error_class")
+    operation = payload.get("operation")
+    phase = payload.get("phase")
+    primary_preserved = payload.get("primary_preserved")
+    sqlstate = payload.get("sqlstate")
+    db_token = payload.get("db_token")
+    if (
+        error_class not in _MATERIAL_RAG_INTERNAL_EVIDENCE_ERROR_CLASSES
+        or operation not in _MATERIAL_RAG_INTERNAL_EVIDENCE_OPERATIONS
+        or phase not in _MATERIAL_RAG_INTERNAL_EVIDENCE_PHASES
+        or type(primary_preserved) is not bool
+        or not isinstance(sqlstate, str)
+        or not isinstance(db_token, str)
+        or (
+            sqlstate != "NONE"
+            and _MATERIAL_RAG_INTERNAL_EVIDENCE_SQLSTATE_RE.fullmatch(sqlstate)
+            is None
+        )
+        or (db_token != "NONE" and db_token not in _MATERIAL_RAG_INTERNAL_EVIDENCE_DB_TOKENS)
+    ):
+        return None
+    return {
+        "db_token": db_token,
+        "error_class": error_class,
+        "operation": operation,
+        "phase": phase,
+        "primary_preserved": primary_preserved,
+        "sqlstate": sqlstate,
+    }
+
+
+def _emit_material_rag_internal_evidence(
+    stdout: str, stderr: str, reason: str
+) -> None:
+    if reason != "LOCAL_MATERIAL_RAG_INTERNAL_ERROR":
+        return
+    evidence_lines = [
+        line
+        for line in _material_rag_captured_lines(stdout, stderr)
+        if line.startswith(_MATERIAL_RAG_INTERNAL_EVIDENCE_PREFIX)
+    ]
+    if any(
+        len(line.encode("utf-8")) > _MATERIAL_RAG_INTERNAL_EVIDENCE_MAX_BYTES
+        for line in evidence_lines
+    ):
+        print(
+            _MATERIAL_RAG_INTERNAL_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) > 1:
+        print(
+            _MATERIAL_RAG_INTERNAL_EVIDENCE_DEGRADED + " DUPLICATE",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) == 0:
+        print(
+            _MATERIAL_RAG_INTERNAL_EVIDENCE_DEGRADED + " MISSING",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    try:
+        payload = json.loads(
+            evidence_lines[0][len(_MATERIAL_RAG_INTERNAL_EVIDENCE_PREFIX) :]
+        )
+    except json.JSONDecodeError:
+        payload = None
+    sanitized = _sanitize_material_rag_internal_evidence(payload)
+    if sanitized is None:
+        print(
+            _MATERIAL_RAG_INTERNAL_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    print(
+        _MATERIAL_RAG_INTERNAL_EVIDENCE_PREFIX
+        + json.dumps(
+            sanitized,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+_MATERIAL_RAG_INDEX_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE "
+_MATERIAL_RAG_INDEX_EVIDENCE_DEGRADED = "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE_DEGRADED"
+_MATERIAL_RAG_INDEX_EVIDENCE_MAX_BYTES = 1024
+_MATERIAL_RAG_INDEX_EVIDENCE_KEYS = frozenset(
+    {
+        "checkpoint",
+        "finish_sqlstate",
+        "job_status",
+        "lease_live",
+        "lease_present",
+        "lease_source",
+        "operation",
+        "outcome",
+        "phase",
+        "reason_token",
+        "token_match",
+    }
+)
+_MATERIAL_RAG_INDEX_OUTCOMES = frozenset(
+    {
+        "CLAIM_NONE",
+        "FINISH_EXCEPTION",
+        "FINISH_FALSE",
+        "FINISH_TRUE",
+        "LEASE_LOST",
+        "NONE",
+    }
+)
+_MATERIAL_RAG_INDEX_LEASE_SOURCES = frozenset(
+    {
+        "ADAPTER",
+        "FINISH_DONE",
+        "MUTATION_FENCE",
+        "NONE",
+        "RENEW",
+        "SCOPE_LOCK",
+        "UNKNOWN",
+    }
+)
+_MATERIAL_RAG_INDEX_SQLSTATE_RE = re.compile(r"^[A-Z0-9]{5}$")
+_MATERIAL_RAG_INDEX_JOB_STATUSES = frozenset(
+    {"NONE", "done", "failed", "queued", "retry_wait", "running"}
+)
+_MATERIAL_RAG_INDEX_EVIDENCE_CHECKPOINTS = frozenset(
+    {
+        "CANONICAL_UNITS_EMPTY",
+        "CONFLICT_ACCEPTED",
+        "CONFLICT_IDENTITY",
+        "CONFLICT_MUTATED",
+        "CONFLICT_PERSIST",
+        "JOB_ROW_MISSING",
+        "NONE",
+        "PRIMARY_ATTEST_COUNTS",
+        "PRIMARY_ATTEST_REMOTE",
+        "PRIMARY_FINGERPRINT",
+        "PRIMARY_JOB",
+        "PRIMARY_PROCESS",
+        "REMOTE_SNAPSHOT",
+        "REMOTE_TAGS",
+        "SNAPSHOT_EXIT",
+        "SNAPSHOT_LOAD",
+        "SNAPSHOT_OPEN",
+        "REPLAY_COUNTS",
+        "REPLAY_JOB",
+        "REPLAY_PROCESS",
+        "REPLAY_REMOTE",
+        "SYNTHETIC_COUNTS",
+        "SYNTHETIC_JOB",
+        "SYNTHETIC_PROCESS",
+        "SYNTHETIC_REMOTE",
+        "SYNTHETIC_SCOPES",
+        "UNKNOWN",
+    }
+)
+_MATERIAL_RAG_INDEX_PROBE_REASON_BASES = frozenset(
+    {
+        "CHUNK_ADD_FAILED",
+        "CHUNK_DELETE_FAILED",
+        "CHUNK_GET_FAILED",
+        "CHUNK_LIST_FAILED",
+        "DATASET_CREATE_FAILED",
+        "DATASET_DELETE_FAILED",
+        "DATASET_LIST_FAILED",
+        "DOC_CREATE_FAILED",
+        "DOC_DELETE_FAILED",
+        "DOC_LIST_FAILED",
+        "PROVIDER_ADD_FAILED",
+        "RETRIEVAL_FAILED",
+    }
+)
+_MATERIAL_RAG_INDEX_PROBE_STATUS_SUFFIXES = frozenset(
+    {
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409",
+        "422",
+        "500",
+        "502",
+        "503",
+        "NONE",
+    }
+)
+_MATERIAL_RAG_INDEX_CHUNK_ADD_CODE_TOKENS = frozenset(
+    {
+        "CHUNK_ADD_CODE_NONE",
+        "CHUNK_ADD_CODE_OTHER",
+        *(
+            f"CHUNK_ADD_CODE_{code}"
+            for code in (
+                1,
+                2,
+                3,
+                4,
+                5,
+                100,
+                101,
+                102,
+                103,
+                104,
+                108,
+                109,
+                400,
+                401,
+                403,
+                404,
+                409,
+                422,
+                500,
+                501,
+                502,
+                503,
+            )
+        ),
+    }
+)
+_MATERIAL_RAG_INDEX_PROBE_STATUS_TOKENS = frozenset(
+    f"{base}_{suffix}"
+    for base in _MATERIAL_RAG_INDEX_PROBE_REASON_BASES
+    for suffix in _MATERIAL_RAG_INDEX_PROBE_STATUS_SUFFIXES
+)
+_MATERIAL_RAG_INDEX_REASON_TOKENS = frozenset(
+    {
+        "MATERIAL_RAG_BINDING_MISSING",
+        "MATERIAL_RAG_DATASET_BINDING_CONFLICT",
+        "MATERIAL_RAG_DATASET_BINDING_DELETING",
+        "MATERIAL_RAG_DATASET_BINDING_INVALID",
+        "MATERIAL_RAG_DATASET_FINALIZE_FAILED",
+        "MATERIAL_RAG_DELETE_UNITS_FORBIDDEN",
+        "MATERIAL_RAG_IDEMPOTENCY_CONFLICT",
+        "MATERIAL_RAG_INTEGRITY_FAILED",
+        "MATERIAL_RAG_JOB_ACTION_INVALID",
+        "MATERIAL_RAG_LOCAL_FAILED",
+        "MATERIAL_RAG_MANIFEST_INVALID",
+        "MATERIAL_RAG_MANIFEST_REQUIRED",
+        "MATERIAL_RAG_RELEASE_FENCE_FORBIDDEN",
+        "MATERIAL_RAG_REMOTE_DATASET_DELETE_MISMATCH",
+        "MATERIAL_RAG_REMOTE_DATASET_IDENTITY_INVALID",
+        "MATERIAL_RAG_REMOTE_DATASET_NOT_EMPTY",
+        "MATERIAL_RAG_SOURCE_NOT_AUTHORIZED",
+        "MATERIAL_RAG_STORED_MANIFEST_MISMATCH",
+        "MATERIAL_RAG_NETWORK_FAILED",
+        "MATERIAL_RAG_PROBE_FAILED",
+        "MATERIAL_RAG_PROVISION_FAILED",
+        "MATERIAL_RAG_UNAVAILABLE",
+        "MATERIAL_RAG_UNITS_MISSING",
+        "MATERIAL_RAG_UNIT_JOB_MISMATCH",
+        "MATERIAL_UNIT_IDENTITY_CONFLICT",
+        "MATERIAL_VERSION_NOT_FOUND",
+        "MATERIAL_VERSION_NOT_INDEXABLE",
+        "NONE",
+    }
+) | _MATERIAL_RAG_INDEX_PROBE_STATUS_TOKENS | _MATERIAL_RAG_INDEX_CHUNK_ADD_CODE_TOKENS
+
+
+def _sanitize_material_rag_index_evidence(
+    payload: object,
+) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    if set(payload) != _MATERIAL_RAG_INDEX_EVIDENCE_KEYS:
+        return None
+    checkpoint = payload.get("checkpoint")
+    job_status = payload.get("job_status")
+    operation = payload.get("operation")
+    phase = payload.get("phase")
+    reason_token = payload.get("reason_token")
+    outcome = payload.get("outcome")
+    lease_source = payload.get("lease_source")
+    lease_present = payload.get("lease_present")
+    lease_live = payload.get("lease_live")
+    token_match = payload.get("token_match")
+    finish_sqlstate = payload.get("finish_sqlstate")
+    if (
+        checkpoint not in _MATERIAL_RAG_INDEX_EVIDENCE_CHECKPOINTS
+        or job_status not in _MATERIAL_RAG_INDEX_JOB_STATUSES
+        or operation not in _MATERIAL_RAG_INTERNAL_EVIDENCE_OPERATIONS
+        or phase not in _MATERIAL_RAG_INTERNAL_EVIDENCE_PHASES
+        or reason_token not in _MATERIAL_RAG_INDEX_REASON_TOKENS
+        or outcome not in _MATERIAL_RAG_INDEX_OUTCOMES
+        or lease_source not in _MATERIAL_RAG_INDEX_LEASE_SOURCES
+        or type(lease_present) is not bool
+        or type(lease_live) is not bool
+        or type(token_match) is not bool
+        or not (
+            finish_sqlstate == "NONE"
+            or (
+                isinstance(finish_sqlstate, str)
+                and _MATERIAL_RAG_INDEX_SQLSTATE_RE.fullmatch(finish_sqlstate)
+            )
+        )
+    ):
+        return None
+    return {
+        "checkpoint": checkpoint,
+        "finish_sqlstate": finish_sqlstate,
+        "job_status": job_status,
+        "lease_live": lease_live,
+        "lease_present": lease_present,
+        "lease_source": lease_source,
+        "operation": operation,
+        "outcome": outcome,
+        "phase": phase,
+        "reason_token": reason_token,
+        "token_match": token_match,
+    }
+
+
+def _emit_material_rag_index_evidence(
+    stdout: str, stderr: str, reason: str
+) -> None:
+    if reason != "LOCAL_MATERIAL_RAG_INDEX_FAILED":
+        return
+    evidence_lines = [
+        line
+        for line in _material_rag_captured_lines(stdout, stderr)
+        if line.startswith(_MATERIAL_RAG_INDEX_EVIDENCE_PREFIX)
+    ]
+    if any(
+        len(line.encode("utf-8")) > _MATERIAL_RAG_INDEX_EVIDENCE_MAX_BYTES
+        for line in evidence_lines
+    ):
+        print(
+            _MATERIAL_RAG_INDEX_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) > 1:
+        print(
+            _MATERIAL_RAG_INDEX_EVIDENCE_DEGRADED + " DUPLICATE",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) == 0:
+        print(
+            _MATERIAL_RAG_INDEX_EVIDENCE_DEGRADED + " MISSING",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    try:
+        payload = json.loads(
+            evidence_lines[0][len(_MATERIAL_RAG_INDEX_EVIDENCE_PREFIX) :]
+        )
+    except json.JSONDecodeError:
+        payload = None
+    sanitized = _sanitize_material_rag_index_evidence(payload)
+    if sanitized is None:
+        print(
+            _MATERIAL_RAG_INDEX_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    print(
+        _MATERIAL_RAG_INDEX_EVIDENCE_PREFIX
+        + json.dumps(
+            sanitized,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+_MATERIAL_RAG_EGRESS_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE "
+_MATERIAL_RAG_EGRESS_EVIDENCE_DEGRADED = "LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE_DEGRADED"
+_MATERIAL_RAG_EGRESS_EVIDENCE_MAX_BYTES = 1024
+_MATERIAL_RAG_EGRESS_COUNTER_MAX = 1_000_000_000
+_MATERIAL_RAG_EGRESS_EVIDENCE_KEYS = frozenset(
+    {
+        "audit_status",
+        "authorized_embedding_request_count",
+        "forwarded_embedding_request_count",
+        "rejected_json_count",
+        "rejected_model_count",
+        "rejected_non_text_input_count",
+        "rejected_path_count",
+        "rejected_request_count",
+        "rejected_unauthorized_text_count",
+        "upstream_2xx_count",
+        "upstream_4xx_count",
+        "upstream_5xx_count",
+    }
+)
+_MATERIAL_RAG_EGRESS_AUDIT_STATUSES = frozenset(
+    {"INVALID", "MISSING", "READY", "UNAVAILABLE"}
+)
+
+
+def _sanitize_material_rag_egress_evidence(
+    payload: object,
+) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    if set(payload) != _MATERIAL_RAG_EGRESS_EVIDENCE_KEYS:
+        return None
+    status = payload.get("audit_status")
+    if status not in _MATERIAL_RAG_EGRESS_AUDIT_STATUSES:
+        return None
+    sanitized: dict[str, object] = {"audit_status": status}
+    for key in _MATERIAL_RAG_EGRESS_EVIDENCE_KEYS:
+        if key == "audit_status":
+            continue
+        raw = payload.get(key)
+        if type(raw) is not int or raw < 0 or raw > _MATERIAL_RAG_EGRESS_COUNTER_MAX:
+            return None
+        sanitized[key] = raw
+    return sanitized
+
+
+def _emit_material_rag_egress_evidence(
+    stdout: str, stderr: str, reason: str
+) -> None:
+    if reason != "LOCAL_MATERIAL_RAG_INDEX_FAILED":
+        return
+    evidence_lines = [
+        line
+        for line in _material_rag_captured_lines(stdout, stderr)
+        if line.startswith(_MATERIAL_RAG_EGRESS_EVIDENCE_PREFIX)
+    ]
+    if any(
+        len(line.encode("utf-8")) > _MATERIAL_RAG_EGRESS_EVIDENCE_MAX_BYTES
+        for line in evidence_lines
+    ):
+        print(
+            _MATERIAL_RAG_EGRESS_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) > 1:
+        print(
+            _MATERIAL_RAG_EGRESS_EVIDENCE_DEGRADED + " DUPLICATE",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) == 0:
+        print(
+            _MATERIAL_RAG_EGRESS_EVIDENCE_DEGRADED + " MISSING",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    try:
+        payload = json.loads(
+            evidence_lines[0][len(_MATERIAL_RAG_EGRESS_EVIDENCE_PREFIX) :]
+        )
+    except json.JSONDecodeError:
+        payload = None
+    sanitized = _sanitize_material_rag_egress_evidence(payload)
+    if sanitized is None:
+        print(
+            _MATERIAL_RAG_EGRESS_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    print(
+        _MATERIAL_RAG_EGRESS_EVIDENCE_PREFIX
+        + json.dumps(
+            sanitized,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+_MATERIAL_RAG_RETRIEVAL_EVIDENCE_PREFIX = (
+    "LOCAL_MATERIAL_RAG_RETRIEVAL_EVIDENCE "
+)
+_MATERIAL_RAG_RETRIEVAL_EVIDENCE_DEGRADED = (
+    "LOCAL_MATERIAL_RAG_RETRIEVAL_EVIDENCE_DEGRADED"
+)
+_MATERIAL_RAG_RETRIEVAL_EVIDENCE_MAX_BYTES = 1024
+_MATERIAL_RAG_RETRIEVAL_EVIDENCE_KEYS = frozenset(
+    {
+        "checkpoint",
+        "citation_mismatch_count",
+        "client_a_hit_count",
+        "client_a_overlap",
+        "client_a_refusal",
+        "client_a_refusal_token",
+        "client_b_hit_count",
+        "client_b_refusal",
+        "client_b_refusal_token",
+        "cross_ab",
+        "cross_ba",
+        "fragment_hit_count",
+        "provider_hit_count",
+        "provider_refusal",
+        "provider_refusal_token",
+    }
+)
+_MATERIAL_RAG_RETRIEVAL_EVIDENCE_CHECKPOINTS = frozenset(
+    {
+        "CITATION_MATCH",
+        "DEMO_FRAGMENT",
+        "EXPECTED_COUNT",
+        "NONE",
+        "SCOPED_SET",
+        "UNKNOWN",
+    }
+)
+_MATERIAL_RAG_RETRIEVAL_COUNT_KEYS = frozenset(
+    {
+        "citation_mismatch_count",
+        "client_a_hit_count",
+        "client_a_overlap",
+        "client_a_refusal",
+        "client_b_hit_count",
+        "client_b_refusal",
+        "cross_ab",
+        "cross_ba",
+        "fragment_hit_count",
+        "provider_hit_count",
+        "provider_refusal",
+    }
+)
+_MATERIAL_RAG_RETRIEVAL_REFUSAL_TOKEN_KEYS = frozenset(
+    {
+        "client_a_refusal_token",
+        "client_b_refusal_token",
+        "provider_refusal_token",
+    }
+)
+_MATERIAL_RAG_RETRIEVAL_REFUSAL_TOKENS = frozenset(
+    {
+        "NONE",
+        "NO_HITS",
+        "NOT_CONFIGURED",
+        "REJECTED",
+        "UNAVAILABLE",
+        "UNKNOWN",
+    }
+)
+
+
+def _sanitize_material_rag_retrieval_evidence(
+    payload: object,
+) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    if set(payload) != _MATERIAL_RAG_RETRIEVAL_EVIDENCE_KEYS:
+        return None
+    checkpoint = payload.get("checkpoint")
+    if checkpoint not in _MATERIAL_RAG_RETRIEVAL_EVIDENCE_CHECKPOINTS:
+        return None
+    sanitized: dict[str, object] = {"checkpoint": checkpoint}
+    for key in sorted(_MATERIAL_RAG_RETRIEVAL_COUNT_KEYS):
+        value = payload.get(key)
+        if type(value) is not int or value < 0 or value > 999:
+            return None
+        sanitized[key] = value
+    for key in sorted(_MATERIAL_RAG_RETRIEVAL_REFUSAL_TOKEN_KEYS):
+        value = payload.get(key)
+        if value not in _MATERIAL_RAG_RETRIEVAL_REFUSAL_TOKENS:
+            return None
+        sanitized[key] = value
+    return sanitized
+
+
+def _emit_material_rag_retrieval_evidence(
+    stdout: str, stderr: str, reason: str
+) -> None:
+    if reason != "LOCAL_MATERIAL_RAG_RETRIEVAL_FAILED":
+        return
+    evidence_lines = [
+        line
+        for line in _material_rag_captured_lines(stdout, stderr)
+        if line.startswith(_MATERIAL_RAG_RETRIEVAL_EVIDENCE_PREFIX)
+    ]
+    if any(
+        len(line.encode("utf-8")) > _MATERIAL_RAG_RETRIEVAL_EVIDENCE_MAX_BYTES
+        for line in evidence_lines
+    ):
+        print(
+            _MATERIAL_RAG_RETRIEVAL_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) > 1:
+        print(
+            _MATERIAL_RAG_RETRIEVAL_EVIDENCE_DEGRADED + " DUPLICATE",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) == 0:
+        print(
+            _MATERIAL_RAG_RETRIEVAL_EVIDENCE_DEGRADED + " MISSING",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    try:
+        payload = json.loads(
+            evidence_lines[0][len(_MATERIAL_RAG_RETRIEVAL_EVIDENCE_PREFIX) :]
+        )
+    except json.JSONDecodeError:
+        payload = None
+    sanitized = _sanitize_material_rag_retrieval_evidence(payload)
+    if sanitized is None:
+        print(
+            _MATERIAL_RAG_RETRIEVAL_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    print(
+        _MATERIAL_RAG_RETRIEVAL_EVIDENCE_PREFIX
+        + json.dumps(
+            sanitized,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+_MATERIAL_RAG_REBUILD_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_REBUILD_EVIDENCE "
+_MATERIAL_RAG_REBUILD_EVIDENCE_DEGRADED = (
+    "LOCAL_MATERIAL_RAG_REBUILD_EVIDENCE_DEGRADED"
+)
+_MATERIAL_RAG_REBUILD_EVIDENCE_MAX_BYTES = 1024
+_MATERIAL_RAG_REBUILD_EVIDENCE_KEYS = frozenset(
+    {
+        "checkpoint",
+        "chunk_count",
+        "document_count",
+        "fingerprint_match",
+        "job_status",
+        "manifest_match",
+        "outcome",
+        "reason_token",
+        "unit_count_match",
+    }
+)
+_MATERIAL_RAG_REBUILD_EVIDENCE_CHECKPOINTS = frozenset(
+    {
+        "FINGERPRINT",
+        "JOB_ROW",
+        "NONE",
+        "PROCESS",
+        "REMOTE_SNAPSHOT",
+        "REMOTE_TAGS",
+        "UNKNOWN",
+    }
+)
+_MATERIAL_RAG_REBUILD_OUTCOMES = frozenset(
+    {
+        "CLAIM_NONE",
+        "FINISH_EXCEPTION",
+        "FINISH_FALSE",
+        "FINISH_TRUE",
+        "LEASE_LOST",
+        "NONE",
+        "SUCCESS",
+    }
+)
+_MATERIAL_RAG_REBUILD_COUNT_KEYS = frozenset(
+    {
+        "chunk_count",
+        "document_count",
+    }
+)
+_MATERIAL_RAG_REBUILD_FLAG_KEYS = frozenset(
+    {
+        "fingerprint_match",
+        "manifest_match",
+        "unit_count_match",
+    }
+)
+_MATERIAL_RAG_REBUILD_REASON_TOKENS = _MATERIAL_RAG_INDEX_REASON_TOKENS | frozenset(
+    {
+        "MATERIAL_RAG_RELEASE_FENCE_REQUIRED",
+        "MATERIAL_RAG_REMOTE_BODY_MISMATCH",
+        "MATERIAL_RAG_REMOTE_CHUNK_INVALID",
+        "MATERIAL_RAG_REMOTE_COUNT_MISMATCH",
+        "MATERIAL_RAG_REMOTE_DELETE_MISMATCH",
+        "MATERIAL_RAG_REMOTE_DOCUMENT_AMBIGUOUS",
+        "MATERIAL_RAG_REMOTE_DOCUMENT_INVALID",
+        "MATERIAL_RAG_REMOTE_EXTRA_UNIT",
+        "MATERIAL_RAG_REMOTE_IDENTITY_INVALID",
+        "MATERIAL_RAG_UNIT_DUPLICATE",
+        "MATERIAL_RAG_UNIT_SCOPE_MISMATCH",
+    }
+)
+
+
+def _sanitize_material_rag_rebuild_evidence(
+    payload: object,
+) -> dict[str, object] | None:
+    if not isinstance(payload, dict):
+        return None
+    if set(payload) != _MATERIAL_RAG_REBUILD_EVIDENCE_KEYS:
+        return None
+    checkpoint = payload.get("checkpoint")
+    job_status = payload.get("job_status")
+    outcome = payload.get("outcome")
+    reason_token = payload.get("reason_token")
+    if (
+        checkpoint not in _MATERIAL_RAG_REBUILD_EVIDENCE_CHECKPOINTS
+        or job_status not in _MATERIAL_RAG_INDEX_JOB_STATUSES
+        or outcome not in _MATERIAL_RAG_REBUILD_OUTCOMES
+        or reason_token not in _MATERIAL_RAG_REBUILD_REASON_TOKENS
+    ):
+        return None
+    sanitized: dict[str, object] = {
+        "checkpoint": checkpoint,
+        "job_status": job_status,
+        "outcome": outcome,
+        "reason_token": reason_token,
+    }
+    for key in sorted(_MATERIAL_RAG_REBUILD_COUNT_KEYS):
+        value = payload.get(key)
+        if type(value) is not int or value < 0 or value > 999:
+            return None
+        sanitized[key] = value
+    for key in sorted(_MATERIAL_RAG_REBUILD_FLAG_KEYS):
+        value = payload.get(key)
+        if value not in {0, 1}:
+            return None
+        sanitized[key] = value
+    return sanitized
+
+
+def _emit_material_rag_rebuild_evidence(
+    stdout: str, stderr: str, reason: str
+) -> None:
+    if reason != "LOCAL_MATERIAL_RAG_REBUILD_FAILED":
+        return
+    evidence_lines = [
+        line
+        for line in _material_rag_captured_lines(stdout, stderr)
+        if line.startswith(_MATERIAL_RAG_REBUILD_EVIDENCE_PREFIX)
+    ]
+    if any(
+        len(line.encode("utf-8")) > _MATERIAL_RAG_REBUILD_EVIDENCE_MAX_BYTES
+        for line in evidence_lines
+    ):
+        print(
+            _MATERIAL_RAG_REBUILD_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) > 1:
+        print(
+            _MATERIAL_RAG_REBUILD_EVIDENCE_DEGRADED + " DUPLICATE",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    if len(evidence_lines) == 0:
+        print(
+            _MATERIAL_RAG_REBUILD_EVIDENCE_DEGRADED + " MISSING",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    try:
+        payload = json.loads(
+            evidence_lines[0][len(_MATERIAL_RAG_REBUILD_EVIDENCE_PREFIX) :]
+        )
+    except json.JSONDecodeError:
+        payload = None
+    sanitized = _sanitize_material_rag_rebuild_evidence(payload)
+    if sanitized is None:
+        print(
+            _MATERIAL_RAG_REBUILD_EVIDENCE_DEGRADED + " MALFORMED",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    print(
+        _MATERIAL_RAG_REBUILD_EVIDENCE_PREFIX
+        + json.dumps(
+            sanitized,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
         file=sys.stderr,
         flush=True,
     )
@@ -4849,6 +6261,393 @@ def _material_rag_diagnose_clamd(state: dict[str, object]) -> None:
         raise LocalError(reason)
 
 
+def _prove_material_rag_image_source(state: dict[str, object]) -> None:
+    host_root = "0" * 64
+    try:
+        digest = hashlib.sha256()
+        for name, _image_path in sorted(_MATERIAL_RAG_IMAGE_SOURCE_CLOSED):
+            file_digest = hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+            digest.update(name.encode("ascii"))
+            digest.update(b"\0")
+            digest.update(file_digest.encode("ascii"))
+            digest.update(b"\n")
+        host_root = digest.hexdigest()
+    except OSError:
+        host_root = "0" * 64
+    pairs = ",".join(
+        f"({name!r},{image_path!r})"
+        for name, image_path in sorted(_MATERIAL_RAG_IMAGE_SOURCE_CLOSED)
+    )
+    hasher = (
+        "import hashlib,pathlib,sys\n"
+        f"n=[{pairs}]\n"
+        "h=hashlib.sha256()\n"
+        "try:\n"
+        " for a,b in n:\n"
+        "  d=hashlib.sha256(pathlib.Path(b).read_bytes()).hexdigest()\n"
+        "  h.update(a.encode('ascii'));h.update(b'\\0');h.update(d.encode('ascii'));h.update(b'\\n')\n"
+        " sys.stdout.write(h.hexdigest())\n"
+        "except Exception:\n"
+        " sys.exit(2)\n"
+    )
+    status = "MISMATCH"
+    try:
+        result = _run(
+            [
+                _docker(),
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--read-only",
+                "--user",
+                "65532:65532",
+                "--entrypoint",
+                "python",
+                _material_rag_runtime_image(state),
+                "-B",
+                "-c",
+                hasher,
+            ],
+            capture=True,
+            timeout=60,
+            check=False,
+            material_rag=True,
+        )
+    except LocalError:
+        result = None
+    image_root = ""
+    if result is not None and result.returncode == 0:
+        image_root = result.stdout.strip()
+    if (
+        _MATERIAL_RAG_IMAGE_SOURCE_ROOT_RE.fullmatch(host_root) is not None
+        and image_root == host_root
+    ):
+        status = "MATCH"
+    evidence_root = (
+        host_root
+        if _MATERIAL_RAG_IMAGE_SOURCE_ROOT_RE.fullmatch(host_root)
+        else "0" * 64
+    )
+    print(
+        "LOCAL_MATERIAL_RAG_IMAGE_SOURCE_EVIDENCE "
+        + json.dumps(
+            {"root": evidence_root, "status": status},
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+    if status != "MATCH":
+        raise LocalError("LOCAL_MATERIAL_RAG_IMAGE_SOURCE_MISMATCH")
+
+
+_MATERIAL_RAG_OUTPUT_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_OUTPUT_EVIDENCE "
+_MATERIAL_RAG_OUTPUT_EVIDENCE_KEYS = frozenset(
+    {
+        "envelope_count",
+        "line_classes",
+        "line_count",
+        "mismatch",
+        "mismatch_key",
+        "other_kind",
+    }
+)
+_MATERIAL_RAG_OUTPUT_MISMATCHES = frozenset(
+    {
+        "CANONICAL_RANGE",
+        "CHUNK_ALIGN",
+        "CITATION_RANGE",
+        "EGRESS_RANGE",
+        "EMPTY",
+        "JSON",
+        "KEYSET",
+        "LINE_COUNT",
+        "NONE",
+        "TYPE",
+        "VALUE",
+    }
+)
+_MATERIAL_RAG_OUTPUT_LINE_CLASSES = frozenset(
+    {
+        "COMPOSE_ABORT",
+        "COMPOSE_ATTACH",
+        "COMPOSE_EXIT",
+        "COMPOSE_EXIT_BARE",
+        "JSON",
+        "NONE",
+        "OTHER",
+        "VERIFY_OK",
+    }
+)
+_MATERIAL_RAG_OUTPUT_ENVELOPE_CLASSES = frozenset(
+    {
+        "COMPOSE_ABORT",
+        "COMPOSE_ATTACH",
+        "COMPOSE_EXIT",
+        "COMPOSE_EXIT_BARE",
+    }
+)
+_MATERIAL_RAG_OUTPUT_OTHER_KINDS = frozenset(
+    {
+        "ABORT_FAIL",
+        "ABOUT_MINUTE",
+        "ATTACH_FAIL",
+        "CONTAINER_CREATED",
+        "CONTAINER_PREFIX",
+        "CONTAINER_STARTED",
+        "CONTAINER_STOPPED",
+        "CONTAINER_STOPPING",
+        "EXITED_CODE",
+        "EXITED_CODE_BARE",
+        "EXITED_CODE_EXTRA_TAIL",
+        "EXITED_CODE_NONZERO",
+        "EXITED_PAREN_LOWER",
+        "EXITED_PAREN_TITLE",
+        "GRACEFUL",
+        "HAS_VERIFIER",
+        "LESS_THAN_SECOND",
+        "NONE",
+        "NONASCII",
+        "OTHER",
+    }
+)
+_MATERIAL_RAG_OUTPUT_KEY_RE = re.compile(r"\A[a-z][a-z0-9_]{2,63}\Z")
+_MATERIAL_RAG_OUTPUT_LINE_CLASSES_RE = re.compile(
+    r"\A(?:COMPOSE_ABORT|COMPOSE_ATTACH|COMPOSE_EXIT|COMPOSE_EXIT_BARE|JSON|NONE|OTHER|VERIFY_OK)"
+    r"(?:\|(?:COMPOSE_ABORT|COMPOSE_ATTACH|COMPOSE_EXIT|COMPOSE_EXIT_BARE|JSON|NONE|OTHER|VERIFY_OK)){0,7}\Z"
+)
+_MATERIAL_RAG_OUTPUT_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_MATERIAL_RAG_COMPOSE_ENVELOPE_RE = re.compile(
+    r"\A(?:"
+    r"Aborting on container exit\.\.\.|"
+    r"Attaching to [A-Za-z0-9][A-Za-z0-9._-]{0,80}"
+    r"(?:, [A-Za-z0-9][A-Za-z0-9._-]{0,80}){0,12}|"
+    r"[Cc]ontainer [A-Za-z0-9][A-Za-z0-9._-]{0,80} {1,3}exited with code 0|"
+    r"[Cc]ontainer [A-Za-z0-9][A-Za-z0-9._-]{0,80} {1,3}exited \(0\)|"
+    r"[Cc]ontainer [A-Za-z0-9][A-Za-z0-9._-]{0,80} {1,3}Exited \(0\)"
+    r"(?: (?:Less than a second ago|About a minute ago|"
+    r"[1-9][0-9]{0,2} (?:second|seconds|minute|minutes) ago))?|"
+    r"material-rag-verifier exited with code 0|"
+    r"material-rag-[a-z0-9][a-z0-9-]{0,40}(?:-[1-9][0-9]{0,2})? exited with code 0|"
+    r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}-material-rag-[A-Za-z0-9._-]{0,80} exited with code 0"
+    r")\Z"
+)
+
+
+def _strip_material_rag_output_controls(line: str) -> str:
+    return _MATERIAL_RAG_OUTPUT_ANSI_RE.sub("", line).replace("\r", "").strip()
+
+
+def _material_rag_output_line_class(line: str) -> str:
+    stripped = _strip_material_rag_output_controls(line)
+    if stripped == "LOCAL_MATERIAL_RAG_VERIFY_OK":
+        return "VERIFY_OK"
+    if stripped.startswith("{") and stripped.endswith("}"):
+        return "JSON"
+    if stripped == "Aborting on container exit...":
+        return "COMPOSE_ABORT"
+    if stripped.startswith("Attaching to "):
+        if _MATERIAL_RAG_COMPOSE_ENVELOPE_RE.fullmatch(stripped):
+            return "COMPOSE_ATTACH"
+        return "OTHER"
+    if _MATERIAL_RAG_COMPOSE_ENVELOPE_RE.fullmatch(stripped):
+        if (
+            "Exited (0)" in stripped
+            or "exited (0)" in stripped
+            or "exited with code 0" in stripped
+        ):
+            if stripped.startswith("container ") or stripped.startswith("Container "):
+                return "COMPOSE_EXIT"
+            return "COMPOSE_EXIT_BARE"
+        return "COMPOSE_ABORT"
+    return "OTHER"
+
+
+def _material_rag_output_other_kind(line: str) -> str:
+    stripped = _strip_material_rag_output_controls(line)
+    if not stripped:
+        return "NONE"
+    if stripped.startswith("Attaching to "):
+        return "ATTACH_FAIL"
+    if stripped.startswith("Aborting"):
+        return "ABORT_FAIL"
+    if "Less than a second ago" in stripped:
+        return "LESS_THAN_SECOND"
+    if "About a minute ago" in stripped:
+        return "ABOUT_MINUTE"
+    if "exited with code" in stripped:
+        if re.search(r"exited with code [1-9]", stripped) is not None:
+            return "EXITED_CODE_NONZERO"
+        if not stripped.endswith("exited with code 0"):
+            return "EXITED_CODE_EXTRA_TAIL"
+        if stripped.startswith("container ") or stripped.startswith("Container "):
+            return "EXITED_CODE"
+        return "EXITED_CODE_BARE"
+    if "exited (0)" in stripped:
+        return "EXITED_PAREN_LOWER"
+    if "Exited (0)" in stripped:
+        return "EXITED_PAREN_TITLE"
+    lowered = stripped.lower()
+    if lowered.startswith("container ") and lowered.endswith(" started"):
+        return "CONTAINER_STARTED"
+    if lowered.startswith("container ") and lowered.endswith(" created"):
+        return "CONTAINER_CREATED"
+    if lowered.startswith("container ") and lowered.endswith(" stopped"):
+        return "CONTAINER_STOPPED"
+    if lowered.startswith("container ") and "stopping" in lowered:
+        return "CONTAINER_STOPPING"
+    if stripped.startswith("Gracefully stopping"):
+        return "GRACEFUL"
+    if "material-rag-verifier" in stripped:
+        return "HAS_VERIFIER"
+    if stripped.startswith("container ") or stripped.startswith("Container "):
+        return "CONTAINER_PREFIX"
+    if any(ord(character) > 127 for character in stripped):
+        return "NONASCII"
+    return "OTHER"
+
+
+def _emit_material_rag_output_evidence(
+    *,
+    line_count: int,
+    envelope_count: int,
+    mismatch: str,
+    mismatch_key: str = "NONE",
+    line_classes: str = "NONE",
+    other_kind: str = "NONE",
+) -> None:
+    if line_count < 0:
+        line_count = 0
+    if line_count > 99:
+        line_count = 99
+    if envelope_count < 0:
+        envelope_count = 0
+    if envelope_count > 99:
+        envelope_count = 99
+    if mismatch not in _MATERIAL_RAG_OUTPUT_MISMATCHES:
+        mismatch = "NONE"
+    if (
+        mismatch_key != "NONE"
+        and _MATERIAL_RAG_OUTPUT_KEY_RE.fullmatch(mismatch_key) is None
+    ):
+        mismatch_key = "NONE"
+    if _MATERIAL_RAG_OUTPUT_LINE_CLASSES_RE.fullmatch(line_classes) is None:
+        line_classes = "NONE"
+    if other_kind not in _MATERIAL_RAG_OUTPUT_OTHER_KINDS:
+        other_kind = "NONE"
+    payload = {
+        "envelope_count": envelope_count,
+        "line_classes": line_classes,
+        "line_count": line_count,
+        "mismatch": mismatch,
+        "mismatch_key": mismatch_key,
+        "other_kind": other_kind,
+    }
+    if set(payload) != _MATERIAL_RAG_OUTPUT_EVIDENCE_KEYS:
+        return
+    line = _MATERIAL_RAG_OUTPUT_EVIDENCE_PREFIX + json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if len(line.encode("utf-8")) > 1024:
+        return
+    print(line, file=sys.stderr, flush=True)
+
+
+def _material_rag_verifier_metrics(output: str | None) -> dict[str, int]:
+    if output is None:
+        _emit_material_rag_output_evidence(
+            line_count=0,
+            envelope_count=0,
+            mismatch="EMPTY",
+        )
+        raise LocalError("LOCAL_MATERIAL_RAG_OUTPUT_INVALID")
+    raw_lines = [
+        stripped
+        for line in output.splitlines()
+        if (stripped := _strip_material_rag_output_controls(line))
+    ]
+    classified = [_material_rag_output_line_class(line) for line in raw_lines[:8]]
+    line_count = len(raw_lines)
+    envelope_count = sum(
+        1 for cls in classified if cls in _MATERIAL_RAG_OUTPUT_ENVELOPE_CLASSES
+    )
+    line_classes = "|".join(classified) if classified else "NONE"
+    other_kind = "NONE"
+    for line, cls in zip(raw_lines, classified):
+        if cls == "OTHER":
+            other_kind = _material_rag_output_other_kind(line)
+            break
+
+    def fail(mismatch: str, mismatch_key: str = "NONE") -> None:
+        _emit_material_rag_output_evidence(
+            line_count=line_count,
+            envelope_count=envelope_count,
+            mismatch=mismatch,
+            mismatch_key=mismatch_key,
+            line_classes=line_classes,
+            other_kind=other_kind,
+        )
+        raise LocalError("LOCAL_MATERIAL_RAG_OUTPUT_INVALID")
+
+    pair_indexes = [
+        index
+        for index in range(len(raw_lines) - 1)
+        if _material_rag_output_line_class(raw_lines[index]) == "JSON"
+        and _material_rag_output_line_class(raw_lines[index + 1]) == "VERIFY_OK"
+    ]
+    if len(pair_indexes) != 1:
+        fail("LINE_COUNT")
+    start = pair_indexes[0]
+    extras = [
+        _material_rag_output_line_class(raw_lines[index])
+        for index in range(len(raw_lines))
+        if index not in {start, start + 1}
+    ]
+    if any(cls not in _MATERIAL_RAG_OUTPUT_ENVELOPE_CLASSES for cls in extras):
+        fail("LINE_COUNT")
+    lines = [raw_lines[start], raw_lines[start + 1]]
+    try:
+        metrics = json.loads(lines[0])
+    except json.JSONDecodeError:
+        fail("JSON")
+    expected_keys = set(EXPECTED_MATERIAL_RAG_FIXED_METRICS).union(
+        MATERIAL_RAG_VARIABLE_METRICS
+    )
+    if (
+        lines[0] != json.dumps(metrics, sort_keys=True, separators=(",", ":"))
+        or lines[1] != "LOCAL_MATERIAL_RAG_VERIFY_OK"
+    ):
+        fail("LINE_COUNT")
+    if not isinstance(metrics, dict) or set(metrics) != expected_keys:
+        fail("KEYSET")
+    if any(
+        not isinstance(key, str)
+        or not re.fullmatch(r"[a-z][a-z0-9_]{2,63}", key)
+        or type(value) is not int
+        or value < 0
+        for key, value in metrics.items()
+    ):
+        fail("TYPE")
+    for key, value in EXPECTED_MATERIAL_RAG_FIXED_METRICS.items():
+        if metrics[key] != value:
+            fail("VALUE", key)
+    if metrics["canonical_unit_count"] < 136:
+        fail("CANONICAL_RANGE")
+    if metrics["client_a_indexed_remote_chunk_count"] != metrics["canonical_unit_count"]:
+        fail("CHUNK_ALIGN")
+    if not 7 <= metrics["citation_count"] <= 100:
+        fail("CITATION_RANGE")
+    if not 1 <= metrics["egress_forwarded_embedding_request_count"] <= 10_000:
+        fail("EGRESS_RANGE")
+    return {str(key): int(value) for key, value in metrics.items()}
+
+
 def _material_rag_verify(state: dict[str, object]) -> None:
     root: Path | None = None
     env_file: Path | None = None
@@ -4882,6 +6681,7 @@ def _material_rag_verify(state: dict[str, object]) -> None:
             timeout=1800,
             failure_reason="LOCAL_MATERIAL_RAG_BUILD_FAILED",
         )
+        _prove_material_rag_image_source(state)
         _material_rag_compose_stage(
             state,
             env_file,
@@ -5081,6 +6881,7 @@ def _material_rag_verify(state: dict[str, object]) -> None:
                 file=sys.stderr,
                 flush=True,
             )
+            _emit_material_rag_scanner_reach_evidence(state)
             verifier_diagnostics_emitted = True
             _raise_material_rag_oom_if_observed(
                 state, "LOCAL_MATERIAL_RAG_VERIFIER_FAILED"
@@ -5103,7 +6904,7 @@ def _material_rag_verify(state: dict[str, object]) -> None:
     finally:
         if primary_error is not None:
             if not verifier_diagnostics_emitted:
-                _emit_material_rag_unreachable_verifier_diagnostics()
+                _emit_material_rag_unreachable_verifier_diagnostics(state)
             _emit_material_rag_failure_evidence(state, str(primary_error))
         try:
             _material_rag_cleanup(state, env_file)
@@ -5121,41 +6922,7 @@ def _material_rag_verify(state: dict[str, object]) -> None:
         raise wrapped_cleanup_error
     if primary_error is not None:
         raise primary_error
-    if output is None:
-        raise LocalError("LOCAL_MATERIAL_RAG_OUTPUT_INVALID")
-    lines = output.splitlines()
-    try:
-        metrics = json.loads(lines[0])
-    except (IndexError, json.JSONDecodeError):
-        raise LocalError("LOCAL_MATERIAL_RAG_OUTPUT_INVALID") from None
-    expected_keys = set(EXPECTED_MATERIAL_RAG_FIXED_METRICS).union(
-        MATERIAL_RAG_VARIABLE_METRICS
-    )
-    if (
-        len(lines) != 2
-        or lines[0]
-        != json.dumps(metrics, sort_keys=True, separators=(",", ":"))
-        or lines[1] != "LOCAL_MATERIAL_RAG_VERIFY_OK"
-        or not isinstance(metrics, dict)
-        or set(metrics) != expected_keys
-        or any(
-            not isinstance(key, str)
-            or not re.fullmatch(r"[a-z][a-z0-9_]{2,63}", key)
-            or type(value) is not int
-            or value < 0
-            for key, value in metrics.items()
-        )
-        or any(
-            metrics[key] != value
-            for key, value in EXPECTED_MATERIAL_RAG_FIXED_METRICS.items()
-        )
-        or metrics["canonical_unit_count"] < 136
-        or metrics["client_a_indexed_remote_chunk_count"]
-        != metrics["canonical_unit_count"]
-        or not 7 <= metrics["citation_count"] <= 100
-        or not 1 <= metrics["egress_forwarded_embedding_request_count"] <= 10_000
-    ):
-        raise LocalError("LOCAL_MATERIAL_RAG_OUTPUT_INVALID")
+    metrics = _material_rag_verifier_metrics(output)
     print(json.dumps(metrics, sort_keys=True, separators=(",", ":")))
     print("LOCAL_MATERIAL_RAG_VERIFY_OK")
 

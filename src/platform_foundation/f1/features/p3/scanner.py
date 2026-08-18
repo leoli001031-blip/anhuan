@@ -14,6 +14,9 @@ import os
 import re
 import socket
 import struct
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from typing import BinaryIO
 
@@ -54,6 +57,108 @@ class ScannerVersion:
 _VERSION_RE = re.compile(
     rb"^ClamAV ([0-9][0-9A-Za-z._-]{0,31})/([0-9]{1,16})(?:/[^\x00\r\n]{1,128})?$"
 )
+_SCANNER_OPERATIONS = frozenset({"INSTREAM", "VERSION"})
+_SCANNER_EVIDENCE_PHASES = frozenset({"CONNECT", "PARSE", "RECV", "RESOLVE", "SEND"})
+_SCANNER_RESPONSE_CLASSES = frozenset(
+    {"EMPTY", "ENGINE_ERROR", "FORMAT_MISMATCH", "NOT_APPLICABLE", "OVERSIZE"}
+)
+SCANNER_EVIDENCE_CODE_TO_REASON = {
+    "P3_SCAN_ENGINE_ERROR": "LOCAL_MATERIAL_RAG_P3_SCAN_ENGINE_FAILED",
+    "P3_SCAN_PROTOCOL_ERROR": "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED",
+    "P3_SCANNER_CONNECT_PIPE": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_PIPE_FAILED",
+    "P3_SCANNER_CONNECT_REFUSED": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_REFUSED_FAILED",
+    "P3_SCANNER_CONNECT_RESET": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_RESET_FAILED",
+    "P3_SCANNER_DNS_FAILED": "LOCAL_MATERIAL_RAG_P3_SCAN_DNS_FAILED",
+    "P3_SCANNER_STREAM_PIPE": "LOCAL_MATERIAL_RAG_P3_SCAN_STREAM_PIPE_FAILED",
+    "P3_SCANNER_STREAM_REFUSED": "LOCAL_MATERIAL_RAG_P3_SCAN_STREAM_REFUSED_FAILED",
+    "P3_SCANNER_STREAM_RESET": "LOCAL_MATERIAL_RAG_P3_SCAN_STREAM_RESET_FAILED",
+    "P3_SCANNER_TARGET_INVALID": "LOCAL_MATERIAL_RAG_P3_SCAN_TARGET_FAILED",
+    "P3_SCANNER_TIMEOUT": "LOCAL_MATERIAL_RAG_P3_SCAN_TIMEOUT_FAILED",
+    "P3_SCANNER_UNAVAILABLE": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_FAILED",
+    "P3_SCANNER_VERSION_PIPE": "LOCAL_MATERIAL_RAG_P3_SCAN_VERSION_PIPE_FAILED",
+    "P3_SCANNER_VERSION_REFUSED": "LOCAL_MATERIAL_RAG_P3_SCAN_VERSION_REFUSED_FAILED",
+    "P3_SCANNER_VERSION_RESET": "LOCAL_MATERIAL_RAG_P3_SCAN_VERSION_RESET_FAILED",
+}
+_SCANNER_EVIDENCE_SCAN_CODES = frozenset(SCANNER_EVIDENCE_CODE_TO_REASON)
+_SCANNER_OPERATION: ContextVar[str] = ContextVar(
+    "material_rag_scanner_operation", default="VERSION"
+)
+_SCANNER_EVIDENCE_SINK: ContextVar[
+    Callable[[Mapping[str, object]], None] | None
+] = ContextVar("material_rag_scanner_evidence_sink", default=None)
+
+
+def install_scanner_evidence_sink(
+    sink: Callable[[Mapping[str, object]], None] | None,
+) -> Token:
+    """Install a context-local evidence callback. Default runtime is silent."""
+    return _SCANNER_EVIDENCE_SINK.set(sink)
+
+
+def reset_scanner_evidence_sink(token: Token) -> None:
+    _SCANNER_EVIDENCE_SINK.reset(token)
+
+
+def clear_scanner_evidence() -> None:
+    """Drop transient evidence after a successful scanner operation."""
+    sink = _SCANNER_EVIDENCE_SINK.get()
+    clearer = getattr(sink, "clear", None)
+    if not callable(clearer):
+        return
+    try:
+        clearer()
+    except Exception:
+        return
+
+
+@contextmanager
+def scanner_evidence_sink(
+    sink: Callable[[Mapping[str, object]], None] | None,
+) -> Iterator[None]:
+    token = install_scanner_evidence_sink(sink)
+    try:
+        yield
+    finally:
+        reset_scanner_evidence_sink(token)
+
+
+def _record_scanner_failure(
+    *,
+    phase: str,
+    response_class: str,
+    scan_code: str,
+    operation: str | None = None,
+) -> None:
+    sink = _SCANNER_EVIDENCE_SINK.get()
+    if sink is None:
+        return
+    resolved_operation = operation or _SCANNER_OPERATION.get()
+    if (
+        resolved_operation not in _SCANNER_OPERATIONS
+        or phase not in _SCANNER_EVIDENCE_PHASES
+        or response_class not in _SCANNER_RESPONSE_CLASSES
+        or scan_code not in _SCANNER_EVIDENCE_SCAN_CODES
+    ):
+        return
+    payload = {
+        "attempt_count": 1,
+        "operation": resolved_operation,
+        "phase": phase,
+        "response_class": response_class,
+        "scan_code": scan_code,
+    }
+    try:
+        sink(payload)
+    except Exception:
+        return
+
+
+def _protocol_response_class(payload: object) -> str:
+    if not isinstance(payload, bytes) or not payload:
+        return "EMPTY"
+    if len(payload) > MAX_RESPONSE_BYTES:
+        return "OVERSIZE"
+    return "FORMAT_MISMATCH"
 
 
 def parse_clamd_response(
@@ -61,6 +166,12 @@ def parse_clamd_response(
 ) -> ScanResult:
     """Map the clamd wire response to fixed, body-free outcomes."""
     if not isinstance(payload, bytes) or not payload or len(payload) > MAX_RESPONSE_BYTES:
+        _record_scanner_failure(
+            operation="INSTREAM",
+            phase="PARSE",
+            response_class=_protocol_response_class(payload),
+            scan_code="P3_SCAN_PROTOCOL_ERROR",
+        )
         raise ScanFailure("P3_SCAN_PROTOCOL_ERROR", retryable=True)
     normalized = payload.rstrip(b"\x00\r\n")
     if normalized == b"stream: OK":
@@ -78,20 +189,46 @@ def parse_clamd_response(
             signature_version=version.signature_version if version else None,
         )
     if normalized.startswith(b"stream: ") and normalized.endswith(b" ERROR"):
+        _record_scanner_failure(
+            operation="INSTREAM",
+            phase="PARSE",
+            response_class="ENGINE_ERROR",
+            scan_code="P3_SCAN_ENGINE_ERROR",
+        )
         raise ScanFailure("P3_SCAN_ENGINE_ERROR", retryable=True)
+    _record_scanner_failure(
+        operation="INSTREAM",
+        phase="PARSE",
+        response_class="FORMAT_MISMATCH",
+        scan_code="P3_SCAN_PROTOCOL_ERROR",
+    )
     raise ScanFailure("P3_SCAN_PROTOCOL_ERROR", retryable=True)
 
 
 def parse_clamd_version(payload: bytes) -> ScannerVersion:
     if not isinstance(payload, bytes) or not payload or len(payload) > MAX_RESPONSE_BYTES:
+        _record_scanner_failure(
+            operation="VERSION",
+            phase="PARSE",
+            response_class=_protocol_response_class(payload),
+            scan_code="P3_SCAN_PROTOCOL_ERROR",
+        )
         raise ScanFailure("P3_SCAN_PROTOCOL_ERROR", retryable=True)
     match = _VERSION_RE.fullmatch(payload.rstrip(b"\x00\r\n"))
     if match is None:
+        _record_scanner_failure(
+            operation="VERSION",
+            phase="PARSE",
+            response_class="FORMAT_MISMATCH",
+            scan_code="P3_SCAN_PROTOCOL_ERROR",
+        )
         raise ScanFailure("P3_SCAN_PROTOCOL_ERROR", retryable=True)
-    return ScannerVersion(
+    parsed = ScannerVersion(
         engine_version=match.group(1).decode("ascii"),
         signature_version=match.group(2).decode("ascii"),
     )
+    clear_scanner_evidence()
+    return parsed
 
 
 def _configured_scanner_host(host: str) -> str:
@@ -184,20 +321,44 @@ def _raise_scanner_os_error(error: OSError, *, phase: str) -> None:
     ) from error
 
 
+def _record_os_failure(
+    error: OSError, *, os_phase: str, evidence_phase: str
+) -> None:
+    _record_scanner_failure(
+        phase=evidence_phase,
+        response_class="NOT_APPLICABLE",
+        scan_code=classify_scanner_os_error(error, phase=os_phase),
+    )
+    _raise_scanner_os_error(error, phase=os_phase)
+
+
+def _record_code_failure(
+    code: str, *, retryable: bool, phase: str
+) -> None:
+    _record_scanner_failure(
+        phase=phase,
+        response_class="NOT_APPLICABLE",
+        scan_code=code,
+    )
+    raise ScanFailure(code, retryable=retryable)
+
+
 def _open_scanner_connection(
     host: str, port: int, timeout_seconds: int
 ) -> socket.socket:
     socket_path = os.environ.get("F1_CLAMD_SOCKET")
     if socket_path:
         if socket_path != ALLOWED_SCANNER_SOCKET:
-            raise ScanFailure("P3_SCANNER_TARGET_INVALID", retryable=False)
+            _record_code_failure(
+                "P3_SCANNER_TARGET_INVALID", retryable=False, phase="RESOLVE"
+            )
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.settimeout(timeout_seconds)
         try:
             connection.connect(socket_path)
         except OSError as error:
             connection.close()
-            _raise_scanner_os_error(error, phase="connect")
+            _record_os_failure(error, os_phase="connect", evidence_phase="CONNECT")
             raise
         return connection
     last_error: OSError | None = None
@@ -214,24 +375,41 @@ def _open_scanner_connection(
         connection.settimeout(timeout_seconds)
         return connection
     if last_error is not None:
-        _raise_scanner_os_error(last_error, phase="connect")
+        _record_os_failure(last_error, os_phase="connect", evidence_phase="CONNECT")
         raise
-    raise ScanFailure("P3_SCANNER_UNAVAILABLE", retryable=True)
+    _record_code_failure("P3_SCANNER_UNAVAILABLE", retryable=True, phase="CONNECT")
 
 
 def _scanner_version_at(
     host: str, port: int, timeout_seconds: int
 ) -> ScannerVersion:
-    connection = _open_scanner_connection(host, port, timeout_seconds)
+    operation_token = _SCANNER_OPERATION.set("VERSION")
     try:
-        connection.sendall(b"zVERSION\x00")
-        response = _receive_response(connection)
-    except OSError as error:
-        _raise_scanner_os_error(error, phase="version")
-        raise
+        connection = _open_scanner_connection(host, port, timeout_seconds)
+        try:
+            try:
+                connection.sendall(b"zVERSION\x00")
+            except OSError as error:
+                _record_os_failure(
+                    error, os_phase="version", evidence_phase="SEND"
+                )
+                raise
+            try:
+                response = _receive_response(connection)
+            except ScanFailure:
+                raise
+            except OSError as error:
+                _record_os_failure(
+                    error, os_phase="version", evidence_phase="RECV"
+                )
+                raise
+        finally:
+            connection.close()
+        parsed = parse_clamd_version(response)
+        clear_scanner_evidence()
+        return parsed
     finally:
-        connection.close()
-    return parse_clamd_version(response)
+        _SCANNER_OPERATION.reset(operation_token)
 
 
 def scan_stream(
@@ -250,42 +428,64 @@ def scan_stream(
     digest = hashlib.sha256()
     observed = 0
     version = _scanner_version_at(host, port, timeout_seconds)
+    operation_token = _SCANNER_OPERATION.set("INSTREAM")
     try:
-        file_obj.seek(0)
-        connection = _open_scanner_connection(host, port, timeout_seconds)
         try:
-            connection.sendall(b"zINSTREAM\x00")
-            while True:
-                chunk = file_obj.read(STREAM_CHUNK_BYTES)
-                if not chunk:
-                    break
-                if not isinstance(chunk, bytes):
-                    raise ScanFailure("P3_SOURCE_READ_FAILED", retryable=True)
-                observed += len(chunk)
-                if observed > expected_size or observed > MAX_SCAN_BYTES:
-                    raise ScanFailure("P3_SOURCE_IDENTITY_MISMATCH", retryable=False)
-                digest.update(chunk)
-                connection.sendall(struct.pack("!I", len(chunk)))
-                connection.sendall(chunk)
-            connection.sendall(struct.pack("!I", 0))
-            response = _receive_response(connection)
-        finally:
-            connection.close()
-    except ScanFailure:
-        raise
-    except OSError as error:
-        _raise_scanner_os_error(error, phase="stream")
-        raise
-    except Exception as error:
-        raise ScanFailure("P3_SOURCE_READ_FAILED", retryable=True) from error
-    try:
-        file_obj.seek(0)
-    except Exception as error:
-        raise ScanFailure("P3_SOURCE_READ_FAILED", retryable=True) from error
+            file_obj.seek(0)
+            connection = _open_scanner_connection(host, port, timeout_seconds)
+            try:
+                try:
+                    connection.sendall(b"zINSTREAM\x00")
+                    while True:
+                        chunk = file_obj.read(STREAM_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        if not isinstance(chunk, bytes):
+                            raise ScanFailure("P3_SOURCE_READ_FAILED", retryable=True)
+                        observed += len(chunk)
+                        if observed > expected_size or observed > MAX_SCAN_BYTES:
+                            raise ScanFailure(
+                                "P3_SOURCE_IDENTITY_MISMATCH", retryable=False
+                            )
+                        digest.update(chunk)
+                        connection.sendall(struct.pack("!I", len(chunk)))
+                        connection.sendall(chunk)
+                    connection.sendall(struct.pack("!I", 0))
+                except ScanFailure:
+                    raise
+                except OSError as error:
+                    _record_os_failure(
+                        error, os_phase="stream", evidence_phase="SEND"
+                    )
+                    raise
+                try:
+                    response = _receive_response(connection)
+                except ScanFailure:
+                    raise
+                except OSError as error:
+                    _record_os_failure(
+                        error, os_phase="stream", evidence_phase="RECV"
+                    )
+                    raise
+            finally:
+                connection.close()
+        except ScanFailure:
+            raise
+        except OSError as error:
+            _record_os_failure(error, os_phase="stream", evidence_phase="CONNECT")
+            raise
+        except Exception as error:
+            raise ScanFailure("P3_SOURCE_READ_FAILED", retryable=True) from error
+        try:
+            file_obj.seek(0)
+        except Exception as error:
+            raise ScanFailure("P3_SOURCE_READ_FAILED", retryable=True) from error
 
-    if observed != expected_size or digest.hexdigest() != expected_sha256:
-        raise ScanFailure("P3_SOURCE_IDENTITY_MISMATCH", retryable=False)
-    return parse_clamd_response(bytes(response), version=version)
+        if observed != expected_size or digest.hexdigest() != expected_sha256:
+            raise ScanFailure("P3_SOURCE_IDENTITY_MISMATCH", retryable=False)
+        return parse_clamd_response(bytes(response), version=version)
+    finally:
+        _SCANNER_OPERATION.reset(operation_token)
 
 
 LOOPBACK_SCANNER_HOSTS = frozenset(("localhost", "127.0.0.1", "::1"))
@@ -338,9 +538,13 @@ def _scanner_addrinfo(host: str, port: int) -> list[tuple]:
 
 def _resolve_targets(host: str, port: int, timeout_seconds: int) -> list[str]:
     if host not in ALLOWED_SCANNER_HOSTS or not 1 <= port <= 65535:
-        raise ScanFailure("P3_SCANNER_TARGET_INVALID", retryable=False)
+        _record_code_failure(
+            "P3_SCANNER_TARGET_INVALID", retryable=False, phase="RESOLVE"
+        )
     if timeout_seconds < 1 or timeout_seconds > SCAN_TIMEOUT_SECONDS:
-        raise ScanFailure("P3_SCAN_TIMEOUT_INVALID", retryable=False)
+        _record_code_failure(
+            "P3_SCAN_TIMEOUT_INVALID", retryable=False, phase="RESOLVE"
+        )
     try:
         addresses = {
             item[4][0]
@@ -348,9 +552,14 @@ def _resolve_targets(host: str, port: int, timeout_seconds: int) -> list[str]:
         }
         parsed = [ipaddress.ip_address(address) for address in addresses]
     except ValueError as error:
+        _record_scanner_failure(
+            phase="RESOLVE",
+            response_class="NOT_APPLICABLE",
+            scan_code="P3_SCANNER_UNAVAILABLE",
+        )
         raise ScanFailure("P3_SCANNER_UNAVAILABLE", retryable=True) from error
     except OSError as error:
-        _raise_scanner_os_error(error, phase="connect")
+        _record_os_failure(error, os_phase="connect", evidence_phase="RESOLVE")
         raise
     if any(
         not (
@@ -360,15 +569,21 @@ def _resolve_targets(host: str, port: int, timeout_seconds: int) -> list[str]:
         )
         for address in parsed
     ):
-        raise ScanFailure("P3_SCANNER_TARGET_INVALID", retryable=False)
+        _record_code_failure(
+            "P3_SCANNER_TARGET_INVALID", retryable=False, phase="RESOLVE"
+        )
     usable = [address for address in parsed if _allowed_scanner_address(address)]
     if not usable:
-        raise ScanFailure("P3_SCANNER_TARGET_INVALID", retryable=False)
+        _record_code_failure(
+            "P3_SCANNER_TARGET_INVALID", retryable=False, phase="RESOLVE"
+        )
     ordered = _order_scanner_addresses(host, usable)
     if host not in LOOPBACK_SCANNER_HOSTS:
         ordered = [address for address in ordered if not address.is_loopback]
         if not ordered:
-            raise ScanFailure("P3_SCANNER_TARGET_INVALID", retryable=False)
+            _record_code_failure(
+                "P3_SCANNER_TARGET_INVALID", retryable=False, phase="RESOLVE"
+            )
     return [str(address) for address in ordered]
 
 
@@ -386,6 +601,11 @@ def _receive_response(connection: socket.socket) -> bytes:
         if b"\x00" in piece or piece.endswith(b"\n"):
             break
     if len(response) > MAX_RESPONSE_BYTES:
+        _record_scanner_failure(
+            phase="RECV",
+            response_class="OVERSIZE",
+            scan_code="P3_SCAN_PROTOCOL_ERROR",
+        )
         raise ScanFailure("P3_SCAN_PROTOCOL_ERROR", retryable=True)
     return bytes(response)
 

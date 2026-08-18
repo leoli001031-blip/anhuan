@@ -1201,6 +1201,22 @@ async def set_document_knowledge_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
     ) as session:
         actor_id = await _current_user_id(session, tenant)
+        await session.execute(
+            text(
+                "SELECT task.id FROM f1.document_version AS version "
+                "JOIN f1.upload_task AS task "
+                "ON task.enterprise_id=version.enterprise_id "
+                "AND task.id=version.upload_task_id "
+                "WHERE version.enterprise_id=:enterprise_id "
+                "AND version.document_record_id=:record_id "
+                "ORDER BY task.id "
+                "FOR UPDATE OF task"
+            ),
+            {
+                "enterprise_id": tenant.enterprise_id,
+                "record_id": record_id,
+            },
+        )
         record = (
             await session.execute(
                 text(

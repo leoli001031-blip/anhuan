@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import inspect
+import sys
 import textwrap
 import unittest
 from pathlib import Path
@@ -65,10 +66,16 @@ class P2Wave1MigrationContractTests(unittest.TestCase):
         config = Config(str(ROOT / "infra/f1/alembic.ini"))
         script = ScriptDirectory.from_config(config)
 
-        self.assertEqual(script.get_heads(), ["f1_0014"])
+        self.assertEqual(script.get_heads(), ["f1_0015"])
         revision = script.get_revision("f1_0005")
         self.assertIsNotNone(revision)
         self.assertEqual(revision.down_revision, "f1_0004")
+        self.assertEqual(script.get_revision("f1_0015").down_revision, "f1_0014")
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from infra.f1.migrate_f1 import F1_DEFAULT_MIGRATE_TARGET
+
+        self.assertEqual(F1_DEFAULT_MIGRATE_TARGET, "f1_0014")
 
     def test_p2_does_not_rewrite_frozen_f1_0001_through_0004(self) -> None:
         observed = {

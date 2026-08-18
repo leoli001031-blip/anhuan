@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -318,6 +319,71 @@ class AlembicOrchestrationContracts(unittest.TestCase):
         self.assertEqual(positions, sorted(positions))
         main_transaction = _transaction_body(F1_MIGRATOR, "main")
         self.assertIn("migrate_with_connection(connection)", main_transaction)
+
+    def test_f1_migrate_target_is_closed_default_0014_not_head(self) -> None:
+        node = _function(F1_MIGRATOR, "migrate_with_connection")
+        kw_defaults = {
+            argument.arg: None if default is None else ast.unparse(default)
+            for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
+        }
+        self.assertEqual(kw_defaults.get("target"), "F1_DEFAULT_MIGRATE_TARGET")
+        upgrade_destinations = [
+            ast.unparse(call.args[1])
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call)
+            and ast.unparse(call.func) == "command.upgrade"
+            and len(call.args) >= 2
+        ]
+        self.assertEqual(upgrade_destinations, ["target"])
+        source = ast.unparse(node)
+        self.assertNotIn('"head"', source)
+        self.assertNotIn("'head'", source)
+        self.assertNotIn("os.environ", source)
+        self.assertNotIn("sys.argv", source)
+        main_transaction = _transaction_body(F1_MIGRATOR, "main")
+        self.assertIn("migrate_with_connection(connection)", main_transaction)
+        self.assertNotIn("target=", main_transaction)
+        local_transaction = _transaction_body(LOCAL_MIGRATOR, "migrate")
+        self.assertIn("migrate_with_connection", local_transaction)
+        self.assertNotIn("target=", local_transaction)
+        self.assertIn('"f1_0014"', _source(LOCAL_MIGRATOR))
+        self.assertNotIn('"f1_0015"', _source(LOCAL_MIGRATOR))
+
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from infra.f1 import migrate_f1
+
+        self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0014"), "f1_0014")
+        self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0015"), "f1_0015")
+        closed_source = ast.unparse(_function(F1_MIGRATOR, "_closed_f1_migrate_target"))
+        self.assertIn("type(target) is not str", closed_source)
+        self.assertNotIn("isinstance(target", closed_source)
+        self.assertLess(
+            source.index("_closed_f1_migrate_target"),
+            source.index("driver_connection"),
+        )
+        self.assertLess(
+            source.index("_closed_f1_migrate_target"),
+            source.index("command.upgrade"),
+        )
+        for illegal in (
+            "head",
+            "f1_0013",
+            "f1_0016",
+            "f1_0014 ",
+            "",
+            None,
+            14,
+            [],
+            {},
+            set(),
+            bytearray(),
+        ):
+            with self.subTest(illegal=repr(illegal)):
+                with self.assertRaises(RuntimeError) as raised:
+                    migrate_f1._closed_f1_migrate_target(illegal)
+                self.assertIs(type(raised.exception), RuntimeError)
+                self.assertEqual(str(raised.exception), "F1_MIGRATE_TARGET_INVALID")
 
     def test_combined_migration_checks_heads_and_rls_before_commit(self) -> None:
         transaction = _transaction_body(LOCAL_MIGRATOR, "migrate")

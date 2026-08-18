@@ -27,6 +27,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from typing import Any, Iterable, Mapping
+from contextvars import ContextVar, Token
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -186,6 +187,1274 @@ class MaterialRagVerifyError(RuntimeError):
         super().__init__(safe)
 
 
+_INDEX_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_INDEX_EVIDENCE "
+_INDEX_JOB_STATUSES = frozenset(
+    {"done", "failed", "queued", "retry_wait", "running"}
+)
+_INDEX_PROBE_REASON_BASES = frozenset(
+    {
+        "CHUNK_ADD_FAILED",
+        "CHUNK_DELETE_FAILED",
+        "CHUNK_GET_FAILED",
+        "CHUNK_LIST_FAILED",
+        "DATASET_CREATE_FAILED",
+        "DATASET_DELETE_FAILED",
+        "DATASET_LIST_FAILED",
+        "DOC_CREATE_FAILED",
+        "DOC_DELETE_FAILED",
+        "DOC_LIST_FAILED",
+        "PROVIDER_ADD_FAILED",
+        "RETRIEVAL_FAILED",
+    }
+)
+_INDEX_PROBE_STATUS_SUFFIXES = frozenset(
+    {
+        "200",
+        "400",
+        "401",
+        "403",
+        "404",
+        "409",
+        "422",
+        "500",
+        "502",
+        "503",
+        "NONE",
+    }
+)
+_INDEX_CHUNK_ADD_CODE_TOKENS = frozenset(
+    {
+        "CHUNK_ADD_CODE_NONE",
+        "CHUNK_ADD_CODE_OTHER",
+        *(
+            f"CHUNK_ADD_CODE_{code}"
+            for code in (
+                1,
+                2,
+                3,
+                4,
+                5,
+                100,
+                101,
+                102,
+                103,
+                104,
+                108,
+                109,
+                400,
+                401,
+                403,
+                404,
+                409,
+                422,
+                500,
+                501,
+                502,
+                503,
+            )
+        ),
+    }
+)
+_INDEX_PROBE_STATUS_TOKENS = frozenset(
+    f"{base}_{suffix}"
+    for base in _INDEX_PROBE_REASON_BASES
+    for suffix in _INDEX_PROBE_STATUS_SUFFIXES
+)
+_INDEX_REASON_TOKENS = frozenset(
+    {
+        "MATERIAL_RAG_BINDING_MISSING",
+        "MATERIAL_RAG_DATASET_BINDING_CONFLICT",
+        "MATERIAL_RAG_DATASET_BINDING_DELETING",
+        "MATERIAL_RAG_DATASET_BINDING_INVALID",
+        "MATERIAL_RAG_DATASET_FINALIZE_FAILED",
+        "MATERIAL_RAG_DELETE_UNITS_FORBIDDEN",
+        "MATERIAL_RAG_IDEMPOTENCY_CONFLICT",
+        "MATERIAL_RAG_INTEGRITY_FAILED",
+        "MATERIAL_RAG_JOB_ACTION_INVALID",
+        "MATERIAL_RAG_LOCAL_FAILED",
+        "MATERIAL_RAG_MANIFEST_INVALID",
+        "MATERIAL_RAG_MANIFEST_REQUIRED",
+        "MATERIAL_RAG_RELEASE_FENCE_FORBIDDEN",
+        "MATERIAL_RAG_REMOTE_DATASET_DELETE_MISMATCH",
+        "MATERIAL_RAG_REMOTE_DATASET_IDENTITY_INVALID",
+        "MATERIAL_RAG_REMOTE_DATASET_NOT_EMPTY",
+        "MATERIAL_RAG_SOURCE_NOT_AUTHORIZED",
+        "MATERIAL_RAG_STORED_MANIFEST_MISMATCH",
+        "MATERIAL_RAG_NETWORK_FAILED",
+        "MATERIAL_RAG_PROBE_FAILED",
+        "MATERIAL_RAG_PROVISION_FAILED",
+        "MATERIAL_RAG_UNAVAILABLE",
+        "MATERIAL_RAG_UNITS_MISSING",
+        "MATERIAL_RAG_UNIT_JOB_MISMATCH",
+        "MATERIAL_UNIT_IDENTITY_CONFLICT",
+        "MATERIAL_VERSION_NOT_FOUND",
+        "MATERIAL_VERSION_NOT_INDEXABLE",
+    }
+) | _INDEX_PROBE_STATUS_TOKENS | _INDEX_CHUNK_ADD_CODE_TOKENS
+_INDEX_OUTCOMES = frozenset(
+    {
+        "CLAIM_NONE",
+        "FINISH_EXCEPTION",
+        "FINISH_FALSE",
+        "FINISH_TRUE",
+        "LEASE_LOST",
+        "NONE",
+    }
+)
+_INDEX_LEASE_SOURCES = frozenset(
+    {
+        "ADAPTER",
+        "FINISH_DONE",
+        "MUTATION_FENCE",
+        "NONE",
+        "RENEW",
+        "SCOPE_LOCK",
+        "UNKNOWN",
+    }
+)
+_INDEX_PROCESS_OUTCOME: ContextVar[object | None] = ContextVar(
+    "material_rag_index_process_outcome", default=None
+)
+_INDEX_SQLSTATE_RE = re.compile(r"^[A-Z0-9]{5}$")
+_INDEX_EVIDENCE_CHECKPOINTS = frozenset(
+    {
+        "CANONICAL_UNITS_EMPTY",
+        "CONFLICT_ACCEPTED",
+        "CONFLICT_IDENTITY",
+        "CONFLICT_MUTATED",
+        "CONFLICT_PERSIST",
+        "JOB_ROW_MISSING",
+        "NONE",
+        "PRIMARY_ATTEST_COUNTS",
+        "PRIMARY_ATTEST_REMOTE",
+        "PRIMARY_FINGERPRINT",
+        "PRIMARY_JOB",
+        "PRIMARY_PROCESS",
+        "REMOTE_SNAPSHOT",
+        "REMOTE_TAGS",
+        "SNAPSHOT_EXIT",
+        "SNAPSHOT_LOAD",
+        "SNAPSHOT_OPEN",
+        "REPLAY_COUNTS",
+        "REPLAY_JOB",
+        "REPLAY_PROCESS",
+        "REPLAY_REMOTE",
+        "SYNTHETIC_COUNTS",
+        "SYNTHETIC_JOB",
+        "SYNTHETIC_PROCESS",
+        "SYNTHETIC_REMOTE",
+        "SYNTHETIC_SCOPES",
+        "UNKNOWN",
+    }
+)
+_INTERNAL_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_INTERNAL_EVIDENCE "
+_INTERNAL_EVIDENCE_PHASES = frozenset(
+    {
+        "ASSERT_RUNTIME",
+        "DISPOSE_ENGINES",
+        "FINAL_AUDIT",
+        "IMPORT_SCANNER",
+        "LOAD_FIXTURES",
+        "PJ_CONTEXT_GUARDS",
+        "PJ_DELETE",
+        "PJ_FINAL_AUDIT",
+        "PJ_IMPORT_INIT",
+        "PJ_INDEX_REPLAY",
+        "PJ_PRIMARY_ATTEST",
+        "PJ_PRIMARY_INDEX",
+        "PJ_REBUILD",
+        "PJ_SCOPED_RETRIEVAL",
+        "PJ_SCOPE_ISOLATION",
+        "PJ_SYNTHETIC_INDEX",
+        "PROVIDER_ATTESTATION",
+        "SEED_DATABASE",
+        "SETUP_UPLOAD",
+        "STORAGE_ACTIVATE",
+        "STORAGE_CLEANUP",
+        "UNKNOWN",
+    }
+)
+_INTERNAL_EVIDENCE_ERROR_CLASSES = frozenset(
+    {
+        "ASSERTION_ERROR",
+        "ATTRIBUTE_ERROR",
+        "CANCELLED_ERROR",
+        "DB_DATA",
+        "DB_INTEGRITY",
+        "DB_INTERFACE",
+        "DB_INTERNAL",
+        "DB_INVALID_REQUEST",
+        "DB_MISSING_GREENLET",
+        "DB_NOT_SUPPORTED",
+        "DB_OPERATIONAL",
+        "DB_OTHER",
+        "DB_PENDING_ROLLBACK",
+        "DB_PROGRAMMING",
+        "DB_STATEMENT",
+        "EXCEPTION_GROUP",
+        "IMPORT_ERROR",
+        "INDEX_ERROR",
+        "KEY_ERROR",
+        "OS_ERROR",
+        "OTHER",
+        "RUNTIME_ERROR",
+        "TIMEOUT",
+        "TYPE_ERROR",
+        "UNKNOWN",
+        "VALUE_ERROR",
+    }
+)
+_INTERNAL_EVIDENCE_SQLSTATE_RE = re.compile(r"\A[A-Z0-9]{5}\Z")
+_INTERNAL_EVIDENCE_DB_TOKENS = frozenset(
+    {
+        "MATERIAL_RAG_BINDING_IDENTITY_IMMUTABLE",
+        "MATERIAL_RAG_DOWNGRADE_DATA_PRESENT",
+        "MATERIAL_RAG_JOB_CLAIM_INVALID",
+        "MATERIAL_RAG_JOB_IDENTITY_IMMUTABLE",
+        "MATERIAL_RAG_JOB_OUTCOME_INVALID",
+        "MATERIAL_RAG_JOB_SOURCE_IDENTITY_INVALID",
+        "MATERIAL_RAG_JOB_SOURCE_NOT_RELEASED",
+        "MATERIAL_RAG_JOB_TRANSITION_INVALID",
+        "MATERIAL_RAG_UNIT_IMMUTABLE",
+        "MATERIAL_RAG_UNIT_SOURCE_NOT_RELEASED",
+        "QA_CLAIM_INVALID",
+        "QA_COMPLETE_INVALID",
+        "QA_OUTCOME_STATE_INVALID",
+        "TEXT_NUL",
+    }
+)
+_INTERNAL_EVIDENCE_DB_MESSAGE_TOKENS = {
+    "PostgreSQL text fields cannot contain NUL (0x00) bytes": "TEXT_NUL",
+}
+_DB_ERROR_CLASS_BY_NAME = {
+    "MissingGreenlet": "DB_MISSING_GREENLET",
+    "PendingRollbackError": "DB_PENDING_ROLLBACK",
+    "InvalidRequestError": "DB_INVALID_REQUEST",
+    "StatementError": "DB_STATEMENT",
+    "DataError": "DB_DATA",
+    "InterfaceError": "DB_INTERFACE",
+    "InternalError": "DB_INTERNAL",
+    "NotSupportedError": "DB_NOT_SUPPORTED",
+    "OperationalError": "DB_OPERATIONAL",
+    "IntegrityError": "DB_INTEGRITY",
+    "ProgrammingError": "DB_PROGRAMMING",
+}
+_INTERNAL_PHASE: ContextVar[str] = ContextVar(
+    "material_rag_internal_phase", default="UNKNOWN"
+)
+_INTERNAL_EVIDENCE_OPERATIONS = frozenset(
+    {
+        "CANDIDATE_VERIFY",
+        "CONTEXT_DERIVE",
+        "CRYPTO_PROBE",
+        "DB_SNAPSHOT_EXIT",
+        "DB_SNAPSHOT_LOAD",
+        "DB_SNAPSHOT_OPEN",
+        "EGRESS_AUDIT",
+        "ENQUEUE_JOB",
+        "FINAL_RESIDUE",
+        "IMPORTS",
+        "JOB_ROW",
+        "LOAD_UNITS",
+        "CLAIM_JOB",
+        "CLAIMED_SESSION",
+        "MUTATION_FENCE",
+        "PERSIST_UNITS",
+        "PROCESS_DEMO_JOB",
+        "QA_COMPLETE",
+        "QA_RESERVE",
+        "REMOTE_SNAPSHOT",
+        "RETRIEVAL",
+        "RLS_CHECK",
+        "SCOPE_LOCK",
+        "UNIT_COUNTS",
+        "UNKNOWN",
+    }
+)
+_INTERNAL_OPERATION: ContextVar[str] = ContextVar(
+    "material_rag_internal_operation", default="UNKNOWN"
+)
+_BASE_EXCEPTION_GROUP = getattr(
+    __import__("builtins"), "BaseExceptionGroup", None
+)
+
+
+def _is_db_error_module(module: str) -> bool:
+    return (
+        module == "sqlalchemy"
+        or module.startswith("sqlalchemy.")
+        or module == "psycopg"
+        or module.startswith("psycopg.")
+        or module == "psycopg2"
+        or module.startswith("psycopg2.")
+    )
+
+
+def _unwrap_internal_errors(error: BaseException) -> tuple[BaseException, ...]:
+    seen: set[int] = set()
+    ordered: list[BaseException] = []
+    stack = [error]
+    while stack:
+        current = stack.pop()
+        ident = id(current)
+        if ident in seen:
+            continue
+        seen.add(ident)
+        ordered.append(current)
+        orig = getattr(current, "orig", None)
+        if isinstance(orig, BaseException):
+            stack.append(orig)
+        cause = current.__cause__
+        if isinstance(cause, BaseException):
+            stack.append(cause)
+        context = current.__context__
+        if isinstance(context, BaseException):
+            stack.append(context)
+    return tuple(ordered)
+
+
+def _safe_sqlstate(error: BaseException | None) -> str:
+    if error is None:
+        return "NONE"
+    for current in _unwrap_internal_errors(error):
+        for attr in ("sqlstate", "pgcode"):
+            value = getattr(current, attr, None)
+            if isinstance(value, str) and _INTERNAL_EVIDENCE_SQLSTATE_RE.fullmatch(
+                value
+            ):
+                return value
+        diag = getattr(current, "diag", None)
+        if diag is not None:
+            value = getattr(diag, "sqlstate", None)
+            if isinstance(value, str) and _INTERNAL_EVIDENCE_SQLSTATE_RE.fullmatch(
+                value
+            ):
+                return value
+    return "NONE"
+
+
+def _token_from_db_text(value: str) -> str | None:
+    mapped = _INTERNAL_EVIDENCE_DB_MESSAGE_TOKENS.get(value)
+    if mapped is not None:
+        return mapped
+    if value in _INTERNAL_EVIDENCE_DB_TOKENS:
+        return value
+    return None
+
+
+def _safe_db_token(error: BaseException | None) -> str:
+    if error is None:
+        return "NONE"
+    for current in _unwrap_internal_errors(error):
+        diag = getattr(current, "diag", None)
+        if diag is not None:
+            primary = getattr(diag, "message_primary", None)
+            if isinstance(primary, str):
+                token = _token_from_db_text(primary)
+                if token is not None:
+                    return token
+        args = getattr(current, "args", ())
+        if args and isinstance(args[0], str):
+            token = _token_from_db_text(args[0])
+            if token is not None:
+                return token
+    return "NONE"
+
+
+def _classify_db_error(error: BaseException) -> str | None:
+    mapped: str | None = None
+    db_hit = False
+    for cls in type(error).mro():
+        module = getattr(cls, "__module__", "") or ""
+        if not _is_db_error_module(module):
+            continue
+        db_hit = True
+        candidate = _DB_ERROR_CLASS_BY_NAME.get(cls.__name__)
+        if candidate is not None:
+            mapped = candidate
+            break
+    if mapped is not None:
+        return mapped
+    if db_hit:
+        return "DB_OTHER"
+    return None
+
+
+def _classify_internal_error(error: BaseException) -> str:
+    db_class = _classify_db_error(error)
+    if db_class is not None:
+        return db_class
+    if _BASE_EXCEPTION_GROUP is not None and isinstance(
+        error, _BASE_EXCEPTION_GROUP
+    ):
+        return "EXCEPTION_GROUP"
+    if isinstance(error, asyncio.CancelledError):
+        return "CANCELLED_ERROR"
+    if isinstance(error, TimeoutError):
+        return "TIMEOUT"
+    if isinstance(error, AssertionError):
+        return "ASSERTION_ERROR"
+    if isinstance(error, TypeError):
+        return "TYPE_ERROR"
+    if isinstance(error, ValueError):
+        return "VALUE_ERROR"
+    if isinstance(error, IndexError):
+        return "INDEX_ERROR"
+    if isinstance(error, KeyError):
+        return "KEY_ERROR"
+    if isinstance(error, AttributeError):
+        return "ATTRIBUTE_ERROR"
+    if isinstance(error, ImportError):
+        return "IMPORT_ERROR"
+    if isinstance(error, OSError):
+        return "OS_ERROR"
+    if isinstance(error, RuntimeError):
+        return "RUNTIME_ERROR"
+    return "OTHER"
+
+
+def _enter_internal_phase(phase: str) -> None:
+    _INTERNAL_PHASE.set(
+        phase if phase in _INTERNAL_EVIDENCE_PHASES else "UNKNOWN"
+    )
+
+
+def _enter_internal_operation(operation: str) -> Token[str]:
+    return _INTERNAL_OPERATION.set(
+        operation if operation in _INTERNAL_EVIDENCE_OPERATIONS else "UNKNOWN"
+    )
+
+
+class _InternalEvidenceBuffer:
+    def __init__(self) -> None:
+        self._item: dict[str, object] | None = None
+
+    def clear(self) -> None:
+        self._item = None
+
+    def record(
+        self,
+        error_class: str,
+        phase: str,
+        primary_preserved: bool,
+        source: BaseException | None = None,
+    ) -> None:
+        if self._item is not None:
+            return
+        sqlstate = _safe_sqlstate(source)
+        db_token = _safe_db_token(source)
+        if (
+            error_class not in _INTERNAL_EVIDENCE_ERROR_CLASSES
+            or phase not in _INTERNAL_EVIDENCE_PHASES
+            or type(primary_preserved) is not bool
+            or (
+                sqlstate != "NONE"
+                and _INTERNAL_EVIDENCE_SQLSTATE_RE.fullmatch(sqlstate) is None
+            )
+            or (db_token != "NONE" and db_token not in _INTERNAL_EVIDENCE_DB_TOKENS)
+        ):
+            return
+        operation = _INTERNAL_OPERATION.get()
+        if operation not in _INTERNAL_EVIDENCE_OPERATIONS:
+            operation = "UNKNOWN"
+        self._item = {
+            "db_token": db_token,
+            "error_class": error_class,
+            "operation": operation,
+            "phase": phase,
+            "primary_preserved": primary_preserved,
+            "sqlstate": sqlstate,
+        }
+
+    def mark_primary_preserved(self) -> None:
+        if self._item is None:
+            return
+        self._item["primary_preserved"] = True
+
+    def emit_for_reason(self, reason: str) -> None:
+        if reason != "LOCAL_MATERIAL_RAG_INTERNAL_ERROR" or self._item is None:
+            return
+        line = _INTERNAL_EVIDENCE_PREFIX + json.dumps(
+            self._item,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if len(line.encode("utf-8")) > 1024:
+            return
+        print(line, file=sys.stderr, flush=True)
+
+
+_INTERNAL_EVIDENCE = _InternalEvidenceBuffer()
+
+
+def _index_sqlstate(value: object) -> str:
+    if value == "NONE":
+        return "NONE"
+    if isinstance(value, str) and _INDEX_SQLSTATE_RE.fullmatch(value):
+        return value
+    return "NONE"
+
+
+def _index_bool(value: object) -> bool:
+    return value is True
+
+
+def _index_payload(
+    *,
+    checkpoint: str,
+    job_status: str,
+    operation: str,
+    phase: str,
+    reason_token: str,
+    outcome: str,
+    lease_source: str,
+    lease_present: bool,
+    lease_live: bool,
+    token_match: bool,
+    finish_sqlstate: str,
+) -> dict[str, object]:
+    return {
+        "checkpoint": checkpoint,
+        "finish_sqlstate": finish_sqlstate,
+        "job_status": job_status,
+        "lease_live": lease_live,
+        "lease_present": lease_present,
+        "lease_source": lease_source,
+        "operation": operation,
+        "outcome": outcome,
+        "phase": phase,
+        "reason_token": reason_token,
+        "token_match": token_match,
+    }
+
+
+class _IndexEvidenceBuffer:
+    def __init__(self) -> None:
+        self._item: dict[str, object] | None = None
+
+    def clear(self) -> None:
+        self._item = None
+
+    def record(
+        self,
+        checkpoint: str,
+        *,
+        job_status: str = "NONE",
+        reason_token: str = "NONE",
+        outcome: str = "NONE",
+        lease_source: str = "NONE",
+        lease_present: bool = False,
+        lease_live: bool = False,
+        token_match: bool = False,
+        finish_sqlstate: str = "NONE",
+    ) -> None:
+        if self._item is not None:
+            return
+        if checkpoint not in _INDEX_EVIDENCE_CHECKPOINTS:
+            checkpoint = "UNKNOWN"
+        if job_status not in _INDEX_JOB_STATUSES and job_status != "NONE":
+            job_status = "NONE"
+        if reason_token not in _INDEX_REASON_TOKENS and reason_token != "NONE":
+            reason_token = "NONE"
+        if outcome not in _INDEX_OUTCOMES:
+            outcome = "NONE"
+        if lease_source not in _INDEX_LEASE_SOURCES:
+            lease_source = "NONE"
+        operation = _INTERNAL_OPERATION.get()
+        if operation not in _INTERNAL_EVIDENCE_OPERATIONS:
+            operation = "UNKNOWN"
+        phase = _INTERNAL_PHASE.get()
+        if phase not in _INTERNAL_EVIDENCE_PHASES:
+            phase = "UNKNOWN"
+        self._item = _index_payload(
+            checkpoint=checkpoint,
+            job_status=job_status,
+            operation=operation,
+            phase=phase,
+            reason_token=reason_token,
+            outcome=outcome,
+            lease_source=lease_source,
+            lease_present=_index_bool(lease_present),
+            lease_live=_index_bool(lease_live),
+            token_match=_index_bool(token_match),
+            finish_sqlstate=_index_sqlstate(finish_sqlstate),
+        )
+
+    def emit_for_reason(self, reason: str) -> None:
+        if reason != "LOCAL_MATERIAL_RAG_INDEX_FAILED":
+            return
+        item = self._item
+        if item is None:
+            operation = _INTERNAL_OPERATION.get()
+            if operation not in _INTERNAL_EVIDENCE_OPERATIONS:
+                operation = "UNKNOWN"
+            phase = _INTERNAL_PHASE.get()
+            if phase not in _INTERNAL_EVIDENCE_PHASES:
+                phase = "UNKNOWN"
+            item = _index_payload(
+                checkpoint="NONE",
+                job_status="NONE",
+                operation=operation,
+                phase=phase,
+                reason_token="NONE",
+                outcome="NONE",
+                lease_source="NONE",
+                lease_present=False,
+                lease_live=False,
+                token_match=False,
+                finish_sqlstate="NONE",
+            )
+        line = _INDEX_EVIDENCE_PREFIX + json.dumps(
+            item,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if len(line.encode("utf-8")) > 1024:
+            return
+        print(line, file=sys.stderr, flush=True)
+
+
+_INDEX_EVIDENCE = _IndexEvidenceBuffer()
+
+_EGRESS_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_EGRESS_EVIDENCE "
+_EGRESS_COUNTER_KEYS = (
+    "authorized_embedding_request_count",
+    "forwarded_embedding_request_count",
+    "rejected_json_count",
+    "rejected_model_count",
+    "rejected_non_text_input_count",
+    "rejected_path_count",
+    "rejected_request_count",
+    "rejected_unauthorized_text_count",
+    "upstream_2xx_count",
+    "upstream_4xx_count",
+    "upstream_5xx_count",
+)
+_EGRESS_EVIDENCE_KEYS = frozenset(("audit_status",) + _EGRESS_COUNTER_KEYS)
+_EGRESS_AUDIT_STATUSES = frozenset({"INVALID", "MISSING", "READY", "UNAVAILABLE"})
+
+
+def _index_failure_egress_payload() -> dict[str, object]:
+    zeros: dict[str, object] = {key: 0 for key in _EGRESS_COUNTER_KEYS}
+    missing = dict(zeros)
+    missing["audit_status"] = "MISSING"
+    invalid = dict(zeros)
+    invalid["audit_status"] = "INVALID"
+    unavailable = dict(zeros)
+    unavailable["audit_status"] = "UNAVAILABLE"
+    raw_path = os.environ.get(
+        "F1_MATERIAL_RAG_EGRESS_AUDIT_FILE",
+        "/run/material-rag-egress/audit.json",
+    )
+    if not isinstance(raw_path, str) or not raw_path:
+        return missing
+    try:
+        path = Path(raw_path)
+        if not path.is_absolute() or path.is_symlink() or not path.is_file():
+            return missing
+    except OSError:
+        return unavailable
+    try:
+        body = _read_regular_unhashed(path, maximum_bytes=4096)
+    except MaterialRagVerifyError:
+        return invalid
+    except Exception:
+        return unavailable
+    try:
+        value = json.loads(body.decode("ascii", "strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return invalid
+    if not isinstance(value, dict):
+        return invalid
+    payload: dict[str, object] = {"audit_status": "READY"}
+    for key in _EGRESS_COUNTER_KEYS:
+        raw = value.get(key)
+        if type(raw) is not int or raw < 0:
+            return invalid
+        payload[key] = raw
+    return payload
+
+
+class _EgressEvidenceBuffer:
+    def clear(self) -> None:
+        return
+
+    def emit_for_reason(self, reason: str) -> None:
+        if reason != "LOCAL_MATERIAL_RAG_INDEX_FAILED":
+            return
+        line = _EGRESS_EVIDENCE_PREFIX + json.dumps(
+            _index_failure_egress_payload(),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if len(line.encode("utf-8")) > 1024:
+            return
+        print(line, file=sys.stderr, flush=True)
+
+
+_EGRESS_EVIDENCE = _EgressEvidenceBuffer()
+
+_RETRIEVAL_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_RETRIEVAL_EVIDENCE "
+_RETRIEVAL_EVIDENCE_KEYS = frozenset(
+    {
+        "checkpoint",
+        "citation_mismatch_count",
+        "client_a_hit_count",
+        "client_a_overlap",
+        "client_a_refusal",
+        "client_a_refusal_token",
+        "client_b_hit_count",
+        "client_b_refusal",
+        "client_b_refusal_token",
+        "cross_ab",
+        "cross_ba",
+        "fragment_hit_count",
+        "provider_hit_count",
+        "provider_refusal",
+        "provider_refusal_token",
+    }
+)
+_RETRIEVAL_EVIDENCE_CHECKPOINTS = frozenset(
+    {
+        "CITATION_MATCH",
+        "DEMO_FRAGMENT",
+        "EXPECTED_COUNT",
+        "NONE",
+        "SCOPED_SET",
+        "UNKNOWN",
+    }
+)
+_RETRIEVAL_REFUSAL_TOKENS = frozenset(
+    {
+        "NONE",
+        "NO_HITS",
+        "NOT_CONFIGURED",
+        "REJECTED",
+        "UNAVAILABLE",
+        "UNKNOWN",
+    }
+)
+_RETRIEVAL_REFUSAL_REASON_TO_TOKEN = {
+    "ALL_CANDIDATES_REJECTED": "REJECTED",
+    "MATERIAL_RAG_NOT_CONFIGURED": "NOT_CONFIGURED",
+    "MATERIAL_RAG_UNAVAILABLE": "UNAVAILABLE",
+    "NO_HITS": "NO_HITS",
+}
+
+
+def _retrieval_count(value: object) -> int:
+    if type(value) is not int or value < 0:
+        return 0
+    if value > 999:
+        return 999
+    return value
+
+
+def _retrieval_flag(value: object) -> int:
+    return 1 if value is True else 0
+
+
+def _retrieval_refusal_token(reason: object) -> str:
+    if reason is None:
+        return "NONE"
+    if not isinstance(reason, str):
+        return "UNKNOWN"
+    token = _RETRIEVAL_REFUSAL_REASON_TO_TOKEN.get(reason)
+    if token in _RETRIEVAL_REFUSAL_TOKENS:
+        return token
+    return "UNKNOWN"
+
+
+def _retrieval_payload(
+    *,
+    checkpoint: str,
+    provider_hit_count: int,
+    client_a_hit_count: int,
+    client_b_hit_count: int,
+    provider_refusal: int,
+    client_a_refusal: int,
+    client_b_refusal: int,
+    client_a_overlap: int,
+    cross_ab: int,
+    cross_ba: int,
+    fragment_hit_count: int,
+    citation_mismatch_count: int,
+    provider_refusal_token: str,
+    client_a_refusal_token: str,
+    client_b_refusal_token: str,
+) -> dict[str, object]:
+    return {
+        "checkpoint": checkpoint,
+        "citation_mismatch_count": citation_mismatch_count,
+        "client_a_hit_count": client_a_hit_count,
+        "client_a_overlap": client_a_overlap,
+        "client_a_refusal": client_a_refusal,
+        "client_a_refusal_token": client_a_refusal_token,
+        "client_b_hit_count": client_b_hit_count,
+        "client_b_refusal": client_b_refusal,
+        "client_b_refusal_token": client_b_refusal_token,
+        "cross_ab": cross_ab,
+        "cross_ba": cross_ba,
+        "fragment_hit_count": fragment_hit_count,
+        "provider_hit_count": provider_hit_count,
+        "provider_refusal": provider_refusal,
+        "provider_refusal_token": provider_refusal_token,
+    }
+
+
+class _RetrievalEvidenceBuffer:
+    def __init__(self) -> None:
+        self._item: dict[str, object] | None = None
+
+    def clear(self) -> None:
+        self._item = None
+
+    def record(
+        self,
+        checkpoint: str,
+        *,
+        provider_hit_count: object = 0,
+        client_a_hit_count: object = 0,
+        client_b_hit_count: object = 0,
+        provider_refusal: object = False,
+        client_a_refusal: object = False,
+        client_b_refusal: object = False,
+        client_a_overlap: object = False,
+        cross_ab: object = False,
+        cross_ba: object = False,
+        fragment_hit_count: object = 0,
+        citation_mismatch_count: object = 0,
+        provider_refusal_token: object = "NONE",
+        client_a_refusal_token: object = "NONE",
+        client_b_refusal_token: object = "NONE",
+    ) -> None:
+        if self._item is not None:
+            return
+        if checkpoint not in _RETRIEVAL_EVIDENCE_CHECKPOINTS:
+            checkpoint = "UNKNOWN"
+        provider_token = (
+            provider_refusal_token
+            if provider_refusal_token in _RETRIEVAL_REFUSAL_TOKENS
+            else "UNKNOWN"
+        )
+        client_a_token = (
+            client_a_refusal_token
+            if client_a_refusal_token in _RETRIEVAL_REFUSAL_TOKENS
+            else "UNKNOWN"
+        )
+        client_b_token = (
+            client_b_refusal_token
+            if client_b_refusal_token in _RETRIEVAL_REFUSAL_TOKENS
+            else "UNKNOWN"
+        )
+        self._item = _retrieval_payload(
+            checkpoint=checkpoint,
+            provider_hit_count=_retrieval_count(provider_hit_count),
+            client_a_hit_count=_retrieval_count(client_a_hit_count),
+            client_b_hit_count=_retrieval_count(client_b_hit_count),
+            provider_refusal=_retrieval_flag(provider_refusal),
+            client_a_refusal=_retrieval_flag(client_a_refusal),
+            client_b_refusal=_retrieval_flag(client_b_refusal),
+            client_a_overlap=_retrieval_flag(client_a_overlap),
+            cross_ab=_retrieval_flag(cross_ab),
+            cross_ba=_retrieval_flag(cross_ba),
+            fragment_hit_count=_retrieval_count(fragment_hit_count),
+            citation_mismatch_count=_retrieval_count(citation_mismatch_count),
+            provider_refusal_token=str(provider_token),
+            client_a_refusal_token=str(client_a_token),
+            client_b_refusal_token=str(client_b_token),
+        )
+
+    def emit_for_reason(self, reason: str) -> None:
+        if reason != "LOCAL_MATERIAL_RAG_RETRIEVAL_FAILED":
+            return
+        item = self._item
+        if item is None:
+            item = _retrieval_payload(
+                checkpoint="NONE",
+                provider_hit_count=0,
+                client_a_hit_count=0,
+                client_b_hit_count=0,
+                provider_refusal=0,
+                client_a_refusal=0,
+                client_b_refusal=0,
+                client_a_overlap=0,
+                cross_ab=0,
+                cross_ba=0,
+                fragment_hit_count=0,
+                citation_mismatch_count=0,
+                provider_refusal_token="NONE",
+                client_a_refusal_token="NONE",
+                client_b_refusal_token="NONE",
+            )
+        line = _RETRIEVAL_EVIDENCE_PREFIX + json.dumps(
+            item,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if len(line.encode("utf-8")) > 1024:
+            return
+        print(line, file=sys.stderr, flush=True)
+
+
+_RETRIEVAL_EVIDENCE = _RetrievalEvidenceBuffer()
+
+_REBUILD_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_REBUILD_EVIDENCE "
+_REBUILD_EVIDENCE_KEYS = frozenset(
+    {
+        "checkpoint",
+        "chunk_count",
+        "document_count",
+        "fingerprint_match",
+        "job_status",
+        "manifest_match",
+        "outcome",
+        "reason_token",
+        "unit_count_match",
+    }
+)
+_REBUILD_EVIDENCE_CHECKPOINTS = frozenset(
+    {
+        "FINGERPRINT",
+        "JOB_ROW",
+        "NONE",
+        "PROCESS",
+        "REMOTE_SNAPSHOT",
+        "REMOTE_TAGS",
+        "UNKNOWN",
+    }
+)
+_REBUILD_OUTCOMES = frozenset(
+    {
+        "CLAIM_NONE",
+        "FINISH_EXCEPTION",
+        "FINISH_FALSE",
+        "FINISH_TRUE",
+        "LEASE_LOST",
+        "NONE",
+        "SUCCESS",
+    }
+)
+_REBUILD_JOB_STATUSES = _INDEX_JOB_STATUSES | {"NONE"}
+_REBUILD_REASON_TOKENS = _INDEX_REASON_TOKENS | frozenset(
+    {
+        "MATERIAL_RAG_RELEASE_FENCE_REQUIRED",
+        "MATERIAL_RAG_REMOTE_BODY_MISMATCH",
+        "MATERIAL_RAG_REMOTE_CHUNK_INVALID",
+        "MATERIAL_RAG_REMOTE_COUNT_MISMATCH",
+        "MATERIAL_RAG_REMOTE_DELETE_MISMATCH",
+        "MATERIAL_RAG_REMOTE_DOCUMENT_AMBIGUOUS",
+        "MATERIAL_RAG_REMOTE_DOCUMENT_INVALID",
+        "MATERIAL_RAG_REMOTE_EXTRA_UNIT",
+        "MATERIAL_RAG_REMOTE_IDENTITY_INVALID",
+        "MATERIAL_RAG_UNIT_DUPLICATE",
+        "MATERIAL_RAG_UNIT_SCOPE_MISMATCH",
+        "NONE",
+    }
+)
+
+
+def _rebuild_count(value: object) -> int:
+    if type(value) is not int or value < 0:
+        return 0
+    if value > 999:
+        return 999
+    return value
+
+
+def _rebuild_flag(value: object) -> int:
+    return 1 if value is True or value == 1 else 0
+
+
+def _rebuild_payload(
+    *,
+    checkpoint: str,
+    chunk_count: int,
+    document_count: int,
+    fingerprint_match: int,
+    job_status: str,
+    manifest_match: int,
+    outcome: str,
+    reason_token: str,
+    unit_count_match: int,
+) -> dict[str, object]:
+    return {
+        "checkpoint": checkpoint,
+        "chunk_count": chunk_count,
+        "document_count": document_count,
+        "fingerprint_match": fingerprint_match,
+        "job_status": job_status,
+        "manifest_match": manifest_match,
+        "outcome": outcome,
+        "reason_token": reason_token,
+        "unit_count_match": unit_count_match,
+    }
+
+
+class _RebuildEvidenceBuffer:
+    def __init__(self) -> None:
+        self._item: dict[str, object] | None = None
+
+    def clear(self) -> None:
+        self._item = None
+
+    def record(
+        self,
+        checkpoint: str,
+        *,
+        chunk_count: object = 0,
+        document_count: object = 0,
+        fingerprint_match: object = 0,
+        job_status: object = "NONE",
+        manifest_match: object = 0,
+        outcome: object = "NONE",
+        reason_token: object = "NONE",
+        unit_count_match: object = 0,
+    ) -> None:
+        if self._item is not None:
+            return
+        if checkpoint not in _REBUILD_EVIDENCE_CHECKPOINTS:
+            checkpoint = "UNKNOWN"
+        if job_status not in _REBUILD_JOB_STATUSES:
+            job_status = "NONE"
+        if outcome not in _REBUILD_OUTCOMES:
+            outcome = "NONE"
+        if reason_token not in _REBUILD_REASON_TOKENS:
+            reason_token = "NONE"
+        self._item = _rebuild_payload(
+            checkpoint=checkpoint,
+            chunk_count=_rebuild_count(chunk_count),
+            document_count=_rebuild_count(document_count),
+            fingerprint_match=_rebuild_flag(fingerprint_match),
+            job_status=str(job_status),
+            manifest_match=_rebuild_flag(manifest_match),
+            outcome=str(outcome),
+            reason_token=str(reason_token),
+            unit_count_match=_rebuild_flag(unit_count_match),
+        )
+
+    def emit_for_reason(self, reason: str) -> None:
+        if reason != "LOCAL_MATERIAL_RAG_REBUILD_FAILED":
+            return
+        item = self._item
+        if item is None:
+            item = _rebuild_payload(
+                checkpoint="NONE",
+                chunk_count=0,
+                document_count=0,
+                fingerprint_match=0,
+                job_status="NONE",
+                manifest_match=0,
+                outcome="NONE",
+                reason_token="NONE",
+                unit_count_match=0,
+            )
+        line = _REBUILD_EVIDENCE_PREFIX + json.dumps(
+            item,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        if len(line.encode("utf-8")) > 1024:
+            return
+        print(line, file=sys.stderr, flush=True)
+
+
+_REBUILD_EVIDENCE = _RebuildEvidenceBuffer()
+
+
+def _fail_index(checkpoint: str) -> None:
+    _INDEX_EVIDENCE.record(checkpoint)
+    raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+
+
+def _fail_retrieval(checkpoint: str, **counts: object) -> None:
+    _RETRIEVAL_EVIDENCE.record(checkpoint, **counts)
+    raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_RETRIEVAL_FAILED")
+
+
+def _fail_fixed(reason: str, checkpoint: str) -> None:
+    if reason == "LOCAL_MATERIAL_RAG_INDEX_FAILED":
+        _INDEX_EVIDENCE.record(checkpoint)
+    elif reason == "LOCAL_MATERIAL_RAG_REBUILD_FAILED":
+        rebuild_checkpoint = (
+            checkpoint if checkpoint in _REBUILD_EVIDENCE_CHECKPOINTS else "UNKNOWN"
+        )
+        _REBUILD_EVIDENCE.record(rebuild_checkpoint)
+    raise MaterialRagVerifyError(reason)
+
+
+async def _record_index_job(
+    checkpoint: str,
+    job_id: uuid.UUID,
+    *,
+    outcome: object | None = None,
+) -> None:
+    job_status = "NONE"
+    reason_token = "NONE"
+    lease_present = False
+    lease_live = False
+    try:
+        from infra.f1 import local_seed
+        from sqlalchemy import text
+        from platform_foundation.f1.database import session_scope
+
+        async with session_scope(
+            role="f1_api",
+            enterprise_id=local_seed.ENTERPRISE_A,
+            sub=local_seed.ADMIN_SUB,
+        ) as session:
+            row = (
+                await session.execute(
+                    text(
+                        "SELECT status,error_reason,"
+                        "(lease_token IS NOT NULL) AS lease_present,"
+                        "(lease_token IS NOT NULL AND "
+                        "lease_until > clock_timestamp()) AS lease_live "
+                        "FROM f1.material_rag_job WHERE id=:id"
+                    ),
+                    {"id": job_id},
+                )
+            ).mappings().one_or_none()
+        if row is not None:
+            status = row["status"]
+            if status in _INDEX_JOB_STATUSES:
+                job_status = status
+            raw_reason = row["error_reason"]
+            if isinstance(raw_reason, str) and raw_reason in _INDEX_REASON_TOKENS:
+                reason_token = raw_reason
+            lease_present = row["lease_present"] is True
+            lease_live = row["lease_live"] is True
+    except Exception:
+        pass
+    outcome_kind = getattr(outcome, "kind", "NONE")
+    if outcome_kind not in _INDEX_OUTCOMES:
+        outcome_kind = "NONE"
+    lease_source = getattr(outcome, "lease_source", "NONE")
+    if lease_source not in _INDEX_LEASE_SOURCES:
+        lease_source = "NONE"
+    _INDEX_EVIDENCE.record(
+        checkpoint,
+        job_status=job_status,
+        reason_token=reason_token,
+        outcome=outcome_kind,
+        lease_source=lease_source,
+        lease_present=lease_present,
+        lease_live=lease_live,
+        token_match=getattr(outcome, "token_match", False) is True,
+        finish_sqlstate=_index_sqlstate(getattr(outcome, "finish_sqlstate", "NONE")),
+    )
+
+
+async def _raise_index_failed(
+    job_id: uuid.UUID,
+    checkpoint: str,
+    *,
+    outcome: object | None = None,
+) -> None:
+    if outcome is None:
+        outcome = _INDEX_PROCESS_OUTCOME.get()
+    await _record_index_job(checkpoint, job_id, outcome=outcome)
+    raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+
+
+async def _fail_rebuild(
+    checkpoint: str,
+    job_id: uuid.UUID | None = None,
+    *,
+    outcome: object | None = None,
+    document_count: object = 0,
+    chunk_count: object = 0,
+    fingerprint_match: object = False,
+    manifest_match: object = False,
+    unit_count_match: object = False,
+) -> None:
+    job_status = "NONE"
+    reason_token = "NONE"
+    if job_id is not None:
+        try:
+            from infra.f1 import local_seed
+            from sqlalchemy import text
+            from platform_foundation.f1.database import session_scope
+
+            async with session_scope(
+                role="f1_api",
+                enterprise_id=local_seed.ENTERPRISE_A,
+                sub=local_seed.ADMIN_SUB,
+            ) as session:
+                row = (
+                    await session.execute(
+                        text(
+                            "SELECT status,error_reason "
+                            "FROM f1.material_rag_job WHERE id=:id"
+                        ),
+                        {"id": job_id},
+                    )
+                ).mappings().one_or_none()
+            if row is not None:
+                status = row["status"]
+                if status in _REBUILD_JOB_STATUSES:
+                    job_status = status
+                raw_reason = row["error_reason"]
+                if isinstance(raw_reason, str) and raw_reason in _REBUILD_REASON_TOKENS:
+                    reason_token = raw_reason
+        except Exception:
+            pass
+    outcome_kind = getattr(outcome, "kind", "NONE")
+    if outcome_kind not in _REBUILD_OUTCOMES:
+        outcome_kind = "NONE"
+    _REBUILD_EVIDENCE.record(
+        checkpoint,
+        job_status=job_status,
+        reason_token=reason_token,
+        outcome=outcome_kind,
+        document_count=document_count,
+        chunk_count=chunk_count,
+        fingerprint_match=fingerprint_match,
+        manifest_match=manifest_match,
+        unit_count_match=unit_count_match,
+    )
+    raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_REBUILD_FAILED")
+
+
+@contextlib.contextmanager
+def _internal_phase(phase: str):
+    resolved = phase if phase in _INTERNAL_EVIDENCE_PHASES else "UNKNOWN"
+    token = _INTERNAL_PHASE.set(resolved)
+    try:
+        yield
+    except BaseException as error:
+        if not isinstance(error, MaterialRagVerifyError):
+            _INTERNAL_EVIDENCE.record(
+                _classify_internal_error(error),
+                _INTERNAL_PHASE.get(),
+                True,
+                source=error,
+            )
+        raise
+    else:
+        _INTERNAL_PHASE.reset(token)
+
+
+def _preserve_primary_error(
+    primary: BaseException | None, overlay: BaseException
+) -> BaseException:
+    if primary is not None:
+        _INTERNAL_EVIDENCE.mark_primary_preserved()
+        return primary
+    _INTERNAL_EVIDENCE.record(
+        _classify_internal_error(overlay),
+        "DISPOSE_ENGINES",
+        False,
+        source=overlay,
+    )
+    return MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INTERNAL_ERROR")
+
+
 _P3_PREVIEW_EVIDENCE_LINES = frozenset({1, 2, 19, 21})
 _P3_PREVIEW_EVIDENCE_STATUSES = frozenset(
     {"blocked", "failed", "generating", "queued", "ready"}
@@ -262,13 +1531,18 @@ def _p3_scan_failure_reason(latest: object, *, internal: str | None = None) -> s
 
 
 def _preflight_scanner() -> None:
-    from platform_foundation.f1.features.p3.scanner import ScanFailure, scanner_version
+    from platform_foundation.f1.features.p3.scanner import (
+        ScanFailure,
+        clear_scanner_evidence,
+        scanner_version,
+    )
 
     started = time.monotonic()
     last: ScanFailure | None = None
     while time.monotonic() - started < 60:
         try:
             scanner_version(timeout_seconds=10)
+            clear_scanner_evidence()
             return
         except ScanFailure as error:
             last = error
@@ -293,6 +1567,111 @@ def _preflight_scanner() -> None:
             "LOCAL_MATERIAL_RAG_P3_SCAN_UNAVAILABLE_FAILED",
         )
     ) from None
+
+
+_SCANNER_EVIDENCE_CODE_TO_REASON = {
+    "P3_SCAN_ENGINE_ERROR": "LOCAL_MATERIAL_RAG_P3_SCAN_ENGINE_FAILED",
+    "P3_SCAN_PROTOCOL_ERROR": "LOCAL_MATERIAL_RAG_P3_SCAN_PROTOCOL_FAILED",
+    "P3_SCANNER_CONNECT_PIPE": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_PIPE_FAILED",
+    "P3_SCANNER_CONNECT_REFUSED": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_REFUSED_FAILED",
+    "P3_SCANNER_CONNECT_RESET": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_RESET_FAILED",
+    "P3_SCANNER_DNS_FAILED": "LOCAL_MATERIAL_RAG_P3_SCAN_DNS_FAILED",
+    "P3_SCANNER_STREAM_PIPE": "LOCAL_MATERIAL_RAG_P3_SCAN_STREAM_PIPE_FAILED",
+    "P3_SCANNER_STREAM_REFUSED": "LOCAL_MATERIAL_RAG_P3_SCAN_STREAM_REFUSED_FAILED",
+    "P3_SCANNER_STREAM_RESET": "LOCAL_MATERIAL_RAG_P3_SCAN_STREAM_RESET_FAILED",
+    "P3_SCANNER_TARGET_INVALID": "LOCAL_MATERIAL_RAG_P3_SCAN_TARGET_FAILED",
+    "P3_SCANNER_TIMEOUT": "LOCAL_MATERIAL_RAG_P3_SCAN_TIMEOUT_FAILED",
+    "P3_SCANNER_UNAVAILABLE": "LOCAL_MATERIAL_RAG_P3_SCAN_CONNECT_FAILED",
+    "P3_SCANNER_VERSION_PIPE": "LOCAL_MATERIAL_RAG_P3_SCAN_VERSION_PIPE_FAILED",
+    "P3_SCANNER_VERSION_REFUSED": "LOCAL_MATERIAL_RAG_P3_SCAN_VERSION_REFUSED_FAILED",
+    "P3_SCANNER_VERSION_RESET": "LOCAL_MATERIAL_RAG_P3_SCAN_VERSION_RESET_FAILED",
+}
+_P3_SCAN_EVIDENCE_REASONS = frozenset(_SCANNER_EVIDENCE_CODE_TO_REASON.values())
+_SCANNER_EVIDENCE_PREFIX = "LOCAL_MATERIAL_RAG_SCANNER_EVIDENCE "
+_SCANNER_EVIDENCE_KEYS = (
+    "attempt_count",
+    "operation",
+    "phase",
+    "response_class",
+    "scan_code",
+)
+_SCANNER_EVIDENCE_OPERATIONS = frozenset({"INSTREAM", "VERSION"})
+_SCANNER_EVIDENCE_PHASES = frozenset({"CONNECT", "PARSE", "RECV", "RESOLVE", "SEND"})
+_SCANNER_EVIDENCE_RESPONSE_CLASSES = frozenset(
+    {"EMPTY", "ENGINE_ERROR", "FORMAT_MISMATCH", "NOT_APPLICABLE", "OVERSIZE"}
+)
+_SCANNER_EVIDENCE_SCAN_CODES = frozenset(_SCANNER_EVIDENCE_CODE_TO_REASON)
+_MAX_SCANNER_ATTEMPT_COUNT = 64
+_MAX_SCANNER_EVIDENCE_BYTES = 1024
+
+
+def _canonicalize_scanner_evidence(payload: object) -> dict[str, object] | None:
+    if not isinstance(payload, dict) or set(payload) != set(_SCANNER_EVIDENCE_KEYS):
+        return None
+    attempt_count = payload.get("attempt_count")
+    operation = payload.get("operation")
+    phase = payload.get("phase")
+    response_class = payload.get("response_class")
+    scan_code = payload.get("scan_code")
+    if (
+        type(attempt_count) is not int
+        or not 1 <= attempt_count <= _MAX_SCANNER_ATTEMPT_COUNT
+        or operation not in _SCANNER_EVIDENCE_OPERATIONS
+        or phase not in _SCANNER_EVIDENCE_PHASES
+        or response_class not in _SCANNER_EVIDENCE_RESPONSE_CLASSES
+        or scan_code not in _SCANNER_EVIDENCE_SCAN_CODES
+    ):
+        return None
+    return {
+        "attempt_count": attempt_count,
+        "operation": operation,
+        "phase": phase,
+        "response_class": response_class,
+        "scan_code": scan_code,
+    }
+
+
+def _scanner_evidence_line(payload: dict[str, object]) -> str | None:
+    line = _SCANNER_EVIDENCE_PREFIX + json.dumps(
+        payload,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if len(line.encode("utf-8")) > _MAX_SCANNER_EVIDENCE_BYTES:
+        return None
+    return line
+
+
+class _ScannerEvidenceBuffer:
+    def __init__(self) -> None:
+        self._group: list[dict[str, object]] = []
+
+    def clear(self) -> None:
+        self._group = []
+
+    def record(self, payload: object) -> None:
+        canonical = _canonicalize_scanner_evidence(payload)
+        if canonical is None:
+            return
+        if self._group and self._group[-1]["operation"] != canonical["operation"]:
+            self._group = []
+        self._group.append(canonical)
+
+    def __call__(self, payload: object) -> None:
+        self.record(payload)
+
+    def emit_for_reason(self, reason: str) -> None:
+        if reason not in _P3_SCAN_EVIDENCE_REASONS or not self._group:
+            return
+        payload = dict(self._group[-1])
+        payload["attempt_count"] = min(len(self._group), _MAX_SCANNER_ATTEMPT_COUNT)
+        if _SCANNER_EVIDENCE_CODE_TO_REASON.get(payload["scan_code"]) != reason:
+            return
+        line = _scanner_evidence_line(payload)
+        if line is None:
+            return
+        print(line, file=sys.stderr, flush=True)
 
 
 class _DiscardText:
@@ -1807,7 +3186,7 @@ def _canonical_units_for_claim(
             )
         )
     if not units:
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        _fail_index("CANONICAL_UNITS_EMPTY")
     return tuple(units)
 
 
@@ -2057,6 +3436,7 @@ def write_authorization() -> None:
 
 
 async def _job_row(job_id: uuid.UUID) -> Mapping[str, Any]:
+    _enter_internal_operation("JOB_ROW")
     from infra.f1 import local_seed
     from sqlalchemy import text
     from platform_foundation.f1.database import session_scope
@@ -2076,11 +3456,12 @@ async def _job_row(job_id: uuid.UUID) -> Mapping[str, Any]:
             )
         ).mappings().one_or_none()
     if row is None:
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        _fail_index("JOB_ROW_MISSING")
     return row
 
 
 async def _unit_counts(scope_id: uuid.UUID) -> tuple[int, int]:
+    _enter_internal_operation("UNIT_COUNTS")
     from infra.f1 import local_seed
     from sqlalchemy import text
     from platform_foundation.f1.database import session_scope
@@ -2101,6 +3482,7 @@ async def _unit_counts(scope_id: uuid.UUID) -> tuple[int, int]:
 
 
 async def _load_version_units(upload: object) -> tuple[object, ...]:
+    _enter_internal_operation("LOAD_UNITS")
     from infra.f1 import local_seed
     from platform_foundation.f1.database import session_scope
     from platform_foundation.f1.features.material_rag.repository import (
@@ -2142,33 +3524,68 @@ def _unit_fingerprint(unit: object) -> tuple[object, ...]:
 
 async def _scope_unit_db_snapshot(
     scope_id: uuid.UUID,
+    version_ids: Iterable[uuid.UUID],
 ) -> tuple[tuple[object, ...], ...]:
-    """Return every stored unit column so replay/conflict checks are exact."""
+    """Return durable fingerprints for caller-supplied versions only.
+
+    Scope-wide SELECT is intentionally absent. Extra or unknown rows are
+    still caught by `_unit_counts` totals. Each known version uses its own
+    API session, matching `_load_version_units`.
+    """
 
     from infra.f1 import local_seed
-    from sqlalchemy import text
     from platform_foundation.f1.database import session_scope
+    from platform_foundation.f1.features.material_rag.repository import (
+        load_units_for_version,
+    )
 
-    async with session_scope(
-        role="f1_api", enterprise_id=local_seed.ENTERPRISE_A, sub=EMPLOYEE_SUB
-    ) as session:
-        rows = (
-            await session.execute(
-                text(
-                    "SELECT id,enterprise_id,knowledge_scope_id,document_record_id,"
-                    "document_version_id,source_sha256,page_number,ordinal,"
-                    "parser_version,ocr_applied,table_candidate,two_column_candidate,"
-                    "body_ciphertext,body_sha256,body_aad_sha256,created_at "
-                    "FROM f1.material_rag_unit WHERE knowledge_scope_id=:scope_id "
-                    "ORDER BY id"
-                ),
-                {"scope_id": scope_id},
-            )
-        ).all()
-    return tuple(tuple(row) for row in rows)
+    known = tuple(sorted(set(version_ids)))
+    fingerprints: list[tuple[object, ...]] = []
+    operation_token = _enter_internal_operation("DB_SNAPSHOT_OPEN")
+    try:
+        for version_id in known:
+            _enter_internal_operation("DB_SNAPSHOT_LOAD")
+            async with session_scope(
+                role="f1_api",
+                enterprise_id=local_seed.ENTERPRISE_A,
+                sub=local_seed.ADMIN_SUB,
+            ) as session:
+                loaded = await load_units_for_version(
+                    session,
+                    enterprise_id=local_seed.ENTERPRISE_A,
+                    knowledge_scope_id=scope_id,
+                    document_version_id=version_id,
+                )
+                fingerprints.extend(_unit_fingerprint(unit) for unit in loaded)
+                await session.rollback()
+        _enter_internal_operation("DB_SNAPSHOT_EXIT")
+        return tuple(sorted(fingerprints))
+    except MaterialRagVerifyError:
+        raise
+    except BaseException as error:
+        mapped = None
+        for current_error in _unwrap_internal_errors(error):
+            mapped = _classify_db_error(current_error)
+            if mapped is not None:
+                break
+        if mapped is None:
+            raise
+        sqlstate = _safe_sqlstate(error)
+        current = _INTERNAL_OPERATION.get()
+        if current == "DB_SNAPSHOT_LOAD":
+            _INDEX_EVIDENCE.record("SNAPSHOT_LOAD", finish_sqlstate=sqlstate)
+            _fail_index("SNAPSHOT_LOAD")
+        if current == "DB_SNAPSHOT_EXIT":
+            _INDEX_EVIDENCE.record("SNAPSHOT_EXIT", finish_sqlstate=sqlstate)
+            _fail_index("SNAPSHOT_EXIT")
+        _INDEX_EVIDENCE.record("SNAPSHOT_OPEN", finish_sqlstate=sqlstate)
+        _fail_index("SNAPSHOT_OPEN")
+    finally:
+        _INTERNAL_OPERATION.reset(operation_token)
 
 
 async def _action_job_count(scope_id: uuid.UUID, action: str) -> int:
+    _enter_internal_operation("JOB_ROW")
     from infra.f1 import local_seed
     from sqlalchemy import text
     from platform_foundation.f1.database import session_scope
@@ -2191,21 +3608,20 @@ async def _action_job_count(scope_id: uuid.UUID, action: str) -> int:
 
 
 async def _prove_unit_identity_conflict_rejected(
-    scope_id: uuid.UUID, original: object
+    claim: object,
+    original: object,
+    version_ids: Iterable[uuid.UUID],
 ) -> int:
     """Exercise the real persistence conflict path and prove no row changed."""
 
-    from infra.f1 import local_seed
-    from platform_foundation.f1.database import session_scope
+    from platform_foundation.f1.features.material_rag import worker as material_rag_worker
     from platform_foundation.f1.features.material_rag.contracts import (
         MaterialRagIntegrityError,
         SensitiveText,
     )
-    from platform_foundation.f1.features.material_rag.repository import (
-        persist_canonical_units,
-    )
 
-    before = await _scope_unit_db_snapshot(scope_id)
+    scope_id = claim.knowledge_scope_id  # type: ignore[attr-defined]
+    before = await _scope_unit_db_snapshot(scope_id, version_ids)
     conflict_body = original.body.reveal() + "\nMATERIAL_RAG_BODY_CONFLICT_PROBE"  # type: ignore[attr-defined]
     conflict = replace(
         original,
@@ -2216,23 +3632,23 @@ async def _prove_unit_identity_conflict_rejected(
         conflict.id != original.id  # type: ignore[attr-defined]
         or conflict.body_sha256 == original.body_sha256  # type: ignore[attr-defined]
     ):
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
-    async with session_scope(
-        role="f1_api", enterprise_id=local_seed.ENTERPRISE_A, sub=EMPLOYEE_SUB
-    ) as session:
-        try:
-            await persist_canonical_units(session, (conflict,))
-        except MaterialRagIntegrityError as error:
-            await session.rollback()
-            if str(error) != "MATERIAL_UNIT_IDENTITY_CONFLICT":
-                raise MaterialRagVerifyError(
-                    "LOCAL_MATERIAL_RAG_INDEX_FAILED"
-                ) from None
-        else:
-            await session.rollback()
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
-    if await _scope_unit_db_snapshot(scope_id) != before:
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        _fail_index("CONFLICT_IDENTITY")
+    persist_canonical_units = material_rag_worker.persist_canonical_units
+    with material_rag_worker.live_scope_job_lock(claim):
+        with material_rag_worker.live_source_mutation_fence(claim):
+            async with material_rag_worker.claimed_session(claim) as session:
+                _enter_internal_operation("PERSIST_UNITS")
+                try:
+                    await persist_canonical_units(session, (conflict,))
+                except MaterialRagIntegrityError as error:
+                    await session.rollback()
+                    if str(error) != "MATERIAL_UNIT_IDENTITY_CONFLICT":
+                        _fail_index("CONFLICT_PERSIST")
+                else:
+                    await session.rollback()
+                    _fail_index("CONFLICT_ACCEPTED")
+    if await _scope_unit_db_snapshot(scope_id, version_ids) != before:
+        _fail_index("CONFLICT_MUTATED")
     return 1
 
 
@@ -2305,6 +3721,7 @@ async def _stable_egress_audit(*, require_traffic: bool) -> dict[str, int]:
     The relay commits counters around each upstream embedding call.  A short
     stable window is part of the no-egress assertion for empty scopes.
     """
+    _enter_internal_operation("EGRESS_AUDIT")
     previous: dict[str, int] | None = None
     stable_samples = 0
     for _ in range(60):
@@ -2357,13 +3774,39 @@ def _read_regular_unhashed(path: Path, *, maximum_bytes: int) -> bytes:
     return body
 
 
+def _chunk_detail_content(detail: object) -> str | None:
+    if not isinstance(detail, dict):
+        return None
+    candidates: list[object] = [detail]
+    nested = detail.get("chunk")
+    if isinstance(nested, dict):
+        candidates.append(nested)
+    for item in candidates:
+        for key in ("content", "content_with_weight"):
+            value = item.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
+def _chunk_detail_tags(detail: object, failure_reason: str) -> dict[str, str]:
+    if not isinstance(detail, dict):
+        _fail_fixed(failure_reason, "REMOTE_TAGS")
+    raw = detail.get("tag_kwd")
+    if raw in (None, [], ""):
+        nested = detail.get("chunk")
+        if isinstance(nested, dict):
+            raw = nested.get("tag_kwd")
+    return _strict_remote_tags(raw, failure_reason)
+
+
 def _strict_remote_tags(value: object, failure_reason: str) -> dict[str, str]:
     raw_tags = value if isinstance(value, list) else [value] if value else []
     result: dict[str, str] = {}
     for raw in raw_tags:
         key, separator, item = str(raw).partition("=")
         if not separator or not key or key in result:
-            raise MaterialRagVerifyError(failure_reason)
+            _fail_fixed(failure_reason, "REMOTE_TAGS")
         result[key] = item
     if set(result) != {
         "canonical_unit_id",
@@ -2374,7 +3817,7 @@ def _strict_remote_tags(value: object, failure_reason: str) -> dict[str, str]:
         "page_number",
         "body_sha256",
     }:
-        raise MaterialRagVerifyError(failure_reason)
+        _fail_fixed(failure_reason, "REMOTE_TAGS")
     return result
 
 
@@ -2387,6 +3830,7 @@ async def _remote_snapshot(
 ) -> RemoteScopeSnapshot:
     """Hydrate and reconcile every remote dataset/document/chunk identity."""
 
+    _enter_internal_operation("REMOTE_SNAPSHOT")
     from infra.f1 import local_seed
     from platform_foundation.f0j1.ragflow_client import RagFlowClient
     from platform_foundation.f1.config import ragflow_base_url
@@ -2414,7 +3858,7 @@ async def _remote_snapshot(
         }
     target_binding = bindings.get(target_scope_id)
     if target_binding is None:
-        raise MaterialRagVerifyError(failure_reason)
+        _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
 
     def inspect() -> RemoteScopeSnapshot:
         client = RagFlowClient(base_url=ragflow_base_url())
@@ -2428,7 +3872,7 @@ async def _remote_snapshot(
         if knowledge_scope_id is None and set(expected_datasets) != {
             f"f1-material-{setup.client_a_scope_id.hex}"
         }:
-            raise MaterialRagVerifyError(failure_reason)
+            _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
         actual_datasets = {
             str(item.get("name") or ""): str(item.get("id") or "")
             for item in datasets
@@ -2454,17 +3898,17 @@ async def _remote_snapshot(
                 for unit in units
             }
             if len(source_sha256_values) != 1:
-                raise MaterialRagVerifyError(failure_reason)
+                _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
             document_name = remote_document_name(source_sha256_values.pop())
             if document_name in expected_documents:
-                raise MaterialRagVerifyError(failure_reason)
+                _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
             expected_documents[document_name] = version_id
         document_names = [str(item.get("name") or "") for item in documents]
         if (
             len(set(document_names)) != len(documents)
             or set(document_names) != set(expected_documents)
         ):
-            raise MaterialRagVerifyError(failure_reason)
+            _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
         snapshots: list[RemoteDocumentSnapshot] = []
         remote_document_ids: set[str] = set()
         remote_chunk_ids: set[str] = set()
@@ -2473,7 +3917,7 @@ async def _remote_snapshot(
             document_name = str(document.get("name") or "")
             document_id = str(document.get("id") or "")
             if not document_id or document_id in remote_document_ids:
-                raise MaterialRagVerifyError(failure_reason)
+                _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
             remote_document_ids.add(document_id)
             version_id = expected_documents[document_name]
             expected_units = {
@@ -2481,7 +3925,7 @@ async def _remote_snapshot(
                 for unit in expected_by_version[version_id]
             }
             if len(expected_units) != len(expected_by_version[version_id]):
-                raise MaterialRagVerifyError(failure_reason)
+                _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
             chunk_snapshots: list[RemoteChunkSnapshot] = []
             listed_chunks = client.list_chunks(
                 token, target_binding.dataset_ref, document_id
@@ -2489,18 +3933,24 @@ async def _remote_snapshot(
             for listed in listed_chunks:
                 chunk_id = str(listed.get("id") or listed.get("chunk_id") or "")
                 if not chunk_id or chunk_id in remote_chunk_ids:
-                    raise MaterialRagVerifyError(failure_reason)
+                    _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
                 remote_chunk_ids.add(chunk_id)
                 detail = client.get_chunk(
                     token, target_binding.dataset_ref, document_id, chunk_id
                 )
                 detail_id = str(detail.get("id") or detail.get("chunk_id") or "")
                 if detail_id and detail_id != chunk_id:
-                    raise MaterialRagVerifyError(failure_reason)
-                tags = _strict_remote_tags(detail.get("tag_kwd"), failure_reason)
-                content = detail.get("content")
+                    nested = detail.get("chunk")
+                    if isinstance(nested, dict):
+                        detail_id = str(
+                            nested.get("id") or nested.get("chunk_id") or ""
+                        )
+                if detail_id and detail_id != chunk_id:
+                    _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
+                tags = _chunk_detail_tags(detail, failure_reason)
+                content = _chunk_detail_content(detail)
                 if not isinstance(content, str) or not content:
-                    raise MaterialRagVerifyError(failure_reason)
+                    _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
                 content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
                 try:
                     snapshot = RemoteChunkSnapshot(
@@ -2515,9 +3965,11 @@ async def _remote_snapshot(
                         content_sha256=content_sha256,
                     )
                 except (TypeError, ValueError):
-                    raise MaterialRagVerifyError(
-                        failure_reason
-                    ) from None
+                    if failure_reason == "LOCAL_MATERIAL_RAG_INDEX_FAILED":
+                        _INDEX_EVIDENCE.record("REMOTE_SNAPSHOT")
+                    elif failure_reason == "LOCAL_MATERIAL_RAG_REBUILD_FAILED":
+                        _REBUILD_EVIDENCE.record("REMOTE_SNAPSHOT")
+                    raise MaterialRagVerifyError(failure_reason) from None
                 expected = expected_units.get(snapshot.canonical_unit_id)
                 if (
                     expected is None
@@ -2537,13 +3989,13 @@ async def _remote_snapshot(
                     != expected.body_sha256  # type: ignore[attr-defined]
                     or snapshot.content_sha256 != snapshot.body_sha256
                 ):
-                    raise MaterialRagVerifyError(failure_reason)
+                    _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
                 seen_unit_ids.add(snapshot.canonical_unit_id)
                 chunk_snapshots.append(snapshot)
             if {item.canonical_unit_id for item in chunk_snapshots} != set(
                 expected_units
             ):
-                raise MaterialRagVerifyError(failure_reason)
+                _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
             snapshots.append(
                 RemoteDocumentSnapshot(
                     remote_document_id=document_id,
@@ -2562,7 +4014,7 @@ async def _remote_snapshot(
             for unit in units
         }
         if seen_unit_ids != expected_unit_ids:
-            raise MaterialRagVerifyError(failure_reason)
+            _fail_fixed(failure_reason, "REMOTE_SNAPSHOT")
         return RemoteScopeSnapshot(
             dataset_ref=target_binding.dataset_ref,
             dataset_name=expected_name,
@@ -2576,6 +4028,7 @@ async def _final_scope_residue(
     setup: ProductSetup, *, deleted_dataset_refs: frozenset[str]
 ) -> tuple[int, int, int]:
     """Inspect remote datasets and local binding secrets before stack teardown."""
+    _enter_internal_operation("FINAL_RESIDUE")
     from infra.f1 import local_seed
     from sqlalchemy import text
     from platform_foundation.f0j1.ragflow_client import RagFlowClient
@@ -2641,6 +4094,7 @@ async def _final_scope_residue(
 async def _rls_visible_counts(
     *, enterprise_id: uuid.UUID, sub: str, scope_id: uuid.UUID
 ) -> tuple[int, int, int]:
+    _enter_internal_operation("RLS_CHECK")
     from sqlalchemy import text
     from platform_foundation.f1.database import session_scope
 
@@ -2667,6 +4121,7 @@ async def _rls_visible_counts(
 async def _verify_rls(
     setup: ProductSetup, unit_count: int, *, job_count: int = 4
 ) -> None:
+    _enter_internal_operation("RLS_CHECK")
     from infra.f1 import local_seed
 
     admin = await _rls_visible_counts(
@@ -2707,6 +4162,8 @@ async def _verify_rls(
 async def _process_jobs(
     fixtures: tuple[FixtureDocument, ...], setup: ProductSetup
 ) -> RagRun:
+    _enter_internal_phase("PJ_IMPORT_INIT")
+    _enter_internal_operation("IMPORTS")
     from infra.f1 import local_seed
     from platform_foundation.f1.auth import Tenant
     from platform_foundation.f1.features.material_rag.contracts import (
@@ -2736,6 +4193,7 @@ async def _process_jobs(
         run_verified_retrieval,
         verify_remote_candidates,
     )
+    from platform_foundation.f1.features.material_rag import worker as material_rag_worker
     from platform_foundation.f1.features.material_rag.worker import process_demo_job
     from platform_foundation.f1.qa_service import (
         QaResult,
@@ -2748,6 +4206,105 @@ async def _process_jobs(
         reserve_request,
     )
     from cryptography.exceptions import InvalidTag
+
+    _enqueue_job = enqueue_job
+    _process_demo_job = process_demo_job
+    _process_claimed_demo_job = material_rag_worker.process_claimed_demo_job
+    _claim_demo_job = material_rag_worker.claim_demo_job
+    _claimed_session = material_rag_worker.claimed_session
+    _live_scope_job_lock = material_rag_worker.live_scope_job_lock
+    _live_source_mutation_fence = material_rag_worker.live_source_mutation_fence
+    _persist_canonical_units = material_rag_worker.persist_canonical_units
+    _derive_retrieval_context = derive_retrieval_context
+    _reserve_request = reserve_request
+    _complete_request = complete_request
+    _encrypt_impl = _encrypt
+    _decrypt_impl = _decrypt
+    _retrieve_authorized_demo_fragment = retrieve_authorized_demo_fragment
+    _retrieve_registered_verifier_query = retrieve_registered_verifier_query
+    _run_verified_retrieval = run_verified_retrieval
+    _verify_remote_candidates = verify_remote_candidates
+
+    async def enqueue_job(*args, **kwargs):
+        _enter_internal_operation("ENQUEUE_JOB")
+        return await _enqueue_job(*args, **kwargs)
+
+    async def process_demo_job(*args, **kwargs):
+        _enter_internal_operation("PROCESS_DEMO_JOB")
+        return await _process_demo_job(*args, **kwargs)
+
+    async def process_claimed_demo_job(*args, **kwargs):
+        _enter_internal_operation("PROCESS_DEMO_JOB")
+        return await _process_claimed_demo_job(*args, **kwargs)
+
+    async def claim_demo_job(*args, **kwargs):
+        _enter_internal_operation("CLAIM_JOB")
+        return await _claim_demo_job(*args, **kwargs)
+
+    @contextlib.asynccontextmanager
+    async def claimed_session(*args, **kwargs):
+        _enter_internal_operation("CLAIMED_SESSION")
+        async with _claimed_session(*args, **kwargs) as session:
+            yield session
+
+    @contextlib.contextmanager
+    def live_scope_job_lock(*args, **kwargs):
+        _enter_internal_operation("SCOPE_LOCK")
+        with _live_scope_job_lock(*args, **kwargs) as locked:
+            yield locked
+
+    @contextlib.contextmanager
+    def live_source_mutation_fence(*args, **kwargs):
+        _enter_internal_operation("MUTATION_FENCE")
+        with _live_source_mutation_fence(*args, **kwargs) as fenced:
+            yield fenced
+
+    async def persist_canonical_units(*args, **kwargs):
+        _enter_internal_operation("PERSIST_UNITS")
+        return await _persist_canonical_units(*args, **kwargs)
+
+    material_rag_worker.claim_demo_job = claim_demo_job
+    material_rag_worker.process_claimed_demo_job = process_claimed_demo_job
+    material_rag_worker.claimed_session = claimed_session
+    material_rag_worker.live_scope_job_lock = live_scope_job_lock
+    material_rag_worker.live_source_mutation_fence = live_source_mutation_fence
+    material_rag_worker.persist_canonical_units = persist_canonical_units
+
+    async def derive_retrieval_context(*args, **kwargs):
+        _enter_internal_operation("CONTEXT_DERIVE")
+        return await _derive_retrieval_context(*args, **kwargs)
+
+    async def reserve_request(*args, **kwargs):
+        _enter_internal_operation("QA_RESERVE")
+        return await _reserve_request(*args, **kwargs)
+
+    async def complete_request(*args, **kwargs):
+        _enter_internal_operation("QA_COMPLETE")
+        return await _complete_request(*args, **kwargs)
+
+    def _encrypt(*args, **kwargs):
+        _enter_internal_operation("CRYPTO_PROBE")
+        return _encrypt_impl(*args, **kwargs)
+
+    def _decrypt(*args, **kwargs):
+        _enter_internal_operation("CRYPTO_PROBE")
+        return _decrypt_impl(*args, **kwargs)
+
+    async def retrieve_authorized_demo_fragment(*args, **kwargs):
+        _enter_internal_operation("RETRIEVAL")
+        return await _retrieve_authorized_demo_fragment(*args, **kwargs)
+
+    async def retrieve_registered_verifier_query(*args, **kwargs):
+        _enter_internal_operation("RETRIEVAL")
+        return await _retrieve_registered_verifier_query(*args, **kwargs)
+
+    async def run_verified_retrieval(*args, **kwargs):
+        _enter_internal_operation("RETRIEVAL")
+        return await _run_verified_retrieval(*args, **kwargs)
+
+    async def verify_remote_candidates(*args, **kwargs):
+        _enter_internal_operation("CANDIDATE_VERIFY")
+        return await _verify_remote_candidates(*args, **kwargs)
 
     fixture_by_sha = {fixture.spec.source_sha256: fixture for fixture in fixtures}
     employee = Tenant(
@@ -2771,6 +4328,7 @@ async def _process_jobs(
     index_manifests: dict[uuid.UUID, str] = {}
     persisted_by_version: dict[uuid.UUID, tuple[object, ...]] = {}
 
+    _enter_internal_phase("PJ_PRIMARY_INDEX")
     for upload in setup.uploads:
         fixture = fixture_by_sha[upload.spec.source_sha256]
         captured: dict[str, tuple[object, ...]] = {}
@@ -2793,10 +4351,12 @@ async def _process_jobs(
             action="index",
             idempotency_key="material-rag-index-v1-" + upload.spec.source_sha256,
         )
-        if not await process_demo_job(
+        processed = await process_demo_job(
             job_id, worker_id="material-rag-verifier", prepare=prepare
-        ):
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        )
+        if not processed:
+            _INDEX_PROCESS_OUTCOME.set(processed)
+            await _raise_index_failed(job_id, "PRIMARY_PROCESS")
         row = await _job_row(job_id)
         units = captured.get("units")
         if (
@@ -2807,20 +4367,21 @@ async def _process_jobs(
             or not isinstance(row["result_manifest_sha256"], str)
             or SHA256_RE.fullmatch(row["result_manifest_sha256"]) is None
         ):
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+            await _raise_index_failed(job_id, "PRIMARY_JOB")
         index_manifests[upload.document_version_id] = row["result_manifest_sha256"]
         persisted = await _load_version_units(upload)
         if (
             tuple(_unit_fingerprint(unit) for unit in persisted)
             != tuple(_unit_fingerprint(unit) for unit in units)
         ):
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+            await _raise_index_failed(job_id, "PRIMARY_FINGERPRINT")
         persisted_by_version[upload.document_version_id] = persisted
 
+    _enter_internal_phase("PJ_PRIMARY_ATTEST")
     unit_count, distinct_count = await _unit_counts(setup.client_a_scope_id)
     expected_unit_count = sum(len(value) for value in persisted_by_version.values())
     if unit_count != expected_unit_count or distinct_count != unit_count:
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        _fail_index("PRIMARY_ATTEST_COUNTS")
     indexed_remote = await _remote_snapshot(
         setup,
         persisted_by_version,
@@ -2831,14 +4392,17 @@ async def _process_jobs(
     provider_documents = 0
     client_b_documents = 0
     if documents != 4 or chunks != unit_count:
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        _fail_index("PRIMARY_ATTEST_REMOTE")
     await _verify_rls(setup, unit_count)
 
     # A distinct durable index job is the real replay boundary.  Reusing the
     # first idempotency key would only return its completed row and would not
     # exercise canonical persistence or RAGFlow reconciliation a second time.
-    pre_replay_db = await _scope_unit_db_snapshot(setup.client_a_scope_id)
+    _enter_internal_phase("PJ_INDEX_REPLAY")
+    known_versions = tuple(sorted(persisted_by_version))
+    pre_replay_db = await _scope_unit_db_snapshot(setup.client_a_scope_id, known_versions)
     index_replay_job_count = 0
+    unit_identity_conflict_rejection_count = 0
     for upload in setup.uploads:
         fixture = fixture_by_sha[upload.spec.source_sha256]
 
@@ -2859,12 +4423,32 @@ async def _process_jobs(
                 "material-rag-index-replay-v1-" + upload.spec.source_sha256
             ),
         )
-        if not await process_demo_job(
+        claim = await claim_demo_job(
             replay_job_id,
             worker_id="material-rag-verifier",
-            prepare=prepare_replay,
-        ):
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        )
+        if claim is None:
+            await _raise_index_failed(
+                replay_job_id, "REPLAY_CLAIM", outcome=claim
+            )
+        units, proof = prepare_replay(claim)
+        if index_replay_job_count == 0:
+            unit_identity_conflict_rejection_count = (
+                await _prove_unit_identity_conflict_rejected(
+                    claim,
+                    persisted_by_version[upload.document_version_id][0],
+                    known_versions,
+                )
+            )
+        processed = await process_claimed_demo_job(
+            claim,
+            units=units,
+            manifest_proof=proof,
+        )
+        if not processed:
+            await _raise_index_failed(
+                replay_job_id, "REPLAY_PROCESS", outcome=processed
+            )
         replay_row = await _job_row(replay_job_id)
         expected_units = persisted_by_version[upload.document_version_id]
         replayed_units = await _load_version_units(upload)
@@ -2876,17 +4460,17 @@ async def _process_jobs(
             != index_manifests[upload.document_version_id]
             or tuple(_unit_fingerprint(unit) for unit in replayed_units)
             != tuple(_unit_fingerprint(unit) for unit in expected_units)
-            or await _scope_unit_db_snapshot(setup.client_a_scope_id)
+            or await _scope_unit_db_snapshot(setup.client_a_scope_id, known_versions)
             != pre_replay_db
         ):
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+            await _raise_index_failed(replay_job_id, "REPLAY_JOB")
         replayed_remote = await _remote_snapshot(
             setup,
             persisted_by_version,
             failure_reason="LOCAL_MATERIAL_RAG_INDEX_FAILED",
         )
         if replayed_remote != indexed_remote:
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+            await _raise_index_failed(replay_job_id, "REPLAY_REMOTE")
         index_replay_job_count += 1
 
     replayed_count, replayed_distinct = await _unit_counts(setup.client_a_scope_id)
@@ -2898,15 +4482,10 @@ async def _process_jobs(
         or duplicate_unit_count != 0
         or index_job_count != 4 + index_replay_job_count
     ):
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        _fail_index("REPLAY_COUNTS")
     await _verify_rls(setup, unit_count, job_count=index_job_count)
-    unit_identity_conflict_rejection_count = (
-        await _prove_unit_identity_conflict_rejected(
-            setup.client_a_scope_id,
-            persisted_by_version[setup.uploads[0].document_version_id][0],
-        )
-    )
 
+    _enter_internal_phase("PJ_CONTEXT_GUARDS")
     client_a_context = await derive_retrieval_context(
         employee, setup.client_a_account_id
     )
@@ -3015,6 +4594,7 @@ async def _process_jobs(
     ):
         raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_AUTHORIZATION_BOUNDARY_FAILED")
 
+    _enter_internal_phase("PJ_SYNTHETIC_INDEX")
     synthetic_by_scope: dict[uuid.UUID, tuple[object, ...]] = {}
     synthetic_index_job_count = 0
     for synthetic in setup.synthetic_documents:
@@ -3046,12 +4626,15 @@ async def _process_jobs(
             action="index",
             idempotency_key=f"material-rag-synthetic-index-v1-{synthetic.label}",
         )
-        if not await process_demo_job(
+        processed = await process_demo_job(
             synthetic_job_id,
             worker_id="material-rag-verifier",
             prepare=prepare_synthetic,
-        ):
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        )
+        if not processed:
+            await _raise_index_failed(
+                synthetic_job_id, "SYNTHETIC_PROCESS", outcome=processed
+            )
         synthetic_row = await _job_row(synthetic_job_id)
         synthetic_units = captured_synthetic.get("units")
         persisted_synthetic = await _load_version_units(synthetic)
@@ -3063,7 +4646,7 @@ async def _process_jobs(
             or tuple(_unit_fingerprint(unit) for unit in persisted_synthetic)
             != tuple(_unit_fingerprint(unit) for unit in synthetic_units)
         ):
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+            await _raise_index_failed(synthetic_job_id, "SYNTHETIC_JOB")
         synthetic_by_scope[synthetic.knowledge_scope_id] = persisted_synthetic
         synthetic_index_job_count += 1
     if (
@@ -3073,15 +4656,16 @@ async def _process_jobs(
         or await _action_job_count(setup.provider_scope_id, "index") != 1
         or await _action_job_count(setup.client_b_scope_id, "index") != 1
     ):
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        _fail_index("SYNTHETIC_COUNTS")
 
+    _enter_internal_phase("PJ_SCOPE_ISOLATION")
     provider_synthetic = setup.synthetic_documents[0]
     client_b_synthetic = setup.synthetic_documents[1]
     if (
         provider_synthetic.knowledge_scope_id != setup.provider_scope_id
         or client_b_synthetic.knowledge_scope_id != setup.client_b_scope_id
     ):
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        _fail_index("SYNTHETIC_SCOPES")
     provider_sibling_snapshot = await _remote_snapshot(
         setup,
         {provider_synthetic.document_version_id: synthetic_by_scope[setup.provider_scope_id]},
@@ -3100,7 +4684,7 @@ async def _process_jobs(
         or client_b_sibling_snapshot.document_count != 1
         or client_b_sibling_snapshot.chunk_count != 1
     ):
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INDEX_FAILED")
+        _fail_index("SYNTHETIC_REMOTE")
     if (
         await _rls_visible_counts(
             enterprise_id=local_seed.ENTERPRISE_A,
@@ -3129,6 +4713,7 @@ async def _process_jobs(
     ):
         raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_RLS_FAILED")
 
+    _enter_internal_phase("PJ_SCOPED_RETRIEVAL")
     provider_scoped_result = await retrieve_registered_verifier_query(
         PROVIDER_RETRIEVAL_QUERY_TEXT,
         admin,
@@ -3167,6 +4752,26 @@ async def _process_jobs(
     client_b_result_ids = {
         evidence.canonical_unit_id for evidence in client_b_scoped_result.evidence
     }
+    scoped_counts = {
+        "provider_hit_count": len(provider_result_ids),
+        "client_a_hit_count": len(client_a_result_ids),
+        "client_b_hit_count": len(client_b_result_ids),
+        "provider_refusal": provider_scoped_result.refusal_reason is not None,
+        "client_a_refusal": client_a_scoped_result.refusal_reason is not None,
+        "client_b_refusal": client_b_scoped_result.refusal_reason is not None,
+        "client_a_overlap": bool(client_a_result_ids & client_a_unit_ids),
+        "cross_ab": bool(client_a_result_ids & client_b_unit_ids),
+        "cross_ba": bool(client_b_result_ids & client_a_unit_ids),
+        "provider_refusal_token": _retrieval_refusal_token(
+            provider_scoped_result.refusal_reason
+        ),
+        "client_a_refusal_token": _retrieval_refusal_token(
+            client_a_scoped_result.refusal_reason
+        ),
+        "client_b_refusal_token": _retrieval_refusal_token(
+            client_b_scoped_result.refusal_reason
+        ),
+    }
     if (
         provider_scoped_result.refusal_reason is not None
         or not provider_unit_ids.issubset(provider_result_ids)
@@ -3180,7 +4785,7 @@ async def _process_jobs(
         or bool(client_a_result_ids & client_b_unit_ids)
         or bool(client_b_result_ids & client_a_unit_ids)
     ):
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_RETRIEVAL_FAILED")
+        _fail_retrieval("SCOPED_SET", **scoped_counts)
     provider_retrieval_hit_count = 1
     client_a_scoped_retrieval_hit_count = 1
     client_b_retrieval_hit_count = 1
@@ -3257,7 +4862,7 @@ async def _process_jobs(
         for unit in units
     }
     if len(expected_evidence) != unit_count:
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_RETRIEVAL_FAILED")
+        _fail_retrieval("EXPECTED_COUNT", **scoped_counts)
     for upload in setup.uploads:
         exact = persisted_by_version[upload.document_version_id][0]
         result = None
@@ -3274,12 +4879,22 @@ async def _process_jobs(
             if attempt < 5:
                 await asyncio.sleep(3)
         if result is None or not result.evidence or result.refusal_reason is not None:
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_RETRIEVAL_FAILED")
+            _fail_retrieval(
+                "DEMO_FRAGMENT",
+                **scoped_counts,
+                fragment_hit_count=0 if result is None else len(result.evidence),
+                client_a_refusal=result is not None
+                and result.refusal_reason is not None,
+            )
         if not any(
             evidence.canonical_unit_id == exact.id  # type: ignore[attr-defined]
             for evidence in result.evidence
         ):
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_RETRIEVAL_FAILED")
+            _fail_retrieval(
+                "DEMO_FRAGMENT",
+                **scoped_counts,
+                fragment_hit_count=len(result.evidence),
+            )
         for evidence in result.evidence:
             expected = expected_evidence.get(evidence.canonical_unit_id)
             actual = (
@@ -3294,7 +4909,12 @@ async def _process_jobs(
                 evidence.snippet,
             )
             if expected is None or actual != expected:
-                raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_RETRIEVAL_FAILED")
+                _fail_retrieval(
+                    "CITATION_MATCH",
+                    **scoped_counts,
+                    fragment_hit_count=len(result.evidence),
+                    citation_mismatch_count=1,
+                )
         citation_count += len(result.evidence)
 
     audit_after_retrieval = await _stable_egress_audit(require_traffic=True)
@@ -3307,6 +4927,7 @@ async def _process_jobs(
     ):
         raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_EGRESS_AUDIT_FAILED")
 
+    _enter_internal_phase("PJ_REBUILD")
     for upload in setup.uploads:
         fixture = fixture_by_sha[upload.spec.source_sha256]
 
@@ -3325,36 +4946,51 @@ async def _process_jobs(
             action="rebuild",
             idempotency_key="material-rag-rebuild-v1-" + upload.spec.source_sha256,
         )
-        if not await process_demo_job(
+        processed = await process_demo_job(
             job_id, worker_id="material-rag-verifier", prepare=prepare_rebuild
-        ):
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_REBUILD_FAILED")
+        )
+        if not processed:
+            await _fail_rebuild("PROCESS", job_id, outcome=processed)
         row = await _job_row(job_id)
+        manifest_match = (
+            row["result_manifest_sha256"]
+            == index_manifests[upload.document_version_id]
+        )
         if (
             row["status"] != "done"
             or row["action"] != "rebuild"
-            or row["result_manifest_sha256"]
-            != index_manifests[upload.document_version_id]
+            or not manifest_match
         ):
-            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_REBUILD_FAILED")
+            await _fail_rebuild("JOB_ROW", job_id, outcome=processed, manifest_match=manifest_match)
     rebuilt_count, rebuilt_distinct = await _unit_counts(setup.client_a_scope_id)
     rebuilt_remote = await _remote_snapshot(
         setup,
         persisted_by_version,
+        knowledge_scope_id=setup.client_a_scope_id,
         failure_reason="LOCAL_MATERIAL_RAG_REBUILD_FAILED",
     )
     rebuilt_documents = rebuilt_remote.document_count
     rebuilt_chunks = rebuilt_remote.chunk_count
+    fingerprint_match = (
+        rebuilt_remote.semantic_fingerprint()
+        == indexed_remote.semantic_fingerprint()
+    )
+    unit_count_match = rebuilt_count == unit_count and rebuilt_distinct == unit_count
     if (
-        rebuilt_count != unit_count
-        or rebuilt_distinct != unit_count
+        not unit_count_match
         or rebuilt_documents != 4
         or rebuilt_chunks != unit_count
-        or rebuilt_remote.semantic_fingerprint()
-        != indexed_remote.semantic_fingerprint()
+        or not fingerprint_match
     ):
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_REBUILD_FAILED")
+        await _fail_rebuild("FINGERPRINT",
+            document_count=rebuilt_documents,
+            chunk_count=rebuilt_chunks,
+            fingerprint_match=fingerprint_match,
+            manifest_match=True,
+            unit_count_match=unit_count_match,
+        )
 
+    _enter_internal_phase("PJ_DELETE")
     stale = RemoteCandidate(
         canonical_unit_id=query_unit.id,  # type: ignore[attr-defined]
         knowledge_scope_id=query_unit.knowledge_scope_id,  # type: ignore[attr-defined]
@@ -3406,6 +5042,7 @@ async def _process_jobs(
             remaining_remote = await _remote_snapshot(
                 setup,
                 remaining_by_version,
+                knowledge_scope_id=setup.client_a_scope_id,
                 failure_reason="LOCAL_MATERIAL_RAG_DELETE_FAILED",
             )
             remaining_documents = remaining_remote.document_count
@@ -3505,6 +5142,7 @@ async def _process_jobs(
     ):
         raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_DELETE_FAILED")
 
+    _enter_internal_phase("PJ_FINAL_AUDIT")
     final_audit = await _stable_egress_audit(require_traffic=True)
     if (
         final_audit["forwarded_embedding_request_count"] < 1
@@ -3602,12 +5240,29 @@ async def _dispose_engines() -> None:
 async def _run_async(
     fixtures: tuple[FixtureDocument, ...],
 ) -> tuple[ProductSetup, RagRun]:
+    primary: BaseException | None = None
     try:
-        setup = await _setup_and_upload(fixtures)
+        with _internal_phase("SETUP_UPLOAD"):
+            setup = await _setup_and_upload(fixtures)
         rag_run = await _process_jobs(fixtures, setup)
         return setup, rag_run
+    except BaseException as error:
+        primary = error
+        if not isinstance(error, MaterialRagVerifyError):
+            _INTERNAL_EVIDENCE.record(
+                _classify_internal_error(error),
+                _INTERNAL_PHASE.get(),
+                True,
+                source=error,
+            )
+        raise
     finally:
-        await _dispose_engines()
+        try:
+            await _dispose_engines()
+        except BaseException as overlay:
+            kept = _preserve_primary_error(primary, overlay)
+            if primary is None:
+                raise kept from None
 
 
 def _assert_runtime_authorization() -> None:
@@ -3690,25 +5345,30 @@ def _assert_embedding_only_provider_attestation() -> None:
 
 
 def run() -> MaterialRagVerificationCounts:
-    _assert_runtime_authorization()
-    _assert_embedding_only_provider_attestation()
-    plans = _load_fixture_contracts()
-    fixtures = tuple(
-        _parse_fixture(spec, _read_demo_source(spec), plans[spec.line])
-        for spec in FIXTURES
-    )
-    if (
-        sum(len(fixture.pages) for fixture in fixtures) != 136
-        or sum(
-            int(page.ocr_applied)
-            for fixture in fixtures
-            for page in fixture.pages
+    with _internal_phase("ASSERT_RUNTIME"):
+        _assert_runtime_authorization()
+    with _internal_phase("PROVIDER_ATTESTATION"):
+        _assert_embedding_only_provider_attestation()
+    with _internal_phase("LOAD_FIXTURES"):
+        plans = _load_fixture_contracts()
+        fixtures = tuple(
+            _parse_fixture(spec, _read_demo_source(spec), plans[spec.line])
+            for spec in FIXTURES
         )
-        != 6
-    ):
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_FIXTURE_CONTRACT_FAILED")
-    _seed_database()
-    storage, buckets = _activate_storage_namespace()
+        if (
+            sum(len(fixture.pages) for fixture in fixtures) != 136
+            or sum(
+                int(page.ocr_applied)
+                for fixture in fixtures
+                for page in fixture.pages
+            )
+            != 6
+        ):
+            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_FIXTURE_CONTRACT_FAILED")
+    with _internal_phase("SEED_DATABASE"):
+        _seed_database()
+    with _internal_phase("STORAGE_ACTIVATE"):
+        storage, buckets = _activate_storage_namespace()
     pending: MaterialRagVerifyError | None = None
     setup: ProductSetup | None = None
     rag_run: RagRun | None = None
@@ -3716,23 +5376,32 @@ def run() -> MaterialRagVerificationCounts:
         setup, rag_run = asyncio.run(_run_async(fixtures))
     except MaterialRagVerifyError as error:
         pending = error
-    except BaseException:
+    except BaseException as error:
+        _INTERNAL_EVIDENCE.record(
+            _classify_internal_error(error),
+            _INTERNAL_PHASE.get(),
+            True,
+            source=error,
+        )
         pending = MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INTERNAL_ERROR")
     try:
-        _cleanup_storage(storage, buckets)
+        with _internal_phase("STORAGE_CLEANUP"):
+            _cleanup_storage(storage, buckets)
     except MaterialRagVerifyError as error:
-        pending = error
+        if pending is None:
+            pending = error
     if pending is not None:
         raise pending
     if setup is None or rag_run is None:
         raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_INTERNAL_ERROR")
-    final_audit = _egress_audit()
-    if (
-        final_audit["rejected_request_count"] != 0
-        or final_audit["forwarded_embedding_request_count"]
-        != rag_run.forwarded_embedding_request_count
-    ):
-        raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_EGRESS_AUDIT_FAILED")
+    with _internal_phase("FINAL_AUDIT"):
+        final_audit = _egress_audit()
+        if (
+            final_audit["rejected_request_count"] != 0
+            or final_audit["forwarded_embedding_request_count"]
+            != rag_run.forwarded_embedding_request_count
+        ):
+            raise MaterialRagVerifyError("LOCAL_MATERIAL_RAG_EGRESS_AUDIT_FAILED")
     return MaterialRagVerificationCounts(
         demo_pdf_count=4,
         uploaded_version_count=4,
@@ -3832,21 +5501,48 @@ def main() -> int:
             return 1
         print("LOCAL_MATERIAL_RAG_AUTHORIZATION_OK")
         return 0
+    buffer = _ScannerEvidenceBuffer()
+    _INTERNAL_EVIDENCE.clear()
+    _INDEX_EVIDENCE.clear()
+    _EGRESS_EVIDENCE.clear()
+    _RETRIEVAL_EVIDENCE.clear()
+    _REBUILD_EVIDENCE.clear()
     try:
-        with (
-            contextlib.redirect_stdout(_DiscardText()),
-            contextlib.redirect_stderr(_DiscardText()),
-        ):
-            counts = run()
+        from platform_foundation.f1.features.p3.scanner import scanner_evidence_sink
+    except Exception:
+        _INTERNAL_EVIDENCE.record("IMPORT_ERROR", "IMPORT_SCANNER", True)
+        print("LOCAL_MATERIAL_RAG_INTERNAL_ERROR", file=sys.stderr)
+        _INTERNAL_EVIDENCE.emit_for_reason("LOCAL_MATERIAL_RAG_INTERNAL_ERROR")
+        return 1
+    try:
+        with scanner_evidence_sink(buffer):
+            with (
+                contextlib.redirect_stdout(_DiscardText()),
+                contextlib.redirect_stderr(_DiscardText()),
+            ):
+                counts = run()
     except BaseException as error:
         reason = (
             error.reason
             if isinstance(error, MaterialRagVerifyError)
             else "LOCAL_MATERIAL_RAG_INTERNAL_ERROR"
         )
+        if not isinstance(error, MaterialRagVerifyError):
+            _INTERNAL_EVIDENCE.record(
+                _classify_internal_error(error),
+                _INTERNAL_PHASE.get(),
+                True,
+                source=error,
+            )
         if isinstance(error, MaterialRagVerifyError):
             _print_p3_preview_evidence(error.evidence)
         print(reason, file=sys.stderr)
+        buffer.emit_for_reason(reason)
+        _INTERNAL_EVIDENCE.emit_for_reason(reason)
+        _INDEX_EVIDENCE.emit_for_reason(reason)
+        _EGRESS_EVIDENCE.emit_for_reason(reason)
+        _RETRIEVAL_EVIDENCE.emit_for_reason(reason)
+        _REBUILD_EVIDENCE.emit_for_reason(reason)
         return 1
     print(json.dumps(asdict(counts), sort_keys=True, separators=(",", ":")))
     print("LOCAL_MATERIAL_RAG_VERIFY_OK")
