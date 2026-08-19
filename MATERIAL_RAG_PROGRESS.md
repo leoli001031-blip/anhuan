@@ -1,5 +1,32 @@
 # MATERIAL RAG Progress
 
+## 2026-08-19｜PostgreSQL checkpoint 发布 + 生命周期门｜STARTED
+
+- 目标：先安全发布当前 7 文件 PostgreSQL checkpoint（stacked draft PR），再用真实 worker/repository 完成任务生命周期与已知 job_id 重投恢复门，并只产出下一轮 backup/restore 设计。
+- 顺序：任务0 核基线 → 任务1 精确 stage 七路径 commit/push/draft PR（不重跑 97/Docker）→ 任务2 红→绿生命周期 → 任务3 已知 ID 重投 → 任务4 设计文档。后续生命周期改动留本地 dirty，不再 commit/push。
+- 最大风险：lease/source fence 或远端失败时本地提前删除；误动冻结的 f1_0015/RLS/默认 backup。
+- 预算：6 小时、最多 4 个专属 Docker 周期、20 条目标检查、8 个最小修改批。隔离与租约安全优先。
+- 开工核：branch=`codex/material-rag-postgres-integration`；HEAD=`c58ef92bde3086e26cbd119bbbb4debe6f7eb905`；远端仅 `codex/material-rag-scanner-protocol@c58ef92`；PR #1 为 `main <- codex/material-rag-scanner-protocol` draft。本会话初工作树被还原到 HEAD、3 新文件缺失；已从冻结 `worktree.patch` 恢复为 4M+3??，未重跑已过 97 门。专属 C/V/N=0。建议替换：无。
+
+## 2026-08-19｜真实 PostgreSQL 后端集成门｜PASSED
+
+- 工作仓：clean clone。HEAD=`c58ef92bde3086e26cbd119bbbb4debe6f7eb905`。branch=`codex/material-rag-postgres-integration`。未碰旧 recovery dirty checkout。本检查点已获 commit/push/draft PR 授权，OID/PR 以 GitHub 为准。未读 Ark secret。
+- 最窄栈：compose 只含 `secret-init` + `postgres`；宿主跑 f1_0015 migrator/seed 与 unittest。fake 仅 remote transport。未启动完整 `material-rag-verify`。未改 `scripts/localctl`。未改 `ports.py`/`service.py`/`repository.py`/`contracts.py`。
+- 红：`tests.test_material_rag_postgres_integration` 先 `Ran 1 / FAILED (errors=1)`（harness 未落地），栈健康后 `Ran 8 tests / FAILED (failures=3)`（conflict 测试在首次 retrieve 之后才 derive context，把合法 +2 IO 误算成副作用）。一跳：把 derive 移到首次 retrieve 之前。未改生产代码。
+- 绿未单独重跑 integration-only（避免第 4 个 Docker 周期）。合并门一次：`Ran 97 tests in 8.998s / OK`，failures/errors/skipped=0。`git diff --check=0`。
+- clean-clone：基线 `c58ef92` + 当前 patch，同一合并门一次 `Ran 97 tests in 8.877s / OK`。
+- 三个专属 Docker 周期均 `COMPOSE_DOWN` 后 C/V/N=0、控制目录=0、共享 fingerprint 逐字节等于开工 before `f08864aa2b34d9ddc9f98f114590a0a8b58eeba0e7c5c7a989adf45881b0d065`（C=15 V=9 N=1，全部 exited）。
+- 现役：`BACKEND_POSTGRES_REPOSITORY_INTEGRATION_PASSED / BACKEND_RLS_SCOPE_ISOLATION_PASSED / BACKEND_TRANSACTION_RECOVERY_PASSED / BACKEND_RUNTIME_CHECKPOINT_READY / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_TESTED / NOT_PRODUCTION`。未写 `UAT_PASSED` / `RELEASE_VERIFIED` / production。
+
+## 2026-08-19｜真实 PostgreSQL 后端集成门｜STARTED
+
+- 工作仓：clean clone。HEAD=`c58ef92bde3086e26cbd119bbbb4debe6f7eb905`。branch=`codex/material-rag-postgres-integration`。工作树开工 clean。未碰旧 recovery dirty checkout。未 commit/push。
+- 远端基线：`origin/codex/material-rag-scanner-protocol` 同 commit。未读 Ark secret。现役 live retrieval 只记 `LIVE_RETRIEVAL_UAT_DEFERRED / NOT_TESTED`。
+- 任务0：无并发 backend integration/UAT/verify。专属 C/V/N=0。共享 `anhuan-f1` canonical before fingerprint SHA256=`f08864aa2b34d9ddc9f98f114590a0a8b58eeba0e7c5c7a989adf45881b0d065`（C=15 V=9 N=1，全部 exited）。
+- 选定最窄专属运行方式（写入后再启动）：compose 只含 `secret-init` + `postgres`；宿主跑 `infra/f1/material-rag/migrate.py`（f1_0015）与 `seed.py`；unittest 在宿主 venv。fake 仅 transport。不启动完整 `material-rag-verify`，不依赖 Demo PDF/Ark/共享栈。不改 `scripts/localctl`。
+- 命令闭集：compose `infra/f1/docker-compose.material-rag-postgres-integration.yml`（secret-init + postgres）；宿主 migrate/seed；unittest `tests.test_material_rag_postgres_integration`；cleanup `compose down --volumes --remove-orphans` 后确认专属 C/V/N=0。
+- 当时目标标签尚未写入。保持 `HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_TESTED / NOT_PRODUCTION`。
+
 ## 2026-08-19｜发布与 Ark 边界｜AUTHORIZED
 
 - 用户已授权将本后端检查点提交并推送 GitHub；具体 commit/PR 以 GitHub 为准，不部署、不写生产。
