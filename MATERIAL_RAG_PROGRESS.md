@@ -1,5 +1,51 @@
 # MATERIAL RAG Progress
 
+## 2026-08-19｜stale 本地零写 + restore 维护原语｜PASSED
+
+- 现役：`BACKEND_JOB_LIFECYCLE_INTEGRATION_PASSED / BACKEND_LEASE_FENCE_PASSED / BACKEND_REBUILD_DELETE_RESIDUAL_PASSED / KNOWN_ID_JOB_REDELIVERY_RECOVERY_PASSED / MATERIAL_RAG_BACKUP_RESTORE_DESIGN_READY / BACKUP_RESTORE_RUNTIME_NOT_IMPLEMENTED / BACKEND_CHECKPOINT_READY / NOT_PRODUCTION`。未写 `UAT_PASSED` / `RELEASE_VERIFIED`。未 commit/push、未更新 PR #2。
+- 红：`MATERIAL_RAG_PGINT_CYCLE=restore-red-v1` `Ran 17 tests in 146.451s / FAILED (failures=1, errors=2)`。主缺口：`restore_maintenance_clear_lifecycle` 缺失。伴随：illegal 留下 maintain 远端 dataset，旧 `index_rebuild` 断言 `datasets==0` 失败；live lease 使 tearDown residual 失败。旧 raw `RAW_RED_GREEN_OUTPUT_NOT_CAPTURED` / `HARDENING_CYCLE_EVIDENCE_OVERWRITTEN` 仍不伪造。
+- 一跳：illegal 末尾走合法 `delete` 清远端（不放宽旧断言）；harness 单事务 DELETE jobs→DELETE units→binding 清密文落 `deleted`。禁止非终态 UPDATE failed。
+- 绿：`restore-green-v1` `Ran 17 tests in 146.760s / OK`，skipped=0，exit=0。合并：`restore-merge-v1` `Ran 106 tests in 147.901s / OK`，skipped=0，exit=0。打印 `LOCAL_MATERIAL_RAG_JOB_RECOVERY_OK` 但不单独当绿。`git diff --check=0`。
+- 建议替换：lease 到期仍墙钟等待，不 SQL 拨 `lease_until`。cycle 证据改为存在即拒（`CYCLE_EVIDENCE_EXISTS`），避免复用覆盖。
+- 预算：专属 Docker 3/3；C/V/N=0；共享 fingerprint 不变。生产三文件零 diff。证据包 `material-rag-backup-design-hardening-20260819-v1`。
+
+## 2026-08-19｜stale 本地零写 + restore 维护原语｜STARTED
+
+- 目标：stale claim 对本地库也零写；backup/restore 离线维护符合 f1_0015 trigger；只到 `BACKEND_CHECKPOINT_READY`。不 commit/push、不更新 PR #2。
+- 顺序：任务0 核基线并降 backup 标签 → 先补断言取红 → harness-only 维护转绿 → 合并门。
+- 最大风险：DELETE 维护撞 RLS/权限/trigger；stale 本地 snapshot 暴露生产写。只记 blocker，不改生产。
+- 预算：最多 3 个专属 Docker，cycle=`restore-red-v1` / `restore-green-v1` / `restore-merge-v1`，不复用覆盖。
+- 开工核：branch=`codex/material-rag-postgres-integration`；HEAD=`0a094e27ede877a4661aa1dbaa03846404ac567d`；6M+1??、staged=0、`git diff --check=0`；生产三文件零 diff；PR #2 draft；hardening MANIFEST sha=`d97b8f0b60d60148158e454702c25d7ac3c99d1f24c55db066ebc9c79ef7eac3`。
+- 历史 `RAW_RED_GREEN_OUTPUT_NOT_CAPTURED` / `HARDENING_CYCLE_EVIDENCE_OVERWRITTEN` 保留，不伪造补齐。现役 backup 先降为 `BACKUP_RESTORE_DESIGN_NEEDS_REVISION`。建议替换：无。
+
+## 2026-08-19｜生命周期证据门加固｜PASSED
+
+- 现役恢复：`BACKEND_JOB_LIFECYCLE_INTEGRATION_PASSED / BACKEND_LEASE_FENCE_PASSED / BACKEND_REBUILD_DELETE_RESIDUAL_PASSED / KNOWN_ID_JOB_REDELIVERY_RECOVERY_PASSED / BACKUP_RESTORE_DESIGN_READY / NOT_PRODUCTION`。另写 `MATERIAL_RAG_BACKUP_RESTORE_DESIGN_READY / BACKUP_RESTORE_RUNTIME_NOT_IMPLEMENTED`。未写 `UAT_PASSED` / `RELEASE_VERIFIED`。未 commit/push、未更新 PR #2。
+- 红：`MATERIAL_RAG_PGINT_CYCLE=hardening-lifecycle` `Ran 15 tests in 85.696s / FAILED (failures=2)`。`create_dataset_commit_then_drop` 未落库即返回 `SUCCESS`；`orphan_unit` 硬编码 0。旧 raw `RAW_RED_GREEN_OUTPUT_NOT_CAPTURED`。
+- 中红：补 fake/SQL 后一次 `Ran 15 / FAILED (failures=1, errors=1)`：检索夹具 `stale` 全局被算 orphan。一跳：residual 的 unit/binding 门改按 lifecycle scope 计数。
+- 绿：同一命令 `Ran 15 tests in 84.775s / OK`，skipped=0。合并门 `Ran 104 tests in 86.438s / OK`（>101）。`git diff --check=0`。打印 `LOCAL_MATERIAL_RAG_JOB_RECOVERY_OK`。
+- 建议替换：① unit trigger 禁止 bootstrap 插入非法 unit，改用同一事务 `UPDATE upload_task.content_sha256` 使已有 unit 与上游 source 脱钩后 rollback；② residual 的 orphan/provisioning/deleted-secrets 限定 lifecycle scopes，因同一库检索夹具 `stale` 故意 source 脱钩；idle/live_lease 仍全局；③ lease 到期仍墙钟等待，不 SQL 拨 lease。
+- 预算：专属 Docker 4/4；C/V/N=0；共享 fingerprint 不变。生产三文件零 diff。证据包 `material-rag-job-lifecycle-hardening-20260819-v1`。
+
+## 2026-08-19｜生命周期证据门加固｜STARTED
+
+- 目标：封远端 rebuild/delete、stale lease、真实 residual、restore 设计顺序四类假绿；不改生产、不 restore、不更新 PR #2。
+- 顺序：任务0 核基线并降级 → 先补断言取红 → 只改 fake/harness 转绿 → 修设计 → 合并门 >101。
+- 最大风险：新断言暴露生产缺陷（本轮只记 blocker 不修）；误覆盖旧证据包。
+- 预算：4 小时、4 个专属 Docker、12 条目标检查、5 个最小修改批。证据真实优先。
+- 开工核：branch=`codex/material-rag-postgres-integration`；HEAD=`0a094e27ede877a4661aa1dbaa03846404ac567d`；6M+1??、staged=0、`git diff --check=0`；生产三文件零 diff；PR #2 draft、base=`codex/material-rag-scanner-protocol`。旧 raw 记 `RAW_RED_GREEN_OUTPUT_NOT_CAPTURED`。建议替换：无。
+- 现役先降为：`TARGETED_TEST_PASSED / BACKEND_JOB_LIFECYCLE_EVIDENCE_INCOMPLETE / KNOWN_ID_JOB_REDELIVERY_RECOVERY_PASSED / BACKUP_RESTORE_DESIGN_NEEDS_REVISION / NOT_PRODUCTION`。
+
+## 2026-08-19｜生命周期 / 已知ID重投 / backup 设计｜PASSED
+
+- 目标已达：`BACKEND_JOB_LIFECYCLE_INTEGRATION_PASSED / BACKEND_LEASE_FENCE_PASSED / BACKEND_REBUILD_DELETE_RESIDUAL_PASSED / KNOWN_ID_JOB_REDELIVERY_RECOVERY_PASSED / BACKUP_RESTORE_DESIGN_READY / NOT_PRODUCTION`。另写 `MATERIAL_RAG_BACKUP_RESTORE_DESIGN_READY / BACKUP_RESTORE_RUNTIME_NOT_IMPLEMENTED`。未写 `UAT_PASSED` / `RELEASE_VERIFIED` / production。未二次 commit/push。
+- 任务1（已过门，不重做）：HEAD=`0a094e27ede877a4661aa1dbaa03846404ac567d`，draft PR #2 base=`codex/material-rag-scanner-protocol` head=`codex/material-rag-postgres-integration`。PR #1 未动。
+- 任务2红：周期1 `Ran 8 / FAILED (errors=1)`（测试 `setUpClass` 误用 `cls.assertIsNotNone`，非生产缺陷）。周期2 `Ran 12 / FAILED (failures=2)`：rebuild 快照取在 enqueue 之后故 `manifest_sha=None`；provision 与 recovery 共用 tenant B scope 以致 `create_dataset` 被跳过返回 `SUCCESS`。
+- 任务2/3绿：周期3同一命令 `Ran 12 tests in 54.706s / OK`，skipped=0，打印 `LOCAL_MATERIAL_RAG_JOB_RECOVERY_OK`。周期4合并门 `Ran 101 tests in 55.392s / OK`（>97，skipped=0）。`git diff --check=0`。
+- 真实路径：`enqueue_job → claim_job → process_claimed_demo_job → finish_job`；PostgreSQL 18.3、f1_0015、session_scope、RLS、trigger、advisory lock、加密 unit、manifest、lease/source fence。fake 仅 `RagFlowClient._request` 与 `redis.Redis.from_url`。未 mock worker/repository/session，未改 `worker.py`/`repository.py`/`ragflow_adapter.py`（红灯不是生产缺陷）。
+- 建议替换：`make_retry_due`/`expire_running_lease` 用墙钟等待而非 SQL 拨 `lease_until`/`next_attempt_at`，因 `material_rag_guard_job` 会 `MATERIAL_RAG_JOB_TRANSITION_INVALID`。
+- 预算：专属 Docker 4/4；共享 fingerprint 逐字节不变（cycle json `shared_fingerprint_match=1`，C=15 V=9 N=1）；专属 C/V/N=0。生产三文件未改。后续 dirty 未 commit/push。
+
 ## 2026-08-19｜PostgreSQL checkpoint 发布 + 生命周期门｜STARTED
 
 - 目标：先安全发布当前 7 文件 PostgreSQL checkpoint（stacked draft PR），再用真实 worker/repository 完成任务生命周期与已知 job_id 重投恢复门，并只产出下一轮 backup/restore 设计。

@@ -28,12 +28,20 @@ COMPOSE_FILE = ROOT / "infra/f1/docker-compose.material-rag-postgres-integration
 DOCKER = Path("/Applications/Docker.app/Contents/Resources/bin/docker")
 SCOPE = "material-rag-postgres-integration"
 EVIDENCE_ROOT = Path(
-    "/Users/lichenhao/Desktop/安环项目/artifacts/material-rag-backend-postgres-20260819-v1"
+    "/Users/lichenhao/Desktop/安环项目/artifacts/material-rag-backup-design-hardening-20260819-v1"
 )
 PYTHON = sys.executable
 FIXTURE_NS = uuid.UUID("6c2f8d1e-4a0b-4f33-9c7a-12b9e0d4a8f1")
 BINDING_NS = uuid.UUID("fdc520dc-ffca-4ba3-a875-6ca74754655e")
 PARSER_VERSION = "pgint1"
+
+
+def _iso(value: object) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
 
 
 def _failure_token(blob: bytes, table: tuple[tuple[str, str], ...]) -> str:
@@ -78,6 +86,26 @@ class IntegrationWorld:
     provider_b_context: object
     units: dict[str, UnitSpec]
     leak_tokens: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LifecycleDoc:
+    version_id: uuid.UUID
+    record_id: uuid.UUID
+    task_id: uuid.UUID
+    source_sha256: str
+    scope_id: uuid.UUID
+
+
+@dataclass
+class LifecycleWorld:
+    tenant_a: object
+    tenant_b: object
+    docs: dict[str, LifecycleDoc]
+    bodies: dict[str, str]
+
+    def body_for(self, source_sha256: str) -> str:
+        return self.bodies[source_sha256]
 
 
 def _write_secret(path: Path, value: str) -> None:
@@ -275,6 +303,114 @@ def _free_port() -> int:
     return port
 
 
+async def _insert_lifecycle_document(
+    session,
+    *,
+    tenant,
+    actor_id: uuid.UUID,
+    scope_id: uuid.UUID,
+    label: str,
+    source_sha: str,
+    body: str,
+    released: bool,
+    material_kind: str,
+) -> LifecycleDoc:
+    from sqlalchemy import text as sql_text
+
+    source_size = len(body.encode("utf-8"))
+    document_id = uuid.uuid5(FIXTURE_NS, f"life-doc:{label}:{scope_id}")
+    record_id = uuid.uuid5(FIXTURE_NS, f"life-record:{label}:{scope_id}")
+    task_id = uuid.uuid5(FIXTURE_NS, f"life-task:{label}:{scope_id}")
+    version_id = uuid.uuid5(FIXTURE_NS, f"life-version:{label}:{scope_id}")
+    object_key = f"{task_id.hex}.pdf"
+    idempotency_sha = hashlib.sha256(
+        f"material-rag-life-v1\x00{scope_id}\x00{label}".encode("ascii")
+    ).hexdigest()
+    await session.execute(
+        sql_text(
+            "INSERT INTO f1.document (id,enterprise_id,knowledge_scope_id,"
+            "object_key,filename,size,content_type,status) VALUES "
+            "(:id,:enterprise_id,:scope_id,:object_key,:filename,:size,"
+            "'application/pdf','done')"
+        ),
+        {
+            "id": document_id,
+            "enterprise_id": tenant.enterprise_id,
+            "scope_id": scope_id,
+            "object_key": object_key,
+            "filename": f"LIFE_{label.upper()}.pdf",
+            "size": source_size,
+        },
+    )
+    quarantine = "released" if released else "held"
+    released_sql = "statement_timestamp()" if released else "NULL"
+    await session.execute(
+        sql_text(
+            "INSERT INTO f1.upload_task (id,enterprise_id,document_id,object_key,"
+            "content_sha256,status,object_state,source_size,pipeline_kind,"
+            "processing_stage,quarantine_status,scan_verdict,preview_kind,"
+            "preview_status,preview_sha256,preview_unit_count,"
+            "resource_policy_version,released_at) VALUES "
+            f"(:id,:enterprise_id,:document_id,:object_key,:source_sha,'done',"
+            f"'ready',:source_size,'controlled_ingestion','ready',:quarantine,"
+            f"'clean','page_text','ready',:source_sha,1,'p3-v1',{released_sql})"
+        ),
+        {
+            "id": task_id,
+            "enterprise_id": tenant.enterprise_id,
+            "document_id": document_id,
+            "object_key": object_key,
+            "source_sha": source_sha,
+            "source_size": source_size,
+            "quarantine": quarantine,
+        },
+    )
+    await session.execute(
+        sql_text(
+            "INSERT INTO f1.document_record (id,enterprise_id,title,status,"
+            "declared_material_kind,knowledge_scope_id,scope_selection_source,"
+            "scope_selected_by_user_id,scope_selected_at,latest_version_no,"
+            "created_by_user_id) VALUES "
+            "(:id,:enterprise_id,:title,'active',:material_kind,:scope_id,"
+            "'upload_selection',:actor_id,statement_timestamp(),1,:actor_id)"
+        ),
+        {
+            "id": record_id,
+            "enterprise_id": tenant.enterprise_id,
+            "title": f"LIFE_{label.upper()}",
+            "material_kind": material_kind,
+            "scope_id": scope_id,
+            "actor_id": actor_id,
+        },
+    )
+    await session.execute(
+        sql_text(
+            "INSERT INTO f1.document_version (id,enterprise_id,document_record_id,"
+            "version_no,source_document_id,upload_task_id,display_filename,"
+            "idempotency_key_sha256,created_by_user_id) VALUES "
+            "(:id,:enterprise_id,:record_id,1,:source_document_id,:task_id,"
+            ":display_filename,:idempotency_sha,:actor_id)"
+        ),
+        {
+            "id": version_id,
+            "enterprise_id": tenant.enterprise_id,
+            "record_id": record_id,
+            "source_document_id": document_id,
+            "task_id": task_id,
+            "display_filename": f"LIFE_{label.upper()}.pdf",
+            "idempotency_sha": idempotency_sha,
+            "actor_id": actor_id,
+        },
+    )
+    return LifecycleDoc(
+        version_id=version_id,
+        record_id=record_id,
+        task_id=task_id,
+        source_sha256=source_sha,
+        scope_id=scope_id,
+    )
+
+
 class PostgresIntegrationStack:
     def __init__(self) -> None:
         self.run_id = uuid.uuid4().hex
@@ -299,6 +435,7 @@ class PostgresIntegrationStack:
         self.cleanup_status = "NOT_STARTED"
         self.shared_match = 0
         self.dedicated_after = (-1, -1, -1)
+        self.lifecycle_scope_ids: tuple[uuid.UUID, ...] = ()
 
     def _compose_docker_env(self) -> dict[str, str]:
         if self.secrets_dir is None:
@@ -326,6 +463,7 @@ class PostgresIntegrationStack:
                 "KEYCLOAK_URL": "http://material-rag.invalid",
                 "F1_KEYCLOAK_ISSUER_URL": "http://material-rag.invalid/realms/anhuan",
                 "PYTHONPATH": str(ROOT / "src") + os.pathsep + str(ROOT),
+                "F1_PROVIDER_SECRETS_DIR": str(self.secrets_dir),
             }
         )
         env.pop("LOCAL_MATERIAL_RAG_PGINT_SECRETS_DIR", None)
@@ -338,6 +476,7 @@ class PostgresIntegrationStack:
                 "F1_PG_PORT": str(self.host_port),
                 "F1_PG_DATABASE": self.database,
                 "F1_SECRETS_DIR": str(self.secrets_dir or ""),
+                "F1_PROVIDER_SECRETS_DIR": str(self.secrets_dir or ""),
                 "F1_KEYCLOAK_REALM": "anhuan",
                 "KEYCLOAK_URL": "http://material-rag.invalid",
                 "F1_KEYCLOAK_ISSUER_URL": "http://material-rag.invalid/realms/anhuan",
@@ -381,6 +520,7 @@ class PostgresIntegrationStack:
         _write_secret(
             self.secrets_dir / "f1_material_rag_manifest_key", secrets.token_hex(32)
         )
+        _write_secret(self.secrets_dir / "ragflow_api_key", secrets.token_hex(16))
         compose_env = self.control_dir / "compose.env"
         _write_secret(
             compose_env,
@@ -723,17 +863,687 @@ class PostgresIntegrationStack:
             leak_tokens=tuple(refs.values()),
         )
 
-    def idle_in_transaction_count(self) -> int:
-        with psycopg.connect(
+    def _bootstrap(self):
+        return psycopg.connect(
             host="127.0.0.1",
             port=self.host_port,
             dbname=self.database,
             user="f0d_bootstrap",
             password=self.passwords["bootstrap"],
-        ) as connection:
+        )
+
+    def seed_lifecycle_world(self) -> LifecycleWorld:
+        import asyncio
+
+        from infra.f1 import local_seed
+        from platform_foundation.f1.auth import Tenant
+        from platform_foundation.f1.database import session_scope
+        from platform_foundation.f1.features.material_rag.security import (
+            AUTHORIZED_DEMO_SOURCE_SHA256,
+            CLIENT_B_ISOLATION_CANARY_TEXT,
+            PROVIDER_POLICY_CANARY_TEXT,
+        )
+        from platform_foundation.f1.features.p3.service import (
+            _current_user_id,
+            _resolve_knowledge_scope,
+        )
+
+        tenant_a = Tenant(
+            enterprise_id=local_seed.ENTERPRISE_A,
+            sub="db906685-6906-4bc4-9d3a-9011975fd132",
+            roles=("enterprise_admin",),
+            role="enterprise_admin",
+        )
+        tenant_b = Tenant(
+            enterprise_id=local_seed.ENTERPRISE_B,
+            sub="ddc4e27e-ccde-4c89-958f-798fc8f30175",
+            roles=("enterprise_admin",),
+            role="enterprise_admin",
+        )
+        actor_a = local_seed._stable_id("profile", tenant_a.sub)
+        actor_b = local_seed._stable_id("profile", tenant_b.sub)
+        client_a_id = uuid.uuid5(FIXTURE_NS, "life-client-a")
+        client_b_recovery_id = uuid.uuid5(FIXTURE_NS, "life-client-b-recovery")
+        client_b_provision_id = uuid.uuid5(FIXTURE_NS, "life-client-b-provision")
+        client_b_revoke_id = uuid.uuid5(FIXTURE_NS, "life-client-b-revoke")
+        client_b_maintain_id = uuid.uuid5(FIXTURE_NS, "life-client-b-maintain")
+        provider_sha = hashlib.sha256(
+            PROVIDER_POLICY_CANARY_TEXT.encode("utf-8")
+        ).hexdigest()
+        client_sha = hashlib.sha256(
+            CLIENT_B_ISOLATION_CANARY_TEXT.encode("utf-8")
+        ).hexdigest()
+        demo_sha = sorted(AUTHORIZED_DEMO_SOURCE_SHA256)[0]
+        demo_body = "作业前核对隔离边界与许可范围。"
+        maintain_sha = sorted(AUTHORIZED_DEMO_SOURCE_SHA256)[1]
+        maintain_body = "维护演练只清离线任务行，不改生产接口。"
+        unreleased_sha = hashlib.sha256(b"life-unreleased-source").hexdigest()
+        bodies = {
+            provider_sha: PROVIDER_POLICY_CANARY_TEXT,
+            client_sha: CLIENT_B_ISOLATION_CANARY_TEXT,
+            demo_sha: demo_body,
+            maintain_sha: maintain_body,
+        }
+        with self._bootstrap() as connection:
+            replica = connection.execute("SHOW session_replication_role").fetchone()
+            if replica is None or replica[0] != "origin":
+                raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+            connection.execute(
+                "INSERT INTO f1.crm_account "
+                "(id,enterprise_id,display_name,stage,created_by_user_id) "
+                "VALUES (%s,%s,%s,'active',%s),(%s,%s,%s,'active',%s),"
+                "(%s,%s,%s,'active',%s),(%s,%s,%s,'active',%s),"
+                "(%s,%s,%s,'active',%s)",
+                (
+                    client_a_id,
+                    local_seed.ENTERPRISE_A,
+                    "Life Client A",
+                    actor_a,
+                    client_b_recovery_id,
+                    local_seed.ENTERPRISE_B,
+                    "Life Client B Recovery",
+                    actor_b,
+                    client_b_provision_id,
+                    local_seed.ENTERPRISE_B,
+                    "Life Client B Provision",
+                    actor_b,
+                    client_b_revoke_id,
+                    local_seed.ENTERPRISE_B,
+                    "Life Client B Revoke",
+                    actor_b,
+                    client_b_maintain_id,
+                    local_seed.ENTERPRISE_B,
+                    "Life Client B Maintain",
+                    actor_b,
+                ),
+            )
+            connection.commit()
+
+        async def _seed() -> dict[str, LifecycleDoc]:
+            docs: dict[str, LifecycleDoc] = {}
+            async with session_scope(
+                role="f1_api",
+                enterprise_id=tenant_a.enterprise_id,
+                sub=tenant_a.sub,
+            ) as session:
+                actor_id = await _current_user_id(session, tenant_a)
+                scope = await _resolve_knowledge_scope(
+                    session,
+                    tenant_a,
+                    kind="client",
+                    client_account_id=client_a_id,
+                    actor_id=actor_id,
+                )
+                scope_id = scope["id"]
+                docs["sibling_a"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_a,
+                    actor_id=actor_id,
+                    scope_id=scope_id,
+                    label="sibling-a",
+                    source_sha=provider_sha,
+                    body=PROVIDER_POLICY_CANARY_TEXT,
+                    released=True,
+                    material_kind="policy",
+                )
+                docs["sibling_b"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_a,
+                    actor_id=actor_id,
+                    scope_id=scope_id,
+                    label="sibling-b",
+                    source_sha=client_sha,
+                    body=CLIENT_B_ISOLATION_CANARY_TEXT,
+                    released=True,
+                    material_kind="report",
+                )
+                docs["unreleased"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_a,
+                    actor_id=actor_id,
+                    scope_id=scope_id,
+                    label="unreleased",
+                    source_sha=unreleased_sha,
+                    body="未释放材料不得建索引。",
+                    released=False,
+                    material_kind="report",
+                )
+                await session.commit()
+            async with session_scope(
+                role="f1_api",
+                enterprise_id=tenant_b.enterprise_id,
+                sub=tenant_b.sub,
+            ) as session:
+                actor_id = await _current_user_id(session, tenant_b)
+                recovery_scope = await _resolve_knowledge_scope(
+                    session,
+                    tenant_b,
+                    kind="client",
+                    client_account_id=client_b_recovery_id,
+                    actor_id=actor_id,
+                )
+                provision_scope = await _resolve_knowledge_scope(
+                    session,
+                    tenant_b,
+                    kind="client",
+                    client_account_id=client_b_provision_id,
+                    actor_id=actor_id,
+                )
+                revoke_scope = await _resolve_knowledge_scope(
+                    session,
+                    tenant_b,
+                    kind="client",
+                    client_account_id=client_b_revoke_id,
+                    actor_id=actor_id,
+                )
+                maintain_scope = await _resolve_knowledge_scope(
+                    session,
+                    tenant_b,
+                    kind="client",
+                    client_account_id=client_b_maintain_id,
+                    actor_id=actor_id,
+                )
+                docs["recovery"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_b,
+                    actor_id=actor_id,
+                    scope_id=recovery_scope["id"],
+                    label="recovery",
+                    source_sha=provider_sha,
+                    body=PROVIDER_POLICY_CANARY_TEXT,
+                    released=True,
+                    material_kind="policy",
+                )
+                docs["provision"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_b,
+                    actor_id=actor_id,
+                    scope_id=provision_scope["id"],
+                    label="provision",
+                    source_sha=client_sha,
+                    body=CLIENT_B_ISOLATION_CANARY_TEXT,
+                    released=True,
+                    material_kind="report",
+                )
+                docs["revoke"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_b,
+                    actor_id=actor_id,
+                    scope_id=revoke_scope["id"],
+                    label="revoke",
+                    source_sha=demo_sha,
+                    body=demo_body,
+                    released=True,
+                    material_kind="report",
+                )
+                docs["maintain"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_b,
+                    actor_id=actor_id,
+                    scope_id=maintain_scope["id"],
+                    label="maintain",
+                    source_sha=maintain_sha,
+                    body=maintain_body,
+                    released=True,
+                    material_kind="report",
+                )
+                await session.commit()
+            return docs
+
+        docs = asyncio.run(_seed())
+        self.lifecycle_scope_ids = tuple(
+            sorted({doc.scope_id for doc in docs.values()}, key=str)
+        )
+        return LifecycleWorld(
+            tenant_a=tenant_a,
+            tenant_b=tenant_b,
+            docs=docs,
+            bodies=bodies,
+        )
+
+    def lifecycle_snapshot(self, version_id: uuid.UUID) -> dict[str, object]:
+        with self._bootstrap() as connection:
+            unit_rows = connection.execute(
+                "SELECT id::text, body_sha256 FROM f1.material_rag_unit "
+                "WHERE document_version_id=%s ORDER BY id",
+                (version_id,),
+            ).fetchall()
+            job = connection.execute(
+                "SELECT status, result_manifest_sha256 FROM f1.material_rag_job "
+                "WHERE document_version_id=%s ORDER BY created_at DESC, id DESC "
+                "LIMIT 1",
+                (version_id,),
+            ).fetchone()
+            terminals = connection.execute(
+                "SELECT count(*) FROM f1.material_rag_job "
+                "WHERE document_version_id=%s AND status IN ('done','failed')",
+                (version_id,),
+            ).fetchone()
+            scope_id = connection.execute(
+                "SELECT knowledge_scope_id FROM f1.document_version "
+                "JOIN f1.document_record ON document_record.id="
+                "document_version.document_record_id "
+                "AND document_record.enterprise_id=document_version.enterprise_id "
+                "WHERE document_version.id=%s",
+                (version_id,),
+            ).fetchone()
+            binding = None
+            if scope_id is not None:
+                binding = connection.execute(
+                    "SELECT status, "
+                    "(dataset_ref_ciphertext IS NOT NULL OR "
+                    "dataset_ref_sha256 IS NOT NULL OR "
+                    "dataset_ref_aad_sha256 IS NOT NULL)::int AS secrets "
+                    "FROM f1.material_rag_scope_binding "
+                    "WHERE knowledge_scope_id=%s",
+                    (scope_id[0],),
+                ).fetchone()
+        fingerprint = hashlib.sha256(
+            b"\n".join(f"{row[0]}:{row[1]}".encode("ascii") for row in unit_rows)
+        ).hexdigest()
+        return {
+            "unit_count": len(unit_rows),
+            "unit_fingerprint": fingerprint,
+            "manifest_sha": None if job is None else job[1],
+            "job_status": None if job is None else job[0],
+            "terminal_count": int(terminals[0]) if terminals else 0,
+            "binding_status": "absent" if binding is None else binding[0],
+            "binding_secrets": 0 if binding is None else int(binding[1]),
+            "scope_id": None if scope_id is None else scope_id[0],
+        }
+
+    def local_job_world_snapshot(self, version_id: uuid.UUID) -> bytes:
+        with self._bootstrap() as connection:
+            replica = connection.execute("SHOW session_replication_role").fetchone()
+            if replica is None or replica[0] != "origin":
+                raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+            jobs = connection.execute(
+                "SELECT status, attempt, lease_token::text, lease_owner, "
+                "lease_acquired_at, lease_until, next_attempt_at, error_reason, "
+                "result_manifest_sha256, indexed_unit_count, updated_at "
+                "FROM f1.material_rag_job WHERE document_version_id=%s "
+                "ORDER BY id",
+                (version_id,),
+            ).fetchall()
+            unit_rows = connection.execute(
+                "SELECT id::text, body_sha256 FROM f1.material_rag_unit "
+                "WHERE document_version_id=%s ORDER BY id",
+                (version_id,),
+            ).fetchall()
+            scope_id = connection.execute(
+                "SELECT knowledge_scope_id FROM f1.document_version "
+                "JOIN f1.document_record ON document_record.id="
+                "document_version.document_record_id "
+                "AND document_record.enterprise_id=document_version.enterprise_id "
+                "WHERE document_version.id=%s",
+                (version_id,),
+            ).fetchone()
+            binding = None
+            if scope_id is not None:
+                binding = connection.execute(
+                    "SELECT status, "
+                    "(dataset_ref_ciphertext IS NOT NULL)::int + "
+                    "(dataset_ref_sha256 IS NOT NULL)::int + "
+                    "(dataset_ref_aad_sha256 IS NOT NULL)::int "
+                    "FROM f1.material_rag_scope_binding "
+                    "WHERE knowledge_scope_id=%s",
+                    (scope_id[0],),
+                ).fetchone()
+        fingerprint = hashlib.sha256(
+            b"\n".join(f"{row[0]}:{row[1]}".encode("ascii") for row in unit_rows)
+        ).hexdigest()
+        payload = {
+            "binding_secret_fields": 0 if binding is None else int(binding[1]),
+            "binding_status": "absent" if binding is None else binding[0],
+            "jobs": [
+                {
+                    "attempt": int(row[1]),
+                    "error_reason": row[7],
+                    "indexed_unit_count": None if row[9] is None else int(row[9]),
+                    "lease_acquired_at": _iso(row[4]),
+                    "lease_owner": row[3],
+                    "lease_token": row[2],
+                    "lease_until": _iso(row[5]),
+                    "next_attempt_at": _iso(row[6]),
+                    "result_manifest_sha256": row[8],
+                    "status": row[0],
+                    "updated_at": _iso(row[10]),
+                }
+                for row in jobs
+            ],
+            "unit_count": len(unit_rows),
+            "unit_fingerprint": fingerprint,
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+
+    def prove_illegal_job_update_to_failed(
+        self, job_id: uuid.UUID
+    ) -> dict[str, object]:
+        def dump(connection: psycopg.Connection) -> dict[str, object]:
+            row = connection.execute(
+                "SELECT status, attempt, lease_token::text, lease_owner, "
+                "lease_acquired_at, lease_until, next_attempt_at, error_reason, "
+                "result_manifest_sha256, indexed_unit_count, updated_at "
+                "FROM f1.material_rag_job WHERE id=%s",
+                (job_id,),
+            ).fetchone()
+            if row is None:
+                raise HarnessError("JOB_ROW_MISSING")
+            return {
+                "attempt": int(row[1]),
+                "error_reason": row[7],
+                "indexed_unit_count": None if row[9] is None else int(row[9]),
+                "lease_acquired_at": _iso(row[4]),
+                "lease_owner": row[3],
+                "lease_token": row[2],
+                "lease_until": _iso(row[5]),
+                "next_attempt_at": _iso(row[6]),
+                "result_manifest_sha256": row[8],
+                "status": row[0],
+                "updated_at": _iso(row[10]),
+            }
+
+        with self._bootstrap() as connection:
+            replica = connection.execute("SHOW session_replication_role").fetchone()
+            if replica is None or replica[0] != "origin":
+                raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+            identity = connection.execute(
+                "SELECT current_user, session_user"
+            ).fetchone()
+            if identity is None or identity[0] != "f0d_bootstrap" or identity[1] != "f0d_bootstrap":
+                raise HarnessError("BOOTSTRAP_IDENTITY_MISMATCH")
+            before = dump(connection)
+            committed = False
+            sqlstate = ""
+            message = ""
+            try:
+                connection.execute(
+                    "UPDATE f1.material_rag_job SET status='failed', "
+                    "lease_token=NULL, lease_owner=NULL, lease_acquired_at=NULL, "
+                    "lease_until=NULL, next_attempt_at=NULL, "
+                    "error_reason='MATERIAL_RAG_RESTORE_MAINTENANCE', "
+                    "result_manifest_sha256=NULL, indexed_unit_count=NULL "
+                    "WHERE id=%s",
+                    (job_id,),
+                )
+                connection.commit()
+                committed = True
+            except Exception as exc:
+                sqlstate = str(getattr(exc, "sqlstate", "") or "")
+                message = str(exc)
+                connection.rollback()
+            after = dump(connection)
+        return {
+            "after": after,
+            "before": before,
+            "committed": committed,
+            "message": message,
+            "sqlstate": sqlstate,
+        }
+
+    def lifecycle_job_status_summary(self) -> dict[str, int]:
+        if not self.lifecycle_scope_ids:
+            raise HarnessError("LIFECYCLE_SCOPES_MISSING")
+        scopes = list(self.lifecycle_scope_ids)
+        with self._bootstrap() as connection:
+            replica = connection.execute("SHOW session_replication_role").fetchone()
+            if replica is None or replica[0] != "origin":
+                raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+            rows = connection.execute(
+                "SELECT "
+                "count(*) FILTER (WHERE status='queued'), "
+                "count(*) FILTER (WHERE status='retry_wait'), "
+                "count(*) FILTER (WHERE status='done'), "
+                "count(*) FILTER (WHERE status='failed'), "
+                "count(*) FILTER ("
+                "WHERE status='running' AND lease_until > statement_timestamp()"
+                "), "
+                "count(*) FILTER ("
+                "WHERE status='running' AND lease_until <= statement_timestamp()"
+                ") "
+                "FROM f1.material_rag_job WHERE knowledge_scope_id=ANY(%s)",
+                (scopes,),
+            ).fetchone()
+        if rows is None:
+            raise HarnessError("JOB_STATUS_SUMMARY_MISSING")
+        return {
+            "done": int(rows[2]),
+            "failed": int(rows[3]),
+            "queued": int(rows[0]),
+            "retry_wait": int(rows[1]),
+            "running_expired": int(rows[5]),
+            "running_live": int(rows[4]),
+        }
+
+    def lifecycle_row_counts(self) -> dict[str, int]:
+        if not self.lifecycle_scope_ids:
+            raise HarnessError("LIFECYCLE_SCOPES_MISSING")
+        scopes = list(self.lifecycle_scope_ids)
+        with self._bootstrap() as connection:
+            replica = connection.execute("SHOW session_replication_role").fetchone()
+            if replica is None or replica[0] != "origin":
+                raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+            jobs = connection.execute(
+                "SELECT count(*) FROM f1.material_rag_job "
+                "WHERE knowledge_scope_id=ANY(%s)",
+                (scopes,),
+            ).fetchone()
+            units = connection.execute(
+                "SELECT count(*) FROM f1.material_rag_unit "
+                "WHERE knowledge_scope_id=ANY(%s)",
+                (scopes,),
+            ).fetchone()
+            residual = self._residual_sql(connection)
+        return {
+            "deleted_binding_secrets": residual["deleted_binding_secrets"],
+            "job": int(jobs[0]) if jobs else 0,
+            "live_lease": residual["live_lease"],
+            "orphan_unit": residual["orphan_unit"],
+            "provisioning_binding": residual["provisioning_binding"],
+            "unit": int(units[0]) if units else 0,
+        }
+
+    def restore_maintenance_clear_lifecycle(self) -> dict[str, object]:
+        if not self.lifecycle_scope_ids:
+            raise HarnessError("LIFECYCLE_SCOPES_MISSING")
+        scopes = list(self.lifecycle_scope_ids)
+        with self._bootstrap() as connection:
+            replica = connection.execute("SHOW session_replication_role").fetchone()
+            if replica is None or replica[0] != "origin":
+                raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+            identity = connection.execute(
+                "SELECT current_user, session_user, "
+                "current_setting('session_replication_role')"
+            ).fetchone()
+            if (
+                identity is None
+                or identity[0] != "f0d_bootstrap"
+                or identity[1] != "f0d_bootstrap"
+                or identity[2] != "origin"
+            ):
+                raise HarnessError("BOOTSTRAP_IDENTITY_MISMATCH")
+            before_jobs = connection.execute(
+                "SELECT count(*) FROM f1.material_rag_job "
+                "WHERE knowledge_scope_id=ANY(%s)",
+                (scopes,),
+            ).fetchone()
+            before_units = connection.execute(
+                "SELECT count(*) FROM f1.material_rag_unit "
+                "WHERE knowledge_scope_id=ANY(%s)",
+                (scopes,),
+            ).fetchone()
+            before_live = connection.execute(
+                "SELECT count(*) FROM f1.material_rag_job "
+                "WHERE knowledge_scope_id=ANY(%s) AND status='running' "
+                "AND lease_until > statement_timestamp()",
+                (scopes,),
+            ).fetchone()
+            before = {
+                "job": int(before_jobs[0]) if before_jobs else 0,
+                "running_live": int(before_live[0]) if before_live else 0,
+                "unit": int(before_units[0]) if before_units else 0,
+            }
+            connection.execute(
+                "DELETE FROM f1.material_rag_job WHERE knowledge_scope_id=ANY(%s)",
+                (scopes,),
+            )
+            connection.execute(
+                "DELETE FROM f1.material_rag_unit WHERE knowledge_scope_id=ANY(%s)",
+                (scopes,),
+            )
+            connection.execute(
+                "UPDATE f1.material_rag_scope_binding SET "
+                "dataset_ref_ciphertext=NULL, dataset_ref_sha256=NULL, "
+                "dataset_ref_aad_sha256=NULL, status='deleted', "
+                "error_reason=NULL WHERE knowledge_scope_id=ANY(%s)",
+                (scopes,),
+            )
+            connection.commit()
+        return {
+            "before": before,
+            "identity": {
+                "current_user": identity[0],
+                "replication_role": identity[2],
+                "session_user": identity[1],
+            },
+        }
+
+    def revoke_release(self, task_id: uuid.UUID) -> int:
+        with self._bootstrap() as connection:
+            replica = connection.execute("SHOW session_replication_role").fetchone()
+            if replica is None or replica[0] != "origin":
+                raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+            row = connection.execute(
+                "UPDATE f1.upload_task SET quarantine_status='held', "
+                "released_at=NULL, updated_at=statement_timestamp() "
+                "WHERE id=%s AND quarantine_status='released' RETURNING id",
+                (task_id,),
+            ).fetchone()
+            connection.commit()
+        return 0 if row is None else 1
+
+    def make_retry_due(self, job_id: uuid.UUID) -> int:
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline:
+            with self._bootstrap() as connection:
+                row = connection.execute(
+                    "SELECT 1 FROM f1.material_rag_job "
+                    "WHERE id=%s AND status='retry_wait' "
+                    "AND next_attempt_at <= statement_timestamp()",
+                    (job_id,),
+                ).fetchone()
+            if row is not None:
+                return 1
+            time.sleep(0.5)
+        return 0
+
+    def expire_running_lease(self, job_id: uuid.UUID) -> int:
+        deadline = time.monotonic() + 40
+        while time.monotonic() < deadline:
+            with self._bootstrap() as connection:
+                row = connection.execute(
+                    "SELECT 1 FROM f1.material_rag_job "
+                    "WHERE id=%s AND status='running' "
+                    "AND lease_until <= statement_timestamp()",
+                    (job_id,),
+                ).fetchone()
+            if row is not None:
+                return 1
+            time.sleep(0.5)
+        return 0
+
+    def _residual_sql(self, connection) -> dict[str, int]:
+        replica = connection.execute("SHOW session_replication_role").fetchone()
+        if replica is None or replica[0] != "origin":
+            raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+        idle = connection.execute(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE usename IN ('f1_api','f1_worker') "
+            "AND state='idle in transaction'"
+        ).fetchone()
+        live = connection.execute(
+            "SELECT count(*) FROM f1.material_rag_job "
+            "WHERE status='running' AND lease_until > statement_timestamp()"
+        ).fetchone()
+        if not self.lifecycle_scope_ids:
+            raise HarnessError("LIFECYCLE_SCOPES_MISSING")
+        scopes = list(self.lifecycle_scope_ids)
+        provisioning = connection.execute(
+            "SELECT count(*) FROM f1.material_rag_scope_binding "
+            "WHERE status='provisioning' AND knowledge_scope_id=ANY(%s)",
+            (scopes,),
+        ).fetchone()
+        deleted_secrets = connection.execute(
+            "SELECT count(*) FROM f1.material_rag_scope_binding "
+            "WHERE status='deleted' AND knowledge_scope_id=ANY(%s) AND ("
+            "dataset_ref_ciphertext IS NOT NULL OR "
+            "dataset_ref_sha256 IS NOT NULL OR "
+            "dataset_ref_aad_sha256 IS NOT NULL)",
+            (scopes,),
+        ).fetchone()
+        orphan = connection.execute(
+            "SELECT count(*) FROM f1.material_rag_unit AS unit "
+            "WHERE unit.knowledge_scope_id=ANY(%s) AND NOT EXISTS ("
+            "SELECT 1 FROM f1.document_version AS version "
+            "JOIN f1.document_record AS record "
+            "ON record.enterprise_id=version.enterprise_id "
+            "AND record.id=version.document_record_id "
+            "JOIN f1.upload_task AS task "
+            "ON task.enterprise_id=version.enterprise_id "
+            "AND task.id=version.upload_task_id "
+            "WHERE version.enterprise_id=unit.enterprise_id "
+            "AND version.id=unit.document_version_id "
+            "AND version.document_record_id=unit.document_record_id "
+            "AND record.knowledge_scope_id=unit.knowledge_scope_id "
+            "AND record.id=unit.document_record_id "
+            "AND task.content_sha256=unit.source_sha256)",
+            (scopes,),
+        ).fetchone()
+        return {
+            "idle_in_transaction": int(idle[0]) if idle else 0,
+            "live_lease": int(live[0]) if live else 0,
+            "orphan_unit": int(orphan[0]) if orphan else 0,
+            "provisioning_binding": int(provisioning[0]) if provisioning else 0,
+            "deleted_binding_secrets": int(deleted_secrets[0])
+            if deleted_secrets
+            else 0,
+        }
+
+    def lifecycle_residuals(self) -> dict[str, int]:
+        with self._bootstrap() as connection:
+            return self._residual_sql(connection)
+
+    def prove_orphan_unit_residual_then_rollback(self, task_id: uuid.UUID) -> dict[str, int]:
+        broken = hashlib.sha256(b"lifecycle-orphan-source-break").hexdigest()
+        with self._bootstrap() as connection:
+            replica = connection.execute("SHOW session_replication_role").fetchone()
+            if replica is None or replica[0] != "origin":
+                raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+            connection.execute(
+                "UPDATE f1.upload_task SET content_sha256=%s WHERE id=%s",
+                (broken, task_id),
+            )
+            counts = self._residual_sql(connection)
+            connection.rollback()
+        return counts
+
+    def unit_identities(self, version_id: uuid.UUID) -> tuple[tuple[str, str], ...]:
+        with self._bootstrap() as connection:
+            rows = connection.execute(
+                "SELECT id::text, body_sha256 FROM f1.material_rag_unit "
+                "WHERE document_version_id=%s ORDER BY id::text, body_sha256",
+                (version_id,),
+            ).fetchall()
+        return tuple((str(row[0]), str(row[1])) for row in rows)
+
+    def idle_in_transaction_count(self) -> int:
+        with self._bootstrap() as connection:
             row = connection.execute(
                 "SELECT count(*) FROM pg_stat_activity "
-                "WHERE usename='f1_api' AND state='idle in transaction'"
+                "WHERE usename IN ('f1_api','f1_worker') "
+                "AND state='idle in transaction'"
             ).fetchone()
         return int(row[0]) if row else 0
 
@@ -1016,9 +1826,9 @@ def _write_cycle_evidence(stack: PostgresIntegrationStack) -> None:
         "status_code": 0 if stack.cleanup_status == "CLEAN" else 2,
     }
     path = EVIDENCE_ROOT / f"cycle-{cycle}.json"
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     if path.exists():
-        path.unlink()
+        raise HarnessError("CYCLE_EVIDENCE_EXISTS")
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW

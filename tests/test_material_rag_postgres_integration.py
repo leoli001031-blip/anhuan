@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
+import hmac
 import inspect
 import json
 import sys
+import time
 import unittest
 import uuid
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
+from urllib.parse import urlparse
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -596,6 +600,908 @@ class MaterialRagPostgresIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(self._ids(recovered), [WORLD.units["provider_a"].canonical_unit_id])
         self.assertEqual(STACK.idle_in_transaction_count(), 0)
+
+
+LIFE: Any = None
+RAG_FAKE: Any = None
+_REDIS_PATCH: Any = None
+_RAG_PATCH: Any = None
+
+
+def _install_lifecycle_fakes() -> None:
+    global RAG_FAKE, _REDIS_PATCH, _RAG_PATCH
+    from unittest.mock import patch
+
+    from platform_foundation.f0j1.ragflow_client import RagFlowClient
+
+    RAG_FAKE = DeterministicRagFlow()
+    _REDIS_PATCH = patch("redis.Redis.from_url", FakeRedis.from_url)
+    _RAG_PATCH = patch.object(RagFlowClient, "_request", RAG_FAKE.handle)
+    _REDIS_PATCH.start()
+    _RAG_PATCH.start()
+
+
+def _uninstall_lifecycle_fakes() -> None:
+    global _REDIS_PATCH, _RAG_PATCH
+    if _RAG_PATCH is not None:
+        _RAG_PATCH.stop()
+        _RAG_PATCH = None
+    if _REDIS_PATCH is not None:
+        _REDIS_PATCH.stop()
+        _REDIS_PATCH = None
+
+
+class FakeLock:
+    def acquire(self, *args, **kwargs) -> bool:
+        return True
+
+    def release(self) -> None:
+        return None
+
+
+class FakeRedis:
+    @classmethod
+    def from_url(cls, *args, **kwargs):
+        return cls()
+
+    def lock(self, *args, **kwargs) -> FakeLock:
+        return FakeLock()
+
+
+class DeterministicRagFlow:
+    """In-memory RAGFlow HTTP bottom layer. Dataset/document/chunk only."""
+
+    def __init__(self) -> None:
+        self.datasets: dict[str, dict[str, str]] = {}
+        self.documents: dict[str, dict[str, dict[str, str]]] = {}
+        self.chunks: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
+        self.fail_next: str | None = None
+        self.create_dataset_calls = 0
+        self.create_document_calls = 0
+        self.chunk_add_calls = 0
+        self.delete_dataset_calls = 0
+        self.delete_document_calls = 0
+        self.delete_chunk_calls = 0
+
+    def reset_counts(self) -> None:
+        self.create_dataset_calls = 0
+        self.create_document_calls = 0
+        self.chunk_add_calls = 0
+        self.delete_dataset_calls = 0
+        self.delete_document_calls = 0
+        self.delete_chunk_calls = 0
+
+    def mutation_snapshot(self) -> dict[str, int]:
+        return {
+            "create_dataset": self.create_dataset_calls,
+            "delete_dataset": self.delete_dataset_calls,
+            "create_document": self.create_document_calls,
+            "delete_document": self.delete_document_calls,
+            "add_chunk": self.chunk_add_calls,
+            "delete_chunk": self.delete_chunk_calls,
+        }
+
+    def dataset_exists(self, dataset_id: str) -> bool:
+        return dataset_id in self.datasets
+
+    def document_count(self, dataset_id: str) -> int:
+        return len(self.documents.get(dataset_id, {}))
+
+    def chunk_count(self, dataset_id: str | None = None) -> int:
+        if dataset_id is None:
+            return sum(len(docs) for ds in self.chunks.values() for docs in ds.values())
+        return sum(len(chunks) for chunks in self.chunks.get(dataset_id, {}).values())
+
+    def dataset_id_for_scope(self, scope_id: uuid.UUID) -> str | None:
+        name = f"f1-material-{scope_id.hex}"
+        for item in self.datasets.values():
+            if item["name"] == name:
+                return item["id"]
+        return None
+
+    def semantic_remote(self, scope_id: uuid.UUID, source_sha256: str) -> dict[str, Any]:
+        from platform_foundation.f1.features.material_rag.security import (
+            remote_document_name,
+        )
+
+        name = remote_document_name(source_sha256)
+        dataset_id = self.dataset_id_for_scope(scope_id)
+        document_id = None
+        identities: list[tuple[str, str]] = []
+        if dataset_id is not None:
+            for doc in self.documents.get(dataset_id, {}).values():
+                if doc.get("name") == name:
+                    document_id = str(doc.get("id") or "")
+                    break
+            if document_id:
+                for chunk in self.chunks.get(dataset_id, {}).get(document_id, {}).values():
+                    tags = {}
+                    for raw in chunk.get("tag_kwd") or []:
+                        key, sep, value = str(raw).partition("=")
+                        if sep:
+                            tags[key] = value
+                    unit_id = tags.get("canonical_unit_id")
+                    body_sha = tags.get("body_sha256")
+                    if unit_id and body_sha:
+                        identities.append((unit_id, body_sha))
+        identities.sort()
+        return {
+            "dataset_id": dataset_id,
+            "dataset_exists": dataset_id is not None and dataset_id in self.datasets,
+            "document_id": document_id,
+            "document_exists": bool(document_id),
+            "document_name": name,
+            "dataset_count": len(self.datasets),
+            "document_count": 0
+            if dataset_id is None
+            else len(self.documents.get(dataset_id, {})),
+            "chunk_count": 0
+            if dataset_id is None or not document_id
+            else len(self.chunks.get(dataset_id, {}).get(document_id, {})),
+            "unit_identities": tuple(identities),
+        }
+
+    def handle(self, method, path, token, payload=None):
+        del token
+        if self.fail_next == "connection":
+            self.fail_next = None
+            raise ConnectionError("MATERIAL_RAG_NETWORK_FAILED")
+        if self.fail_next == "timeout":
+            self.fail_next = None
+            raise TimeoutError("MATERIAL_RAG_NETWORK_FAILED")
+        if self.fail_next == "probe":
+            self.fail_next = None
+            return 200, {"code": 400, "data": {}}
+        parsed = urlparse(path)
+        segs = [item for item in parsed.path.split("/") if item]
+        if method == "GET" and segs == ["datasets"]:
+            items = list(self.datasets.values())
+            return 200, {"code": 0, "data": {"datasets": items, "total": len(items)}}
+        if method == "POST" and segs == ["datasets"]:
+            if self.fail_next == "create_dataset":
+                self.fail_next = None
+                return 500, {"code": 500, "data": {}}
+            name = str((payload or {}).get("name") or "")
+            dataset_id = hashlib.sha256(name.encode("ascii")).hexdigest()[:32]
+            self.create_dataset_calls += 1
+            self.datasets[dataset_id] = {"id": dataset_id, "name": name}
+            self.documents.setdefault(dataset_id, {})
+            self.chunks.setdefault(dataset_id, {})
+            if self.fail_next == "create_dataset_commit_then_drop":
+                self.fail_next = None
+                raise ConnectionError("MATERIAL_RAG_NETWORK_FAILED")
+            return 200, {"code": 0, "data": {"id": dataset_id, "name": name}}
+        if method == "DELETE" and segs == ["datasets"]:
+            ids = list((payload or {}).get("ids") or [])
+            removed = 0
+            for dataset_id in ids:
+                if dataset_id in self.datasets:
+                    del self.datasets[dataset_id]
+                    self.documents.pop(dataset_id, None)
+                    self.chunks.pop(dataset_id, None)
+                    removed += 1
+            self.delete_dataset_calls += removed
+            return 200, {"code": 0, "data": {"success_count": removed}}
+        if len(segs) >= 3 and segs[0] == "datasets":
+            dataset_id = segs[1]
+            if method == "GET" and segs[2:] == ["documents"]:
+                docs = list(self.documents.get(dataset_id, {}).values())
+                return 200, {"code": 0, "data": {"docs": docs, "total": len(docs)}}
+            if method == "POST" and segs[2:] == ["documents"]:
+                name = str((payload or {}).get("name") or "")
+                document_id = hashlib.sha256(
+                    f"{dataset_id}:{name}".encode("ascii")
+                ).hexdigest()[:32]
+                self.create_document_calls += 1
+                self.documents.setdefault(dataset_id, {})[document_id] = {
+                    "id": document_id,
+                    "name": name,
+                }
+                self.chunks.setdefault(dataset_id, {}).setdefault(document_id, {})
+                return 200, {"code": 0, "data": {"id": document_id, "name": name}}
+            if method == "DELETE" and segs[2:] == ["documents"]:
+                ids = list((payload or {}).get("ids") or [])
+                removed = 0
+                for document_id in ids:
+                    if document_id in self.documents.get(dataset_id, {}):
+                        dropped = self.chunks.get(dataset_id, {}).pop(document_id, {})
+                        self.delete_chunk_calls += len(dropped)
+                        del self.documents[dataset_id][document_id]
+                        removed += 1
+                self.delete_document_calls += removed
+                return 200, {"code": 0, "data": {"success_count": removed}}
+            if len(segs) >= 4 and segs[2] == "documents":
+                document_id = segs[3]
+                if method == "GET" and (len(segs) == 5 and segs[4] == "chunks"):
+                    items = list(
+                        self.chunks.get(dataset_id, {}).get(document_id, {}).values()
+                    )
+                    return 200, {
+                        "code": 0,
+                        "data": {"chunks": items, "total": len(items)},
+                    }
+                if method == "GET" and len(segs) == 6 and segs[4] == "chunks":
+                    chunk = (
+                        self.chunks.get(dataset_id, {})
+                        .get(document_id, {})
+                        .get(segs[5], {})
+                    )
+                    return 200, {"code": 0, "data": chunk}
+                if method == "POST" and segs[-1] == "chunks":
+                    self.chunk_add_calls += 1
+                    content = str((payload or {}).get("content") or "")
+                    tags = list((payload or {}).get("tag_kwd") or [])
+                    chunk_id = hashlib.sha256(
+                        f"{dataset_id}:{document_id}:{content}".encode("utf-8")
+                    ).hexdigest()[:32]
+                    chunk = {
+                        "id": chunk_id,
+                        "chunk_id": chunk_id,
+                        "content": content,
+                        "tag_kwd": tags,
+                    }
+                    self.chunks.setdefault(dataset_id, {}).setdefault(document_id, {})[
+                        chunk_id
+                    ] = chunk
+                    return 200, {"code": 0, "data": chunk}
+        return 404, {"code": 404, "data": {}}
+
+class MaterialRagJobLifecycleTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        global LIFE
+        if STACK is None:
+            raise AssertionError("STACK_MISSING")
+        _install_lifecycle_fakes()
+        LIFE = STACK.seed_lifecycle_world()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        residual = STACK.lifecycle_residuals() if STACK is not None else {}
+        _uninstall_lifecycle_fakes()
+        expected = (
+            "idle_in_transaction",
+            "live_lease",
+            "orphan_unit",
+            "provisioning_binding",
+            "deleted_binding_secrets",
+        )
+        if set(residual) != set(expected):
+            raise AssertionError("lifecycle_residual_keys")
+        if any(residual[key] != 0 for key in expected):
+            raise AssertionError("lifecycle_residual")
+
+    def setUp(self) -> None:
+        self.assertIsNotNone(LIFE)
+        self.assertIsNotNone(RAG_FAKE)
+        RAG_FAKE.fail_next = None
+        RAG_FAKE.reset_counts()
+
+    def _units_for(self, claim, body: str):
+        from platform_foundation.f1.features.material_rag.security import canonical_unit
+
+        return (
+            canonical_unit(
+                enterprise_id=claim.enterprise_id,
+                knowledge_scope_id=claim.knowledge_scope_id,
+                document_record_id=claim.document_record_id,
+                document_version_id=claim.document_version_id,
+                source_sha256=claim.source_sha256,
+                page_number=1,
+                ordinal=1,
+                parser_version="pgint1",
+                text=body,
+            ),
+        )
+
+    def _manifest_proof(self, claim, units):
+        from platform_foundation.f1.features.material_rag.contracts import (
+            DemoUnitManifestProof,
+        )
+        from platform_foundation.f1.features.material_rag.security import (
+            CLIENT_B_ISOLATION_CANARY_TEXT,
+            PROVIDER_POLICY_CANARY_TEXT,
+            _MANIFEST_DOMAIN,
+            _manifest_key_bytes,
+            _manifest_payload,
+            create_synthetic_unit_manifest_proof,
+        )
+
+        canaries = {
+            hashlib.sha256(PROVIDER_POLICY_CANARY_TEXT.encode("utf-8")).hexdigest(),
+            hashlib.sha256(CLIENT_B_ISOLATION_CANARY_TEXT.encode("utf-8")).hexdigest(),
+        }
+        if claim.source_sha256 in canaries:
+            return create_synthetic_unit_manifest_proof(claim=claim, units=units)
+        issued = int(time.time())
+        expires = issued + 300
+        payload, _ordered = _manifest_payload(
+            claim=claim,
+            issued_at_epoch=issued,
+            expires_at_epoch=expires,
+            units=units,
+        )
+        manifest_sha = hashlib.sha256(payload).hexdigest()
+        signature = hmac.new(
+            _manifest_key_bytes(), _MANIFEST_DOMAIN + payload, hashlib.sha256
+        ).hexdigest()
+        return DemoUnitManifestProof(
+            schema_version=1,
+            job_id=claim.id,
+            action=claim.action,
+            attempt=claim.attempt,
+            source_sha256=claim.source_sha256,
+            issued_at_epoch=issued,
+            expires_at_epoch=expires,
+            manifest_sha256=manifest_sha,
+            signature_hex=signature,
+        )
+
+    def _process(self, claim, body: str | None = None):
+        from platform_foundation.f1.features.material_rag.worker import (
+            process_claimed_demo_job,
+        )
+
+        if claim.action == "delete":
+            return _run(process_claimed_demo_job(claim))
+        units = self._units_for(claim, body or LIFE.body_for(claim.source_sha256))
+        proof = self._manifest_proof(claim, units)
+        return _run(process_claimed_demo_job(claim, units=units, manifest_proof=proof))
+
+    def _enqueue_claim(
+        self, tenant, version_id, action, key, worker_id, lease_seconds=300
+    ):
+        from platform_foundation.f1.features.material_rag.repository import (
+            claim_job,
+            enqueue_job,
+        )
+
+        job_id = _run(
+            enqueue_job(
+                tenant,
+                document_version_id=version_id,
+                action=action,
+                idempotency_key=key,
+            )
+        )
+        claim = _run(
+            claim_job(job_id, worker_id=worker_id, lease_seconds=lease_seconds)
+        )
+        return job_id, claim
+
+    def test_index_rebuild_delete_lifecycle(self) -> None:
+        from platform_foundation.f1.features.material_rag.repository import (
+            claim_job,
+            enqueue_job,
+        )
+
+        first_id, claim = self._enqueue_claim(
+            LIFE.tenant_a,
+            LIFE.docs["sibling_a"].version_id,
+            "index",
+            "life-index-a",
+            "worker-index-a",
+        )
+        self.assertTrue(self._process(claim))
+        after_first = STACK.lifecycle_snapshot(LIFE.docs["sibling_a"].version_id)
+        remote_first = RAG_FAKE.semantic_remote(
+            LIFE.docs["sibling_a"].scope_id, claim.source_sha256
+        )
+        self.assertTrue(remote_first["dataset_exists"])
+        self.assertTrue(remote_first["document_exists"])
+        self.assertEqual(remote_first["document_count"], 1)
+        self.assertEqual(remote_first["chunk_count"], after_first["unit_count"])
+        self.assertEqual(
+            remote_first["unit_identities"],
+            STACK.unit_identities(LIFE.docs["sibling_a"].version_id),
+        )
+        adds_after_first = RAG_FAKE.chunk_add_calls
+        second_id = _run(
+            enqueue_job(
+                LIFE.tenant_a,
+                document_version_id=LIFE.docs["sibling_a"].version_id,
+                action="index",
+                idempotency_key="life-index-a",
+            )
+        )
+        self.assertEqual(first_id, second_id)
+        self.assertIsNone(_run(claim_job(second_id, worker_id="worker-index-a-replay")))
+        self.assertEqual(
+            STACK.lifecycle_snapshot(LIFE.docs["sibling_a"].version_id), after_first
+        )
+        self.assertEqual(RAG_FAKE.chunk_add_calls, adds_after_first)
+
+        new_id = _run(
+            enqueue_job(
+                LIFE.tenant_a,
+                document_version_id=LIFE.docs["sibling_a"].version_id,
+                action="index",
+                idempotency_key="life-index-a-2",
+            )
+        )
+        self.assertNotEqual(first_id, new_id)
+        claim_new = _run(claim_job(new_id, worker_id="worker-index-a-2"))
+        before_chunks = RAG_FAKE.chunk_count()
+        self.assertTrue(self._process(claim_new))
+        self.assertEqual(RAG_FAKE.chunk_add_calls, adds_after_first)
+        self.assertEqual(RAG_FAKE.chunk_count(), before_chunks)
+
+        before_rebuild = STACK.lifecycle_snapshot(LIFE.docs["sibling_a"].version_id)
+        rebuild_mutations = RAG_FAKE.mutation_snapshot()
+        _, rebuild = self._enqueue_claim(
+            LIFE.tenant_a,
+            LIFE.docs["sibling_a"].version_id,
+            "rebuild",
+            "life-rebuild-a",
+            "worker-rebuild-a",
+        )
+        self.assertTrue(self._process(rebuild))
+        after_rebuild = STACK.lifecycle_snapshot(LIFE.docs["sibling_a"].version_id)
+        self.assertEqual(before_rebuild["unit_fingerprint"], after_rebuild["unit_fingerprint"])
+        self.assertEqual(before_rebuild["manifest_sha"], after_rebuild["manifest_sha"])
+        rebuilt_mutations = RAG_FAKE.mutation_snapshot()
+        self.assertGreater(
+            rebuilt_mutations["delete_document"], rebuild_mutations["delete_document"]
+        )
+        self.assertGreater(
+            rebuilt_mutations["create_document"], rebuild_mutations["create_document"]
+        )
+        self.assertGreater(rebuilt_mutations["add_chunk"], rebuild_mutations["add_chunk"])
+        remote_rebuild = RAG_FAKE.semantic_remote(
+            LIFE.docs["sibling_a"].scope_id, rebuild.source_sha256
+        )
+        self.assertTrue(remote_rebuild["dataset_exists"])
+        self.assertTrue(remote_rebuild["document_exists"])
+        self.assertEqual(remote_rebuild["chunk_count"], after_rebuild["unit_count"])
+        self.assertEqual(
+            remote_rebuild["unit_identities"],
+            STACK.unit_identities(LIFE.docs["sibling_a"].version_id),
+        )
+
+        _, sibling_b = self._enqueue_claim(
+            LIFE.tenant_a,
+            LIFE.docs["sibling_b"].version_id,
+            "index",
+            "life-index-b",
+            "worker-index-b",
+        )
+        self.assertTrue(self._process(sibling_b))
+        _, delete_a = self._enqueue_claim(
+            LIFE.tenant_a,
+            LIFE.docs["sibling_a"].version_id,
+            "delete",
+            "life-delete-a",
+            "worker-delete-a",
+        )
+        self.assertTrue(self._process(delete_a))
+        remaining = STACK.lifecycle_snapshot(LIFE.docs["sibling_b"].version_id)
+        self.assertGreater(remaining["unit_count"], 0)
+        self.assertEqual(remaining["binding_status"], "ready")
+        dataset_id = RAG_FAKE.dataset_id_for_scope(remaining["scope_id"])
+        self.assertIsNotNone(dataset_id)
+        self.assertTrue(RAG_FAKE.dataset_exists(dataset_id))
+        remote_b = RAG_FAKE.semantic_remote(
+            LIFE.docs["sibling_b"].scope_id, LIFE.docs["sibling_b"].source_sha256
+        )
+        remote_a = RAG_FAKE.semantic_remote(
+            LIFE.docs["sibling_a"].scope_id, LIFE.docs["sibling_a"].source_sha256
+        )
+        self.assertTrue(remote_b["document_exists"])
+        self.assertGreater(remote_b["chunk_count"], 0)
+        self.assertFalse(remote_a["document_exists"])
+        self.assertEqual(remote_a["chunk_count"], 0)
+        _, delete_b = self._enqueue_claim(
+            LIFE.tenant_a,
+            LIFE.docs["sibling_b"].version_id,
+            "delete",
+            "life-delete-b",
+            "worker-delete-b",
+        )
+        self.assertTrue(self._process(delete_b))
+        self.assertEqual(
+            STACK.lifecycle_snapshot(LIFE.docs["sibling_a"].version_id)["unit_count"], 0
+        )
+        cleared_b = STACK.lifecycle_snapshot(LIFE.docs["sibling_b"].version_id)
+        self.assertEqual(cleared_b["unit_count"], 0)
+        self.assertEqual(cleared_b["binding_status"], "deleted")
+        self.assertEqual(cleared_b["binding_secrets"], 0)
+        self.assertFalse(RAG_FAKE.dataset_exists(dataset_id))
+        self.assertEqual(len(RAG_FAKE.datasets), 0)
+        self.assertEqual(sum(len(docs) for docs in RAG_FAKE.documents.values()), 0)
+        self.assertEqual(RAG_FAKE.chunk_count(), 0)
+
+    def test_provisioning_tombstone_is_compensated_clean(self) -> None:
+        RAG_FAKE.fail_next = "create_dataset"
+        _, claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            LIFE.docs["provision"].version_id,
+            "index",
+            "life-provision",
+            "worker-provision",
+        )
+        outcome = self._process(claim, LIFE.body_for(claim.source_sha256))
+        self.assertEqual(outcome.kind, "FINISH_TRUE")
+        snap = STACK.lifecycle_snapshot(LIFE.docs["provision"].version_id)
+        self.assertEqual(snap["job_status"], "retry_wait")
+        self.assertEqual(snap["binding_status"], "provisioning")
+        _, delete_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            LIFE.docs["provision"].version_id,
+            "delete",
+            "life-provision-delete",
+            "worker-provision-delete",
+        )
+        self.assertTrue(self._process(delete_claim))
+        after = STACK.lifecycle_snapshot(LIFE.docs["provision"].version_id)
+        self.assertIn(after["binding_status"], {"absent", "deleted"})
+        self.assertEqual(after["binding_secrets"], 0)
+        self.assertEqual(after["unit_count"], 0)
+
+    def test_unreleased_cross_tenant_and_revoked_refuse_before_remote_write(self) -> None:
+        from platform_foundation.f1.features.material_rag.contracts import (
+            MaterialRagIntegrityError,
+        )
+        from platform_foundation.f1.features.material_rag.repository import enqueue_job
+
+        writes_before = RAG_FAKE.mutation_snapshot()
+        with self.assertRaisesRegex(
+            MaterialRagIntegrityError, "MATERIAL_VERSION_NOT_INDEXABLE"
+        ):
+            _run(
+                enqueue_job(
+                    LIFE.tenant_a,
+                    document_version_id=LIFE.docs["unreleased"].version_id,
+                    action="index",
+                    idempotency_key="life-unreleased",
+                )
+            )
+        with self.assertRaisesRegex(
+            MaterialRagIntegrityError, "MATERIAL_VERSION_NOT_FOUND"
+        ):
+            _run(
+                enqueue_job(
+                    LIFE.tenant_a,
+                    document_version_id=LIFE.docs["revoke"].version_id,
+                    action="index",
+                    idempotency_key="life-cross-tenant",
+                )
+            )
+        _, claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            LIFE.docs["revoke"].version_id,
+            "index",
+            "life-revoke",
+            "worker-revoke",
+        )
+        self.assertEqual(STACK.revoke_release(LIFE.docs["revoke"].task_id), 1)
+        outcome = self._process(claim, LIFE.body_for(claim.source_sha256))
+        self.assertEqual(outcome.kind, "FINISH_TRUE")
+        snap = STACK.lifecycle_snapshot(LIFE.docs["revoke"].version_id)
+        self.assertEqual(snap["job_status"], "failed")
+        self.assertEqual(snap["unit_count"], 0)
+        writes_after = RAG_FAKE.mutation_snapshot()
+        self.assertEqual(writes_after, writes_before)
+
+    def test_known_id_redelivery_recovery(self) -> None:
+        from platform_foundation.f1.features.material_rag.repository import (
+            claim_job,
+            finish_job,
+            renew_job_lease,
+        )
+
+        job_id, claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            LIFE.docs["recovery"].version_id,
+            "index",
+            "life-recovery",
+            "worker-recovery-1",
+        )
+        RAG_FAKE.fail_next = "probe"
+        first = self._process(claim, LIFE.body_for(claim.source_sha256))
+        self.assertEqual(first.kind, "FINISH_TRUE")
+        waiting = STACK.lifecycle_snapshot(LIFE.docs["recovery"].version_id)
+        self.assertEqual(waiting["job_status"], "retry_wait")
+        self.assertGreaterEqual(waiting["unit_count"], 1)
+        self.assertIsNone(_run(claim_job(job_id, worker_id="worker-recovery-early")))
+        self.assertEqual(STACK.make_retry_due(job_id), 1)
+        claim2 = _run(
+            claim_job(job_id, worker_id="worker-recovery-2", lease_seconds=30)
+        )
+        self.assertIsNotNone(claim2)
+        self.assertNotEqual(claim2.lease_token, claim.lease_token)
+        self.assertEqual(claim2.attempt, claim.attempt + 1)
+        self.assertFalse(_run(renew_job_lease(claim)))
+        self.assertFalse(
+            _run(finish_job(claim, status="failed", reason="MATERIAL_RAG_LOCAL_FAILED"))
+        )
+        self.assertEqual(STACK.expire_running_lease(claim2.id), 1)
+        claim3 = _run(claim_job(job_id, worker_id="worker-recovery-3"))
+        self.assertIsNotNone(claim3)
+        self.assertNotEqual(claim3.lease_token, claim2.lease_token)
+        self.assertEqual(claim3.attempt, claim2.attempt + 1)
+        self.assertFalse(_run(renew_job_lease(claim2)))
+        RAG_FAKE.fail_next = None
+        before_units = STACK.lifecycle_snapshot(LIFE.docs["recovery"].version_id)[
+            "unit_count"
+        ]
+        self.assertTrue(self._process(claim3, LIFE.body_for(claim3.source_sha256)))
+        done = STACK.lifecycle_snapshot(LIFE.docs["recovery"].version_id)
+        self.assertEqual(done["job_status"], "done")
+        self.assertEqual(done["unit_count"], before_units)
+        self.assertEqual(done["terminal_count"], 1)
+        self.assertIsNone(_run(claim_job(job_id, worker_id="worker-recovery-done")))
+        print("LOCAL_MATERIAL_RAG_JOB_RECOVERY_OK", flush=True)
+        RAG_FAKE.fail_next = "connection"
+        _, delete_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            LIFE.docs["recovery"].version_id,
+            "delete",
+            "life-recovery-delete-fail",
+            "worker-recovery-delete-fail",
+        )
+        delete_outcome = self._process(delete_claim)
+        self.assertEqual(delete_outcome.kind, "FINISH_TRUE")
+        after_fail = STACK.lifecycle_snapshot(LIFE.docs["recovery"].version_id)
+        self.assertEqual(after_fail["job_status"], "retry_wait")
+        self.assertEqual(after_fail["unit_count"], before_units)
+        self.assertIsNone(
+            _run(claim_job(job_id, worker_id="worker-recovery-done-again"))
+        )
+
+    def test_remote_dataset_created_then_lost_is_compensated(self) -> None:
+        RAG_FAKE.fail_next = "create_dataset_commit_then_drop"
+        _, claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            LIFE.docs["provision"].version_id,
+            "index",
+            "life-provision-lost",
+            "worker-provision-lost",
+        )
+        outcome = self._process(claim, LIFE.body_for(claim.source_sha256))
+        self.assertEqual(outcome.kind, "FINISH_TRUE")
+        snap = STACK.lifecycle_snapshot(LIFE.docs["provision"].version_id)
+        self.assertEqual(snap["job_status"], "retry_wait")
+        self.assertEqual(snap["binding_status"], "provisioning")
+        lost_id = RAG_FAKE.dataset_id_for_scope(LIFE.docs["provision"].scope_id)
+        self.assertIsNotNone(lost_id)
+        self.assertTrue(RAG_FAKE.dataset_exists(lost_id))
+        _, delete_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            LIFE.docs["provision"].version_id,
+            "delete",
+            "life-provision-lost-delete",
+            "worker-provision-lost-delete",
+        )
+        self.assertTrue(self._process(delete_claim))
+        after = STACK.lifecycle_snapshot(LIFE.docs["provision"].version_id)
+        self.assertIn(after["binding_status"], {"absent", "deleted"})
+        self.assertEqual(after["binding_secrets"], 0)
+        self.assertEqual(after["unit_count"], 0)
+        self.assertFalse(RAG_FAKE.dataset_exists(lost_id))
+        self.assertIsNone(
+            RAG_FAKE.dataset_id_for_scope(LIFE.docs["provision"].scope_id)
+        )
+
+    def test_stale_claim_is_lease_lost_with_zero_remote_mutation(self) -> None:
+        from platform_foundation.f1.features.material_rag.repository import (
+            claim_job,
+            finish_job,
+            renew_job_lease,
+        )
+
+        job_id, stale = self._enqueue_claim(
+            LIFE.tenant_a,
+            LIFE.docs["sibling_a"].version_id,
+            "index",
+            "life-stale-lease",
+            "worker-stale-old",
+            lease_seconds=30,
+        )
+        self.assertEqual(STACK.expire_running_lease(stale.id), 1)
+        fresh = _run(claim_job(job_id, worker_id="worker-stale-new"))
+        self.assertIsNotNone(fresh)
+        self.assertNotEqual(fresh.lease_token, stale.lease_token)
+        local_before = STACK.local_job_world_snapshot(
+            LIFE.docs["sibling_a"].version_id
+        )
+        remote_before = RAG_FAKE.mutation_snapshot()
+        outcome = self._process(stale)
+        local_after = STACK.local_job_world_snapshot(
+            LIFE.docs["sibling_a"].version_id
+        )
+        remote_after = RAG_FAKE.mutation_snapshot()
+        self.assertEqual(local_after, local_before)
+        self.assertEqual(remote_after, remote_before)
+        self.assertEqual(outcome.kind, "LEASE_LOST")
+        self.assertEqual(outcome.lease_source, "SCOPE_LOCK")
+        self.assertFalse(_run(renew_job_lease(stale)))
+        self.assertFalse(
+            _run(finish_job(stale, status="failed", reason="MATERIAL_RAG_LOCAL_FAILED"))
+        )
+        self.assertTrue(self._process(fresh))
+        done = STACK.lifecycle_snapshot(LIFE.docs["sibling_a"].version_id)
+        self.assertEqual(done["job_status"], "done")
+
+    def test_residual_sql_orphan_unit_gate_red_then_rollback(self) -> None:
+        snap = STACK.lifecycle_snapshot(LIFE.docs["sibling_a"].version_id)
+        if snap["unit_count"] == 0:
+            _, claim = self._enqueue_claim(
+                LIFE.tenant_a,
+                LIFE.docs["sibling_a"].version_id,
+                "index",
+                "life-orphan-index",
+                "worker-orphan-index",
+            )
+            self.assertTrue(self._process(claim))
+        before = STACK.lifecycle_residuals()
+        for key, value in before.items():
+            self.assertEqual(value, 0, key)
+        during = STACK.prove_orphan_unit_residual_then_rollback(
+            LIFE.docs["sibling_a"].task_id
+        )
+        self.assertGreater(during["orphan_unit"], 0)
+        after = STACK.lifecycle_residuals()
+        for key, value in after.items():
+            self.assertEqual(value, 0, key)
+
+    def test_illegal_job_update_to_failed_rolls_back(self) -> None:
+        from platform_foundation.f1.features.material_rag.repository import (
+            enqueue_job,
+        )
+
+        doc = LIFE.docs["maintain"]
+        _, done_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            doc.version_id,
+            "index",
+            "life-illegal-done",
+            "worker-illegal-done",
+        )
+        self.assertTrue(self._process(done_claim))
+        queued_id = _run(
+            enqueue_job(
+                LIFE.tenant_b,
+                document_version_id=doc.version_id,
+                action="index",
+                idempotency_key="life-illegal-queued",
+            )
+        )
+        _, retry_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            doc.version_id,
+            "index",
+            "life-illegal-retry",
+            "worker-illegal-retry",
+        )
+        RAG_FAKE.fail_next = "connection"
+        retry_outcome = self._process(retry_claim)
+        RAG_FAKE.fail_next = None
+        self.assertEqual(retry_outcome.kind, "FINISH_TRUE")
+        _, expired_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            doc.version_id,
+            "index",
+            "life-illegal-expired",
+            "worker-illegal-expired",
+            lease_seconds=30,
+        )
+        self.assertEqual(STACK.expire_running_lease(expired_claim.id), 1)
+        snap = STACK.lifecycle_snapshot(doc.version_id)
+        self.assertEqual(snap["job_status"], "running")
+        for job_id, expected in (
+            (queued_id, "queued"),
+            (retry_claim.id, "retry_wait"),
+            (expired_claim.id, "running"),
+        ):
+            proof = STACK.prove_illegal_job_update_to_failed(job_id)
+            self.assertFalse(proof["committed"], expected)
+            self.assertIn("MATERIAL_RAG_JOB_TRANSITION_INVALID", proof["message"])
+            self.assertEqual(proof["before"], proof["after"])
+            self.assertEqual(proof["before"]["status"], expected)
+        _, delete_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            doc.version_id,
+            "delete",
+            "life-illegal-delete",
+            "worker-illegal-delete",
+        )
+        self.assertTrue(self._process(delete_claim))
+        cleared = STACK.lifecycle_snapshot(doc.version_id)
+        self.assertEqual(cleared["unit_count"], 0)
+        self.assertEqual(cleared["binding_secrets"], 0)
+
+    def test_restore_maintenance_clears_six_job_classes(self) -> None:
+        from platform_foundation.f1.features.material_rag.repository import (
+            enqueue_job,
+        )
+
+        doc = LIFE.docs["maintain"]
+        _, done_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            doc.version_id,
+            "index",
+            "life-restore-done",
+            "worker-restore-done",
+        )
+        self.assertTrue(self._process(done_claim))
+        queued_id = _run(
+            enqueue_job(
+                LIFE.tenant_b,
+                document_version_id=doc.version_id,
+                action="index",
+                idempotency_key="life-restore-queued",
+            )
+        )
+        self.assertIsNotNone(queued_id)
+        _, retry_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            doc.version_id,
+            "index",
+            "life-restore-retry",
+            "worker-restore-retry",
+        )
+        RAG_FAKE.fail_next = "connection"
+        retry_outcome = self._process(retry_claim)
+        RAG_FAKE.fail_next = None
+        self.assertEqual(retry_outcome.kind, "FINISH_TRUE")
+        _, live_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            doc.version_id,
+            "index",
+            "life-restore-live",
+            "worker-restore-live",
+            lease_seconds=300,
+        )
+        _, expired_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            doc.version_id,
+            "index",
+            "life-restore-expired",
+            "worker-restore-expired",
+            lease_seconds=30,
+        )
+        self.assertEqual(STACK.expire_running_lease(expired_claim.id), 1)
+        _, failed_claim = self._enqueue_claim(
+            LIFE.tenant_b,
+            doc.version_id,
+            "index",
+            "life-restore-failed",
+            "worker-restore-failed",
+        )
+        self.assertEqual(STACK.revoke_release(doc.task_id), 1)
+        failed_outcome = self._process(failed_claim)
+        self.assertEqual(failed_outcome.kind, "FINISH_TRUE")
+        summary = STACK.lifecycle_job_status_summary()
+        for key in (
+            "queued",
+            "retry_wait",
+            "running_live",
+            "running_expired",
+            "done",
+            "failed",
+        ):
+            self.assertGreaterEqual(summary[key], 1, key)
+        live_proof = STACK.prove_illegal_job_update_to_failed(live_claim.id)
+        self.assertFalse(live_proof["committed"])
+        self.assertIn(
+            "MATERIAL_RAG_JOB_TRANSITION_INVALID", live_proof["message"]
+        )
+        self.assertEqual(live_proof["before"], live_proof["after"])
+        self.assertEqual(live_proof["before"]["status"], "running")
+        before = STACK.lifecycle_row_counts()
+        self.assertGreater(before["job"], 0)
+        self.assertGreater(before["live_lease"], 0)
+        result = STACK.restore_maintenance_clear_lifecycle()
+        self.assertEqual(result["identity"]["current_user"], "f0d_bootstrap")
+        self.assertEqual(result["identity"]["session_user"], "f0d_bootstrap")
+        self.assertEqual(result["identity"]["replication_role"], "origin")
+        after = STACK.lifecycle_row_counts()
+        for key, value in after.items():
+            self.assertEqual(value, 0, key)
+        residual = STACK.lifecycle_residuals()
+        for key, value in residual.items():
+            self.assertEqual(value, 0, key)
+
 
 
 if __name__ == "__main__":
