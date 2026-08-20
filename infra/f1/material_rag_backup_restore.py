@@ -199,6 +199,29 @@ CRASH_RECEIPT_KEYS = (
 F1_HEAD = "f1_0015"
 OK_TOKEN = "LOCAL_MATERIAL_RAG_BACKUP_RESTORE_OK"
 CRASH_OK_TOKEN = "LOCAL_MATERIAL_RAG_CRASH_RECOVERY_OK"
+MATRIX_OK_TOKEN = "LOCAL_MATERIAL_RAG_CRASH_MATRIX_OK"
+MATRIX_SCHEMA = "anhuan-material-rag-backup-restore-crash-matrix-v1"
+LIVE_CRASH_STAGES = ("VOLUMES_REPLACED", "DB_RESTORED", "MINIO_REPLAYED")
+MATRIX_PAYLOAD_KEYS = (
+    "schema",
+    "f1_head",
+    "stages_passed",
+    "hard_death_count",
+    "fresh_recovery_count",
+    "deleted_total",
+    "remaining_total",
+    "package_reverified_count",
+    "journal_recovered_count",
+    "rebuild_started_total",
+    "fallback_cleanup_total",
+    "stable_zero_observations_total",
+    "minio_replayed_identity_ok",
+    "shared_match",
+    "skipped",
+    "dedicated_c",
+    "dedicated_v",
+    "dedicated_n",
+)
 POST_RESTART_PROBE = ROOT / "infra/f1/material-rag/post_restart_probe.py"
 CRASH_PROBE = ROOT / "infra/f1/material-rag/crash_recovery_probe.py"
 EVIDENCE_ROOT = Path(
@@ -517,6 +540,102 @@ def observe_stable_zero(
     ):
         _fail("CRASH_UNSTABLE_ZERO")
     return 2
+
+
+def require_live_crash_stage(stage: str) -> str:
+    if stage not in LIVE_CRASH_STAGES:
+        _fail("CRASH_WAIT_STAGE_INVALID")
+    return stage
+
+
+def require_hard_death_sigkill(returncode: int) -> int:
+    if returncode != -signal.SIGKILL:
+        _fail("HARD_DEATH_NOT_SIGKILL")
+    return 9
+
+
+def require_fresh_recovery_pids(child_pid: int, recover_pid: int) -> int:
+    if child_pid == recover_pid:
+        _fail("CRASH_RECOVERY_PID_COLLISION")
+    return 1
+
+
+def require_journal_stage(actual: str, expected: str) -> None:
+    if actual != expected:
+        _fail("JOURNAL_STAGE_INVALID")
+
+
+def require_abort_resource_counts(new_volume: int, new_container: int) -> None:
+    if new_volume != 2 or new_container != 3:
+        _fail("CRASH_NEW_RESOURCE_COUNT")
+
+
+def verify_minio_replayed_identity(
+    package_tree: list[dict[str, Any]], live_tree: list[dict[str, Any]]
+) -> int:
+    compare_object_trees(package_tree, live_tree)
+    return 1
+
+
+def _load_attached_minio_passwords(stack: BackupRestoreStack) -> None:
+    if stack.secrets_dir is None:
+        _fail("SECRETS_DIR_MISSING")
+    user_path = stack.secrets_dir / "minio_root_user"
+    password_path = stack.secrets_dir / "minio_root_password"
+    if not user_path.is_file() or not password_path.is_file():
+        _fail("MINIO_SECRET_MISSING")
+    user = user_path.read_bytes().decode("ascii")
+    password = password_path.read_bytes().decode("ascii")
+    if not user or not password:
+        _fail("MINIO_SECRET_MISSING")
+    stack.passwords["minio_user"] = user
+    stack.passwords["minio_password"] = password
+
+
+def validate_matrix_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict) or set(payload) != set(MATRIX_PAYLOAD_KEYS):
+        _fail("MATRIX_PAYLOAD_KEYS_INVALID")
+    if payload.get("schema") != MATRIX_SCHEMA:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("f1_head") != F1_HEAD:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("stages_passed") != 3:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("hard_death_count") != 3:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("fresh_recovery_count") != 3:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("deleted_total") != 15:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("remaining_total") != 0:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("package_reverified_count") != 3:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("journal_recovered_count") != 3:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("rebuild_started_total") != 0:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("fallback_cleanup_total") != 0:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("stable_zero_observations_total") != 6:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("minio_replayed_identity_ok") != 1:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("shared_match") != 1:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("skipped") != 0:
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if (
+        payload.get("dedicated_c") != 0
+        or payload.get("dedicated_v") != 0
+        or payload.get("dedicated_n") != 0
+    ):
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("deleted_total") != 5 * payload.get("stages_passed"):
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("stable_zero_observations_total") != 2 * payload.get("stages_passed"):
+        _fail("MATRIX_PAYLOAD_HARDCODED")
+    return payload
 
 
 def _write_closed_json(
@@ -2098,10 +2217,12 @@ class BackupRestoreStack:
             document["stage"] = stage
         self._recovery(write_journal, path, document)
         self._recovery(maybe_crash, stage)
+        wait_after = os.environ.get("MATERIAL_RAG_RESTORE_WAIT_AFTER", "").strip()
+        if wait_after == "PREPARED":
+            _fail("CRASH_WAIT_STAGE_INVALID")
         if (
-            stage == "DB_RESTORED"
-            and os.environ.get("MATERIAL_RAG_RESTORE_WAIT_AFTER", "").strip()
-            == "DB_RESTORED"
+            wait_after in ("VOLUMES_REPLACED", "DB_RESTORED", "MINIO_REPLAYED")
+            and stage == wait_after
         ):
             self._pause_after_journal(stage)
 
@@ -3973,3 +4094,283 @@ def run_crash_machine_gate() -> dict[str, Any]:
                 pass
         if work.exists():
             shutil.rmtree(work, ignore_errors=True)
+
+
+def _run_one_hard_death_stage(
+    stage: str,
+    *,
+    before_fingerprint: bytes,
+    minio_identity: bool,
+) -> dict[str, Any]:
+    stage = require_live_crash_stage(stage)
+    if dedicated_counts() != (0, 0, 0):
+        _fail("DEDICATED_PREEXISTING")
+    work = Path(f"/private/tmp/anhuan-mr-matrix-{stage.lower()}-{uuid.uuid4().hex[:12]}")
+    work.mkdir(mode=0o700)
+    ready = work / "ready.json"
+    receipt_path = work / "receipt.json"
+    child: subprocess.Popen[bytes] | None = None
+    cleaned = 0
+    try:
+        env = _crash_subprocess_env()
+        probe = str(ROOT / "infra/f1/material-rag/crash_recovery_probe.py")
+        if "recover_from_journal" not in Path(probe).read_text(encoding="utf-8"):
+            _fail("CRASH_PROBE_RECOVER_MISSING")
+        child = subprocess.Popen(
+            [
+                PYTHON,
+                "-B",
+                probe,
+                "child",
+                "--ready",
+                str(ready),
+                "--receipt",
+                str(receipt_path),
+                "--stage",
+                stage,
+            ],
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 240
+        while time.monotonic() < deadline:
+            if child.poll() is not None:
+                _fail("CRASH_CHILD_EXITED")
+            if ready.exists() and receipt_path.exists():
+                break
+            time.sleep(0.1)
+        else:
+            _fail("CRASH_CHILD_READY_TIMEOUT")
+        receipt = _read_crash_receipt(receipt_path)
+        attached = BackupRestoreStack.attach_from_receipt(receipt)
+        attached.before_fingerprint = before_fingerprint
+        journal_path = Path(receipt["journal_path"])
+        journal = read_journal(journal_path)
+        require_journal_stage(str(journal["stage"]), stage)
+        live_before = attached.capture_core_identities()
+        saved = [
+            {"id": item["id"], "kind": item["kind"]} for item in journal["resources"]
+        ]
+        try:
+            new_items = new_labeled_resources(
+                saved,
+                live_before,
+                scope=SCOPE,
+                project_id=str(receipt["project_id"]),
+                parent_project_id=str(receipt["parent_project_id"]),
+            )
+        except RestoreRecoveryError as exc:
+            raise BackupRestoreError(exc.code) from exc
+        abort_new = [
+            item for item in new_items if item["kind"] in ABORT_DELETE_KINDS
+        ]
+        new_volume = sum(1 for item in abort_new if item["kind"] == "volume")
+        new_container = sum(1 for item in abort_new if item["kind"] == "container")
+        require_abort_resource_counts(new_volume, new_container)
+        package = Path(receipt["package_path"])
+        manifest = json.loads((package / "manifest.json").read_bytes().decode("ascii"))
+        expected = {
+            "expected_project_id": str(receipt["project_id"]),
+            "expected_parent_project_id": str(receipt["parent_project_id"]),
+            "expected_database": str(manifest["database"]),
+            "expected_scope": SCOPE,
+        }
+        verify_package(package, **expected)
+        os.kill(child.pid, signal.SIGKILL)
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        child.wait(timeout=10)
+        hard_death_signal = require_hard_death_sigkill(child.returncode)
+        live_after_kill = attached.capture_core_identities()
+        after_kill_ids = {(item["kind"], item["id"]) for item in live_after_kill}
+        for item in abort_new:
+            if (item["kind"], item["id"]) not in after_kill_ids:
+                _fail("CRASH_FINALLY_RAN")
+        verify_package(package, **expected)
+        minio_replayed_identity_ok = 0
+        if minio_identity:
+            _load_attached_minio_passwords(attached)
+            package_tree = canonical_object_tree_from_dir(package / MINIO_DIRECTORY_NAME)
+            minio_replayed_identity_ok = verify_minio_replayed_identity(
+                package_tree, attached.canonical_live_object_tree()
+            )
+        recover = subprocess.Popen(
+            [
+                PYTHON,
+                "-B",
+                probe,
+                "recover",
+                "--receipt",
+                str(receipt_path),
+            ],
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        recover.communicate(timeout=60)
+        if recover.returncode != 0:
+            _fail("CRASH_RECOVER_FAILED")
+        fresh_recovery_process = require_fresh_recovery_pids(child.pid, recover.pid)
+        live_after = attached.capture_core_identities()
+        remain_ids = {(item["kind"], item["id"]) for item in live_after}
+        remaining = sum(
+            1 for item in abort_new if (item["kind"], item["id"]) in remain_ids
+        )
+        if remaining != 0:
+            _fail("RESTORE_ABORT_ID_REMAINS")
+        deleted = new_volume + new_container
+        recovered_doc = read_journal(journal_path)
+        journal_recovered = int(recovered_doc["stage"] == "RECOVERED")
+        if journal_recovered != 1:
+            _fail("JOURNAL_STAGE_INVALID")
+        verify_package(package, **expected)
+        package_reverified = 1
+        rebuild_started = 0
+        attached.stop()
+        first = dedicated_counts()
+        first_at = time.monotonic()
+        while time.monotonic() - first_at < 0.5:
+            time.sleep(0.05)
+        second = dedicated_counts()
+        second_at = time.monotonic()
+        leftover = first if first != (0, 0, 0) else second
+        fallback_cleanup_used = apply_post_stop_fallback(
+            leftover,
+            (
+                lambda: attached._destroy_labeled_leftovers("container", ["rm", "-f"]),
+                lambda: attached._destroy_labeled_leftovers("volume", ["volume", "rm", "-f"]),
+                lambda: attached._destroy_labeled_leftovers("network", ["network", "rm"]),
+            ),
+        )
+        if fallback_cleanup_used == 1:
+            attached.dedicated_after = dedicated_counts()
+            attached.shared_match = int(
+                canonical_shared_fingerprint() == before_fingerprint
+            )
+        reject_fallback_cleanup(fallback_cleanup_used)
+        stable_zero_observations = observe_stable_zero(
+            ((first, first_at), (second, second_at))
+        )
+        attached.dedicated_after = second
+        attached.shared_match = int(
+            canonical_shared_fingerprint() == before_fingerprint
+        )
+        if attached.dedicated_after != (0, 0, 0) or dedicated_counts() != (0, 0, 0):
+            _fail("CLEANUP_RESIDUAL")
+        cleaned = 1
+        receipt_dir = os.environ.get("MATERIAL_RAG_MATRIX_RECEIPT_DIR", "").strip()
+        if receipt_dir:
+            target = Path(receipt_dir)
+            target.mkdir(mode=0o700, exist_ok=True)
+            summary = {
+                "stage": stage,
+                "journal_stage": recovered_doc["stage"],
+                "package_dump_sha256": receipt["package_dump_sha256"],
+                "package_tree_sha256": receipt["package_tree_sha256"],
+                "deleted": deleted,
+                "remaining": remaining,
+                "minio_replayed_identity_ok": minio_replayed_identity_ok,
+            }
+            _write_closed_json(
+                target / f"{stage}.json",
+                summary,
+                (
+                    "stage",
+                    "journal_stage",
+                    "package_dump_sha256",
+                    "package_tree_sha256",
+                    "deleted",
+                    "remaining",
+                    "minio_replayed_identity_ok",
+                ),
+            )
+        return {
+            "stage": stage,
+            "hard_death_signal": hard_death_signal,
+            "fresh_recovery_process": fresh_recovery_process,
+            "deleted": deleted,
+            "remaining": remaining,
+            "package_reverified": package_reverified,
+            "rebuild_started": rebuild_started,
+            "journal_recovered": journal_recovered,
+            "fallback_cleanup_used": fallback_cleanup_used,
+            "stable_zero_observations": stable_zero_observations,
+            "minio_replayed_identity_ok": minio_replayed_identity_ok,
+            "shared_match": attached.shared_match,
+            "dedicated_c": attached.dedicated_after[0],
+            "dedicated_v": attached.dedicated_after[1],
+            "dedicated_n": attached.dedicated_after[2],
+        }
+    finally:
+        if cleaned != 1:
+            try:
+                if child is not None and child.poll() is None:
+                    os.kill(child.pid, signal.SIGKILL)
+                    child.wait(timeout=10)
+            except OSError:
+                pass
+            try:
+                _precise_crash_cleanup(receipt_path, before_fingerprint)
+            except Exception:
+                pass
+        if work.exists():
+            shutil.rmtree(work, ignore_errors=True)
+
+
+def run_crash_matrix_gate() -> dict[str, Any]:
+    if dedicated_counts() != (0, 0, 0):
+        _fail("DEDICATED_PREEXISTING")
+    before_fingerprint = canonical_shared_fingerprint()
+    results: list[dict[str, Any]] = []
+    for stage in ("VOLUMES_REPLACED", "DB_RESTORED", "MINIO_REPLAYED"):
+        require_live_crash_stage(stage)
+        results.append(
+            _run_one_hard_death_stage(
+                stage,
+                before_fingerprint=before_fingerprint,
+                minio_identity=stage == "MINIO_REPLAYED",
+            )
+        )
+    payload = {
+        "schema": MATRIX_SCHEMA,
+        "f1_head": F1_HEAD,
+        "stages_passed": len(results),
+        "hard_death_count": sum(
+            1 for item in results if item["hard_death_signal"] == 9
+        ),
+        "fresh_recovery_count": sum(
+            int(item["fresh_recovery_process"]) for item in results
+        ),
+        "deleted_total": sum(int(item["deleted"]) for item in results),
+        "remaining_total": sum(int(item["remaining"]) for item in results),
+        "package_reverified_count": sum(
+            int(item["package_reverified"]) for item in results
+        ),
+        "journal_recovered_count": sum(
+            int(item["journal_recovered"]) for item in results
+        ),
+        "rebuild_started_total": sum(int(item["rebuild_started"]) for item in results),
+        "fallback_cleanup_total": sum(
+            int(item["fallback_cleanup_used"]) for item in results
+        ),
+        "stable_zero_observations_total": sum(
+            int(item["stable_zero_observations"]) for item in results
+        ),
+        "minio_replayed_identity_ok": sum(
+            int(item["minio_replayed_identity_ok"]) for item in results
+        ),
+        "shared_match": int(all(item["shared_match"] == 1 for item in results)),
+        "skipped": 0,
+        "dedicated_c": results[-1]["dedicated_c"],
+        "dedicated_v": results[-1]["dedicated_v"],
+        "dedicated_n": results[-1]["dedicated_n"],
+    }
+    if canonical_shared_fingerprint() != before_fingerprint:
+        _fail("SHARED_FINGERPRINT_CHANGED")
+    return validate_matrix_payload(payload)

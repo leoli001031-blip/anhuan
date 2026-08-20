@@ -1,5 +1,18 @@
 # MATERIAL RAG Progress
 
+## 2026-08-21｜multi-stage SIGKILL matrix checkpoint｜STARTED
+
+- 任务0 相符：branch=`codex/material-rag-postgres-integration` HEAD=`6dbb3263acc3c32846c3536fb70af06f7e527964` 9 tracked M staged=0 `git diff --check=0`；ls-remote 与 PR #2 head 均为该 HEAD，OPEN+draft，base=`codex/material-rag-scanner-protocol@c58ef92…`，mergedAt=null。matrix 包 56 项根 `7b3f72de…4b65`；4 代码 SHA 与 `source/file-manifest` 一致。
+- 本轮只封已验收三阶段 SIGKILL 矩阵为 checkpoint 并更新 draft PR #2。不重跑合同/Docker/v3。不开发新能力。建议：无。
+- 现役标签不含未知 SHA；提交与远端身份以 Git 与 PR head 为准。保留 `CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。未写 `CRASH_RECOVERY_RUNTIME_PASSED`。
+
+## 2026-08-20｜SIGKILL checkpoint + 三阶段矩阵｜PASSED
+
+- 阶段A：commit `6dbb3263acc3c32846c3536fb70af06f7e527964` parent=`21e7eea` 九路径 8M+1A；普通 push 后 `ls-remote=HEAD`；PR #2 仍 OPEN+draft，base 未改。仓外包 `material-rag-sigkill-checkpoint-push-20260820-v1` 根 `e1f8e56f…97cc`。
+- 合同 3/6：先红 `Ran 60 tests in 0.335s / FAILED (errors=4)`；定位后 `Ran 60 / FAILED (failures=1)`；绿 `Ran 60 tests in 0.357s / OK` skipped=0。clone `Ran 60 tests in 0.397s / OK` 后已删。
+- 矩阵 live 2/3：attempt1 MINIO 用 attach 新生密码读 live 树 → `InvalidAccessKeyId` wall=77.077s，专属已精确清理回 0。最小修复：从 secrets 读原 minio 口令。attempt2 exit=0 wall=78.921s，stderr 空，stdout 恰 2 行 + `LOCAL_MATERIAL_RAG_CRASH_MATRIX_OK`；`stages_passed=3 hard_death_count=3 fresh_recovery_count=3 deleted_total=15 remaining_total=0 package_reverified_count=3 journal_recovered_count=3 rebuild_started_total=0 fallback_cleanup_total=0 stable_zero_observations_total=6 minio_replayed_identity_ok=1 dedicated=0 shared_match=1 skipped=0`。
+- 旧 crash-check 1/1：exit=0 wall=26.989s，原闭集仍绿。专属 C/V/N=0。共享 `f08864aa…b0d065` 不变。矩阵 delta 未 stage/commit/push。`NOT_PUSHED` 仅指该 delta。未写 `CRASH_RECOVERY_RUNTIME_PASSED`。证据 `material-rag-crash-matrix-20260820-v1`。建议：MINIO_REPLAYED 身份核对应从专属 secrets 读口令，禁止用 attach 新生密码。
+
 ## 2026-08-20｜SIGKILL checkpoint + 三阶段矩阵｜STARTED
 
 - 任务0 相符：branch=`codex/material-rag-postgres-integration` HEAD=`21e7eea81107eaf73dcc5ca125c754b67e2c7224` staged=0 dirty=9（8M+1A，均在白名单）`git diff --check=0`；ls-remote 与 PR #2 head 均为 21e7eea，OPEN+draft，base=`codex/material-rag-scanner-protocol@c58ef92…`。9 文件与证据 `source/file-manifest` 字节一致；包根 `a7744600…71e9`。

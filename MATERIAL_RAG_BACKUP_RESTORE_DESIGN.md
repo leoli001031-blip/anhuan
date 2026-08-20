@@ -1,8 +1,10 @@
 # material-RAG backup/restore 下一轮可实施设计
 
-现役：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。
-2026-08-20 crash 假绿封口：`fallback_cleanup_used` 必须反映真实执行；stop 后若仍有专属资源，允许精确三标签诊断清理，但本门失败、不得输出 OK。tamper 只有 `returncode=2`、stdout 空、stderr 恰为 `RESOURCE_LABEL_MISMATCH\n` 且 5 个 abort ID 仍在，才 `tamper_rejected=1` / `tamper_reason_verified=1`。两次间隔 ≥0.5s 的 C/V/N=0 锁定 `stable_zero_observations=2`。合同 `Ran 56 / OK`；crash 门 stderr 空、两行绿灯。实际闭集 9 文件（4 代码 + 5 文档），不是 7。未写 `CRASH_RECOVERY_RUNTIME_PASSED`。正式面向用户的 restore 命令仍未开放。HEAD=`21e7eea81107eaf73dcc5ca125c754b67e2c7224` 已 push；PR #2 仍 OPEN+draft。本轮不 commit/push。
-旧证据包 `material-rag-crash-runtime-20260820-v1` 只读。本轮证据 `material-rag-crash-false-green-20260820-v1`。
+现役：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。
+2026-08-21 三阶段 SIGKILL 矩阵已验收并封入本 checkpoint：内部命令 `material-rag-backup-restore-crash-matrix-check` 覆盖 `VOLUMES_REPLACED / DB_RESTORED / MINIO_REPLAYED`；各阶段真实 SIGKILL 后 fresh process 按 receipt+journal 精确恢复；MINIO_REPLAYED 另核 live 对象树与 package 一致。PREPARED 只离线合同。合同 `Ran 60 / OK`。旧单阶段 `material-rag-backup-restore-crash-check` 非回归。提交与远端身份以 Git 与 PR head 为准。未写 `CRASH_RECOVERY_RUNTIME_PASSED`。正式面向用户的 restore 命令仍未开放。
+旧证据包 `material-rag-crash-false-green-20260820-v1`、checkpoint 推送包 `material-rag-sigkill-checkpoint-push-20260820-v1`、矩阵包 `material-rag-crash-matrix-20260820-v1` 只读。
+2026-08-20 SIGKILL 单阶段门与假绿封口已纳入当时 parent checkpoint（历史记录，SHA 见 Git）。`NOT_PUSHED` 仅为当时矩阵 delta 的历史标签，不再冒充现役。
+2026-08-20 crash 假绿封口（历史）：`fallback_cleanup_used` 必须反映真实执行；stop 后若仍有专属资源，允许精确三标签诊断清理，但本门失败、不得输出 OK。tamper 只有 `returncode=2`、stdout 空、stderr 恰为 `RESOURCE_LABEL_MISMATCH\n` 且 5 个 abort ID 仍在，才 `tamper_rejected=1` / `tamper_reason_verified=1`。两次间隔 ≥0.5s 的 C/V/N=0 锁定 `stable_zero_observations=2`。当时合同 `Ran 56 / OK`。
 2026-08-20 DB_RESTORED SIGKILL：内部命令 `material-rag-backup-restore-crash-check`；child 在 journal 原子写入 `DB_RESTORED` 后暂停，监督进程 SIGKILL（`hard_death_signal=9`），第二 fresh process 仅凭 0600 receipt+journal 精确恢复。错标签反向零删除后再删新 2 卷+3 容器。当时合同 `Ran 54 / OK`。未写 `CRASH_RECOVERY_RUNTIME_PASSED`（不冒充断电/全阶段）。
 
 ## 本轮已封的三个假绿

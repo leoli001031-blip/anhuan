@@ -40,12 +40,21 @@ def _canonical(payload: dict[str, Any]) -> str:
     )
 
 
-def run_child(*, ready: Path, receipt: Path) -> int:
-    os.environ["MATERIAL_RAG_RESTORE_WAIT_AFTER"] = "DB_RESTORED"
+def run_child(*, ready: Path, receipt: Path, stage: str) -> int:
+    from infra.f1.material_rag_backup_restore import (
+        BackupRestoreError,
+        BackupRestoreStack,
+        require_live_crash_stage,
+    )
+
+    try:
+        stage = require_live_crash_stage(stage)
+    except BackupRestoreError as error:
+        raise ProbeError(error.code) from error
+    os.environ["MATERIAL_RAG_RESTORE_WAIT_AFTER"] = stage
     os.environ["MATERIAL_RAG_CRASH_READY"] = str(ready)
     os.environ["MATERIAL_RAG_CRASH_RECEIPT"] = str(receipt)
     os.environ.pop("MATERIAL_RAG_RESTORE_CRASH_AFTER", None)
-    from infra.f1.material_rag_backup_restore import BackupRestoreStack
 
     stack = BackupRestoreStack()
     stack.install_fakes()
@@ -136,6 +145,7 @@ def main() -> int:
     parser.add_argument("role", choices=("child", "recover"))
     parser.add_argument("--ready")
     parser.add_argument("--receipt", required=True)
+    parser.add_argument("--stage", default="DB_RESTORED")
     parser.add_argument("--tamper-labels", action="store_true")
     arguments = parser.parse_args()
     try:
@@ -143,7 +153,11 @@ def main() -> int:
         if arguments.role == "child":
             if not arguments.ready:
                 raise ProbeError("CRASH_READY_MISSING")
-            return run_child(ready=Path(arguments.ready), receipt=receipt)
+            return run_child(
+                ready=Path(arguments.ready),
+                receipt=receipt,
+                stage=str(arguments.stage),
+            )
         return run_recover(receipt_path=receipt, tamper=arguments.tamper_labels)
     except ProbeError as error:
         sys.stderr.write(error.code + "\n")

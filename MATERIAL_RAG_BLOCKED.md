@@ -1,5 +1,22 @@
 # MATERIAL RAG Blocked
 
+## 2026-08-21｜multi-stage SIGKILL matrix checkpoint｜开工
+
+- 无。
+- 任务0 相符。本轮只封已验收矩阵 checkpoint；不重跑 Docker。提交/远端身份以 Git 与 PR head 为准。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-20｜SIGKILL checkpoint + 三阶段矩阵｜收口
+
+- 无。
+- 阶段A：`6dbb326` 已普通 push，PR #2 仍 draft，base 未改。阶段B：三阶段矩阵与旧单阶段门全绿；合同 `Ran 60 / OK` skipped=0。专属 C/V/N=0。共享 fingerprint 不变。矩阵 delta 未 stage/commit/push。未改 compose / restore_recovery / f1_0015 / worker / repository / ragflow_adapter / 默认 backup / UAT / 依赖 / workflow。未读 Ark。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。真实 live retrieval：`LIVE_RETRIEVAL_UAT_DEFERRED`。断电未测：`CRASH_RECOVERY_POWER_LOSS_NOT_TESTED`。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
 ## 2026-08-20｜SIGKILL checkpoint + 三阶段矩阵｜开工
 
 - 无。

@@ -1969,6 +1969,195 @@ print(json.dumps({"deleted": result["deleted"], "rebuild_started": result["rebui
         with self.assertRaises(localctl.LocalError):
             validator(hardcoded)
 
+    def _valid_matrix_payload(self) -> dict:
+        from infra.f1.material_rag_backup_restore import (
+            MATRIX_PAYLOAD_KEYS,
+            MATRIX_SCHEMA,
+        )
+
+        return {key: 0 for key in MATRIX_PAYLOAD_KEYS} | {
+            "schema": MATRIX_SCHEMA,
+            "f1_head": F1_HEAD,
+            "stages_passed": 3,
+            "hard_death_count": 3,
+            "fresh_recovery_count": 3,
+            "deleted_total": 15,
+            "remaining_total": 0,
+            "package_reverified_count": 3,
+            "journal_recovered_count": 3,
+            "rebuild_started_total": 0,
+            "fallback_cleanup_total": 0,
+            "stable_zero_observations_total": 6,
+            "minio_replayed_identity_ok": 1,
+            "shared_match": 1,
+            "skipped": 0,
+            "dedicated_c": 0,
+            "dedicated_v": 0,
+            "dedicated_n": 0,
+        }
+
+    def test_matrix_live_stages_exclude_prepared_and_require_sigkill(self) -> None:
+        from infra.f1.material_rag_backup_restore import (
+            LIVE_CRASH_STAGES,
+            require_fresh_recovery_pids,
+            require_hard_death_sigkill,
+            require_live_crash_stage,
+        )
+
+        self.assertEqual(
+            LIVE_CRASH_STAGES,
+            ("VOLUMES_REPLACED", "DB_RESTORED", "MINIO_REPLAYED"),
+        )
+        self.assertNotIn("PREPARED", LIVE_CRASH_STAGES)
+        with self.assertRaises(BackupRestoreError) as prepared:
+            require_live_crash_stage("PREPARED")
+        self.assertEqual(prepared.exception.code, "CRASH_WAIT_STAGE_INVALID")
+        with self.assertRaises(BackupRestoreError) as unknown:
+            require_live_crash_stage("RECOVERED")
+        self.assertEqual(unknown.exception.code, "CRASH_WAIT_STAGE_INVALID")
+        self.assertEqual(require_live_crash_stage("VOLUMES_REPLACED"), "VOLUMES_REPLACED")
+        self.assertEqual(require_hard_death_sigkill(-9), 9)
+        with self.assertRaises(BackupRestoreError) as injected:
+            require_hard_death_sigkill(2)
+        self.assertEqual(injected.exception.code, "HARD_DEATH_NOT_SIGKILL")
+        with self.assertRaises(BackupRestoreError) as exception_exit:
+            require_hard_death_sigkill(1)
+        self.assertEqual(exception_exit.exception.code, "HARD_DEATH_NOT_SIGKILL")
+        self.assertEqual(require_fresh_recovery_pids(11, 12), 1)
+        with self.assertRaises(BackupRestoreError) as same_pid:
+            require_fresh_recovery_pids(7, 7)
+        self.assertEqual(same_pid.exception.code, "CRASH_RECOVERY_PID_COLLISION")
+        probe = (
+            ROOT / "infra/f1/material-rag/crash_recovery_probe.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("--stage", probe)
+        self.assertIn("require_live_crash_stage", probe)
+
+    def test_matrix_wrong_stage_missing_resources_and_keys_are_red(self) -> None:
+        from infra.f1.material_rag_backup_restore import (
+            MATRIX_PAYLOAD_KEYS,
+            require_abort_resource_counts,
+            require_journal_stage,
+            validate_matrix_payload,
+        )
+
+        require_journal_stage("VOLUMES_REPLACED", "VOLUMES_REPLACED")
+        with self.assertRaises(BackupRestoreError) as stage:
+            require_journal_stage("PREPARED", "VOLUMES_REPLACED")
+        self.assertEqual(stage.exception.code, "JOURNAL_STAGE_INVALID")
+        require_abort_resource_counts(2, 3)
+        with self.assertRaises(BackupRestoreError) as missing:
+            require_abort_resource_counts(1, 3)
+        self.assertEqual(missing.exception.code, "CRASH_NEW_RESOURCE_COUNT")
+        with self.assertRaises(BackupRestoreError) as containers:
+            require_abort_resource_counts(2, 2)
+        self.assertEqual(containers.exception.code, "CRASH_NEW_RESOURCE_COUNT")
+        payload = self._valid_matrix_payload()
+        self.assertEqual(set(MATRIX_PAYLOAD_KEYS), set(payload))
+        validate_matrix_payload(payload)
+        missing_key = dict(payload)
+        del missing_key["stages_passed"]
+        with self.assertRaises(BackupRestoreError) as keys:
+            validate_matrix_payload(missing_key)
+        self.assertEqual(keys.exception.code, "MATRIX_PAYLOAD_KEYS_INVALID")
+        extra = dict(payload)
+        extra["bonus"] = 1
+        with self.assertRaises(BackupRestoreError) as extra_raised:
+            validate_matrix_payload(extra)
+        self.assertEqual(extra_raised.exception.code, "MATRIX_PAYLOAD_KEYS_INVALID")
+        hardcoded = dict(payload)
+        hardcoded["stages_passed"] = 2
+        with self.assertRaises(BackupRestoreError) as hard:
+            validate_matrix_payload(hardcoded)
+        self.assertEqual(hard.exception.code, "MATRIX_PAYLOAD_HARDCODED")
+
+    def test_matrix_fallback_and_minio_tree_mismatch_are_red(self) -> None:
+        from infra.f1.material_rag_backup_restore import (
+            reject_fallback_cleanup,
+            validate_matrix_payload,
+            verify_minio_replayed_identity,
+        )
+
+        reject_fallback_cleanup(0)
+        with self.assertRaises(BackupRestoreError) as fallback:
+            reject_fallback_cleanup(1)
+        self.assertEqual(fallback.exception.code, "CRASH_FALLBACK_CLEANUP_USED")
+        tree = [
+            {
+                "body_sha256": "a" * 64,
+                "bucket": "b" * 64,
+                "key": "c" * 64,
+                "size": 4,
+            }
+        ]
+        self.assertEqual(verify_minio_replayed_identity(tree, tree), 1)
+        mutated = [
+            {
+                "body_sha256": "d" * 64,
+                "bucket": "b" * 64,
+                "key": "c" * 64,
+                "size": 4,
+            }
+        ]
+        with self.assertRaises(BackupRestoreError) as body:
+            verify_minio_replayed_identity(tree, mutated)
+        self.assertEqual(body.exception.code, "MINIO_BODY_SHA_MISMATCH")
+        payload = self._valid_matrix_payload()
+        payload["fallback_cleanup_total"] = 1
+        with self.assertRaises(BackupRestoreError) as hard:
+            validate_matrix_payload(payload)
+        self.assertEqual(hard.exception.code, "MATRIX_PAYLOAD_HARDCODED")
+        payload = self._valid_matrix_payload()
+        payload["minio_replayed_identity_ok"] = 0
+        with self.assertRaises(BackupRestoreError) as minio:
+            validate_matrix_payload(payload)
+        self.assertEqual(minio.exception.code, "MATRIX_PAYLOAD_HARDCODED")
+
+    def test_matrix_parser_payload_and_gate_lock_three_live_stages(self) -> None:
+        from infra.f1.material_rag_backup_restore import (
+            MATRIX_OK_TOKEN,
+            run_crash_machine_gate,
+            run_crash_matrix_gate,
+            validate_matrix_payload,
+        )
+
+        localctl = load_localctl()
+        parser = localctl._parser()
+        commands = self._parser_commands(parser)
+        self.assertIn("material-rag-backup-restore-crash-check", commands)
+        self.assertIn("material-rag-backup-restore-crash-matrix-check", commands)
+        parsed = parser.parse_args(["material-rag-backup-restore-crash-matrix-check"])
+        self.assertEqual(parsed.command, "material-rag-backup-restore-crash-matrix-check")
+        payload = self._valid_matrix_payload()
+        validate_matrix_payload(payload)
+        self.assertEqual(payload["deleted_total"], 15)
+        self.assertEqual(payload["stable_zero_observations_total"], 6)
+        validator = localctl._validate_material_rag_matrix_payload
+        validator(payload)
+        missing = dict(payload)
+        del missing["minio_replayed_identity_ok"]
+        with self.assertRaises(localctl.LocalError):
+            validator(missing)
+        single = inspect.getsource(run_crash_machine_gate)
+        matrix = inspect.getsource(run_crash_matrix_gate)
+        helper = inspect.getsource(
+            __import__(
+                "infra.f1.material_rag_backup_restore",
+                fromlist=["_run_one_hard_death_stage"],
+            )._run_one_hard_death_stage
+        )
+        self.assertIn('"DB_RESTORED"', single)
+        self.assertIn("signal.SIGKILL", single)
+        self.assertIn("VOLUMES_REPLACED", matrix)
+        self.assertIn("DB_RESTORED", matrix)
+        self.assertIn("MINIO_REPLAYED", matrix)
+        self.assertNotIn('"PREPARED"', matrix)
+        self.assertIn("require_live_crash_stage", matrix)
+        self.assertIn("verify_minio_replayed_identity", helper)
+        self.assertIn("signal.SIGKILL", helper)
+        self.assertEqual(MATRIX_OK_TOKEN, "LOCAL_MATERIAL_RAG_CRASH_MATRIX_OK")
+        self.assertNotIn(MATRIX_OK_TOKEN, single)
+
 
 class _MaintenanceSnapshotConnection:
     def __init__(self) -> None:

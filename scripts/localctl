@@ -9669,6 +9669,31 @@ def _validate_material_rag_crash_payload(payload: dict[str, object]) -> dict[str
     return payload
 
 
+def _validate_material_rag_matrix_payload(payload: dict[str, object]) -> dict[str, object]:
+    from infra.f1.material_rag_backup_restore import (
+        BackupRestoreError,
+        MATRIX_PAYLOAD_KEYS,
+        MATRIX_SCHEMA,
+        validate_matrix_payload,
+    )
+
+    if set(payload) != set(MATRIX_PAYLOAD_KEYS):
+        raise LocalError("MATRIX_PAYLOAD_KEYS_INVALID")
+    try:
+        validate_matrix_payload(payload)
+    except BackupRestoreError as error:
+        raise LocalError(str(error)) from error
+    if payload.get("schema") != MATRIX_SCHEMA:
+        raise LocalError("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("stages_passed") != 3:
+        raise LocalError("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("fallback_cleanup_total") != 0:
+        raise LocalError("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("minio_replayed_identity_ok") != 1:
+        raise LocalError("MATRIX_PAYLOAD_HARDCODED")
+    return payload
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="localctl")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -9691,6 +9716,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("material-rag-verify")
     subparsers.add_parser("material-rag-backup-restore-check")
     subparsers.add_parser("material-rag-backup-restore-crash-check")
+    subparsers.add_parser("material-rag-backup-restore-crash-matrix-check")
     subparsers.add_parser("material-rag-diagnose-clamd")
     subparsers.add_parser("material-rag-uat-start")
     subparsers.add_parser("material-rag-uat-check")
@@ -9765,6 +9791,31 @@ def main() -> int:
                 + "\n"
             )
             print(CRASH_OK_TOKEN)
+            return 0
+        if arguments.command == "material-rag-backup-restore-crash-matrix-check":
+            from infra.f1.material_rag_backup_restore import (
+                BackupRestoreError,
+                MATRIX_OK_TOKEN,
+                run_crash_matrix_gate,
+            )
+
+            try:
+                payload = run_crash_matrix_gate()
+                _validate_material_rag_matrix_payload(payload)
+            except BackupRestoreError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            sys.stdout.write(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            print(MATRIX_OK_TOKEN)
             return 0
         if arguments.command == "material-rag-verify":
             state = _initialize_material_rag_control()
