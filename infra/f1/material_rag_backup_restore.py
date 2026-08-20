@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -23,7 +24,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import quote, urlparse
 
 import psycopg
@@ -94,6 +95,7 @@ recover_from_journal = _RESTORE_RECOVERY.recover_from_journal
 volume_identity_id = _RESTORE_RECOVERY.volume_identity_id
 write_journal = _RESTORE_RECOVERY.write_journal
 ABORT_DELETE_KINDS = _RESTORE_RECOVERY.ABORT_DELETE_KINDS
+RECOVERABLE_STAGES = _RESTORE_RECOVERY.RECOVERABLE_STAGES
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -156,9 +158,49 @@ CHECK_PAYLOAD_KEYS = (
     "retry_abort_id_reuse_count",
     "journal_stage_recovered",
 )
+CRASH_SCHEMA = "anhuan-material-rag-backup-restore-crash-check-v1"
+CRASH_PAYLOAD_KEYS = (
+    "schema",
+    "f1_head",
+    "hard_death_signal",
+    "fresh_recovery_process",
+    "tamper_rejected",
+    "tamper_zero_delete",
+    "tamper_reason_verified",
+    "new_volume",
+    "new_container",
+    "deleted",
+    "remaining",
+    "fallback_cleanup_used",
+    "stable_zero_observations",
+    "package_reverified",
+    "rebuild_started",
+    "journal_recovered",
+    "shared_match",
+    "skipped",
+    "dedicated_c",
+    "dedicated_v",
+    "dedicated_n",
+)
+CRASH_RECEIPT_SCHEMA = "anhuan-material-rag-crash-receipt-v1"
+CRASH_RECEIPT_KEYS = (
+    "schema",
+    "f1_head",
+    "scope",
+    "project_id",
+    "parent_project_id",
+    "project_name",
+    "control_dir",
+    "journal_path",
+    "package_path",
+    "package_dump_sha256",
+    "package_tree_sha256",
+)
 F1_HEAD = "f1_0015"
 OK_TOKEN = "LOCAL_MATERIAL_RAG_BACKUP_RESTORE_OK"
+CRASH_OK_TOKEN = "LOCAL_MATERIAL_RAG_CRASH_RECOVERY_OK"
 POST_RESTART_PROBE = ROOT / "infra/f1/material-rag/post_restart_probe.py"
+CRASH_PROBE = ROOT / "infra/f1/material-rag/crash_recovery_probe.py"
 EVIDENCE_ROOT = Path(
     "/Users/lichenhao/Desktop/安环项目/artifacts/"
     "material-rag-backup-restore-runtime-20260819-v1"
@@ -366,6 +408,177 @@ def validate_check_payload(payload: dict[str, Any]) -> dict[str, Any]:
         if payload.get("journal_stage_recovered") != 1:
             _fail("CHECK_PAYLOAD_HARDCODED")
     return payload
+
+
+def validate_crash_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(payload, dict) or set(payload) != set(CRASH_PAYLOAD_KEYS):
+        _fail("CRASH_PAYLOAD_KEYS_INVALID")
+    if payload.get("schema") != CRASH_SCHEMA:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("f1_head") != F1_HEAD:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("hard_death_signal") != 9:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("fresh_recovery_process") != 1:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("tamper_rejected") != 1:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("tamper_zero_delete") != 1:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("tamper_reason_verified") != 1:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("new_volume") != 2:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("new_container") != 3:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("deleted") != 5:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("deleted") != (
+        int(payload.get("new_volume") or -1)
+        + int(payload.get("new_container") or -1)
+    ):
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("remaining") != 0:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("fallback_cleanup_used") != 0:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("stable_zero_observations") != 2:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("package_reverified") != 1:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("rebuild_started") != 0:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("journal_recovered") != 1:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("shared_match") != 1:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("skipped") != 0:
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    if (
+        payload.get("dedicated_c") != 0
+        or payload.get("dedicated_v") != 0
+        or payload.get("dedicated_n") != 0
+    ):
+        _fail("CRASH_PAYLOAD_HARDCODED")
+    return payload
+
+
+def evaluate_tamper_probe(
+    *,
+    returncode: int,
+    stdout: bytes,
+    stderr: bytes,
+    remaining_abort_ids: int,
+) -> dict[str, int]:
+    if (
+        returncode == 2
+        and stdout == b""
+        and stderr == b"RESOURCE_LABEL_MISMATCH\n"
+        and remaining_abort_ids == 5
+    ):
+        return {
+            "tamper_rejected": 1,
+            "tamper_reason_verified": 1,
+            "tamper_zero_delete": 1,
+        }
+    _fail("CRASH_TAMPER_INVALID")
+    raise AssertionError("unreachable")
+
+
+def apply_post_stop_fallback(
+    leftover: tuple[int, int, int],
+    destroyers: Sequence[Callable[[], None]],
+) -> int:
+    if leftover == (0, 0, 0):
+        return 0
+    for destroy in destroyers:
+        destroy()
+    return 1
+
+
+def reject_fallback_cleanup(fallback_cleanup_used: int) -> None:
+    if fallback_cleanup_used != 0:
+        _fail("CRASH_FALLBACK_CLEANUP_USED")
+
+
+def observe_stable_zero(
+    samples: Sequence[tuple[tuple[int, int, int], float]],
+    *,
+    min_gap: float = 0.5,
+) -> int:
+    if len(samples) < 2:
+        _fail("CRASH_UNSTABLE_ZERO")
+    previous, previous_at = samples[-2]
+    current, current_at = samples[-1]
+    if (
+        previous != (0, 0, 0)
+        or current != (0, 0, 0)
+        or (current_at - previous_at) < min_gap
+    ):
+        _fail("CRASH_UNSTABLE_ZERO")
+    return 2
+
+
+def _write_closed_json(
+    path: Path, document: Mapping[str, Any], keys: tuple[str, ...]
+) -> None:
+    if set(document) != set(keys):
+        _fail("CRASH_RECEIPT_KEYS_INVALID")
+    encoded = (
+        json.dumps(
+            dict(document),
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    raw = encoded.lower()
+    for token in (
+        "dsn",
+        "password",
+        "secret",
+        "token",
+        "ark",
+        "body",
+        "content",
+        "object_key",
+        "minio_user",
+    ):
+        if token in raw:
+            _fail("CRASH_RECEIPT_SECRET_REJECTED")
+    parent = path.parent
+    if not parent.is_dir():
+        _fail("CRASH_RECEIPT_PARENT_MISSING")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    tmp = parent / (".receipt.tmp." + os.urandom(8).hex())
+    descriptor = os.open(tmp, flags, 0o600)
+    try:
+        os.write(descriptor, encoded.encode("ascii"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(tmp, path)
+    os.chmod(path, 0o600)
+
+
+def _read_crash_receipt(path: Path) -> dict[str, Any]:
+    if path.is_symlink() or path.parent.is_symlink():
+        _fail("CRASH_RECEIPT_SYMLINK")
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        _fail("CRASH_RECEIPT_LINK")
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        _fail("CRASH_RECEIPT_MODE")
+    document = json.loads(path.read_bytes().decode("ascii"))
+    if not isinstance(document, dict) or set(document) != set(CRASH_RECEIPT_KEYS):
+        _fail("CRASH_RECEIPT_KEYS_INVALID")
+    if document.get("schema") != CRASH_RECEIPT_SCHEMA:
+        _fail("CRASH_RECEIPT_SCHEMA")
+    return document
 
 
 def require_three_labels(
@@ -1038,6 +1251,37 @@ class BackupRestoreStack:
         self._redis_patch: Any = None
         self._rag_patch: Any = None
         self.world: LifecycleWorld | None = None
+
+    @classmethod
+    def attach_from_receipt(cls, receipt: Mapping[str, Any]) -> "BackupRestoreStack":
+        stack = cls()
+        stack.project_id = str(receipt["project_id"])
+        stack.parent_project_id = str(receipt["parent_project_id"])
+        stack.project_name = str(receipt["project_name"])
+        stack.control_dir = Path(str(receipt["control_dir"]))
+        stack.backup_dir = stack.control_dir / "backup"
+        stack.package_dir = stack.control_dir / "package"
+        secrets_dir = stack.control_dir / "secrets"
+        if secrets_dir.is_dir():
+            stack.secrets_dir = secrets_dir
+        compose_env = stack.control_dir / "compose.env"
+        if compose_env.is_file() and not compose_env.is_symlink():
+            values: dict[str, str] = {}
+            for line in compose_env.read_text(encoding="ascii").splitlines():
+                if "=" in line:
+                    key, value = line.split("=", 1)
+                    values[key] = value
+            database = values.get("LOCAL_MATERIAL_RAG_DATABASE")
+            if database:
+                stack.database = database
+            host_port = values.get("LOCAL_MATERIAL_RAG_BR_HOST_PORT")
+            if host_port:
+                stack.host_port = int(host_port)
+            minio_port = values.get("LOCAL_MATERIAL_RAG_BR_MINIO_PORT")
+            if minio_port:
+                stack.minio_port = int(minio_port)
+        stack.started = True
+        return stack
 
     def _compose_docker_env(self) -> dict[str, str]:
         if self.secrets_dir is None:
@@ -1854,6 +2098,44 @@ class BackupRestoreStack:
             document["stage"] = stage
         self._recovery(write_journal, path, document)
         self._recovery(maybe_crash, stage)
+        if (
+            stage == "DB_RESTORED"
+            and os.environ.get("MATERIAL_RAG_RESTORE_WAIT_AFTER", "").strip()
+            == "DB_RESTORED"
+        ):
+            self._pause_after_journal(stage)
+
+    def _write_crash_receipt(self) -> None:
+        target = Path(os.environ["MATERIAL_RAG_CRASH_RECEIPT"])
+        document = self._recovery(read_journal, self._journal_path())
+        _write_closed_json(
+            target,
+            {
+                "control_dir": str(self.control_dir),
+                "f1_head": F1_HEAD,
+                "journal_path": str(self._journal_path()),
+                "package_dump_sha256": document["package_dump_sha256"],
+                "package_path": str(self.backup_dir),
+                "package_tree_sha256": document["package_tree_sha256"],
+                "parent_project_id": self.parent_project_id,
+                "project_id": self.project_id,
+                "project_name": self.project_name,
+                "schema": CRASH_RECEIPT_SCHEMA,
+                "scope": SCOPE,
+            },
+            CRASH_RECEIPT_KEYS,
+        )
+
+    def _pause_after_journal(self, stage: str) -> None:
+        self._write_crash_receipt()
+        ready = Path(os.environ["MATERIAL_RAG_CRASH_READY"])
+        _write_closed_json(
+            ready,
+            {"ready": 1, "stage": stage},
+            ("ready", "stage"),
+        )
+        while True:
+            time.sleep(0.2)
 
     def _core_label_payload(self, labels: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -3404,3 +3686,290 @@ def run_machine_gate() -> dict[str, Any]:
     ):
         _fail("GATE_AGGREGATE_INVALID")
     return payload
+
+
+def _crash_subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + str(ROOT)
+    env.setdefault(
+        "F1_KEYCLOAK_ISSUER_URL",
+        "http://material-rag.invalid/realms/anhuan",
+    )
+    env.pop("MATERIAL_RAG_RESTORE_CRASH_AFTER", None)
+    env.pop("MATERIAL_RAG_RESTORE_WAIT_AFTER", None)
+    env.pop("MATERIAL_RAG_CRASH_READY", None)
+    env.pop("MATERIAL_RAG_CRASH_RECEIPT", None)
+    return env
+
+
+def _precise_crash_cleanup(receipt_path: Path, before_fingerprint: bytes) -> None:
+    if not receipt_path.exists():
+        return
+    receipt = _read_crash_receipt(receipt_path)
+    stack = BackupRestoreStack.attach_from_receipt(receipt)
+    stack.before_fingerprint = before_fingerprint
+    journal_path = Path(receipt["journal_path"])
+    package = Path(receipt["package_path"])
+    if journal_path.exists() and not journal_path.is_symlink():
+        document = read_journal(journal_path)
+        if document["stage"] in RECOVERABLE_STAGES:
+            live = stack.capture_core_identities()
+            destroyer = DockerIdentityDestroyer(stack)
+            manifest = json.loads(
+                (package / "manifest.json").read_bytes().decode("ascii")
+            )
+
+            def package_check() -> None:
+                verify_package(
+                    package,
+                    expected_project_id=str(receipt["project_id"]),
+                    expected_parent_project_id=str(receipt["parent_project_id"]),
+                    expected_database=str(manifest["database"]),
+                    expected_scope=SCOPE,
+                )
+
+            recover_from_journal(
+                journal_path,
+                expected_scope=SCOPE,
+                expected_project_id=str(receipt["project_id"]),
+                expected_parent_project_id=str(receipt["parent_project_id"]),
+                expected_dump_sha256=str(receipt["package_dump_sha256"]),
+                expected_tree_sha256=str(receipt["package_tree_sha256"]),
+                live=live,
+                destroyer=destroyer,
+                package_check=package_check,
+            )
+    stack.stop()
+
+
+def run_crash_machine_gate() -> dict[str, Any]:
+    if dedicated_counts() != (0, 0, 0):
+        _fail("DEDICATED_PREEXISTING")
+    before_fingerprint = canonical_shared_fingerprint()
+    work = Path(f"/private/tmp/anhuan-mr-crash-{uuid.uuid4().hex[:12]}")
+    work.mkdir(mode=0o700)
+    ready = work / "ready.json"
+    receipt_path = work / "receipt.json"
+    child: subprocess.Popen[bytes] | None = None
+    cleaned = 0
+    try:
+        env = _crash_subprocess_env()
+        probe = str(ROOT / "infra/f1/material-rag/crash_recovery_probe.py")
+        if "recover_from_journal" not in Path(probe).read_text(encoding="utf-8"):
+            _fail("CRASH_PROBE_RECOVER_MISSING")
+        child = subprocess.Popen(
+            [
+                PYTHON,
+                "-B",
+                probe,
+                "child",
+                "--ready",
+                str(ready),
+                "--receipt",
+                str(receipt_path),
+            ],
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        deadline = time.monotonic() + 240
+        while time.monotonic() < deadline:
+            if child.poll() is not None:
+                _fail("CRASH_CHILD_EXITED")
+            if ready.exists() and receipt_path.exists():
+                break
+            time.sleep(0.1)
+        else:
+            _fail("CRASH_CHILD_READY_TIMEOUT")
+        receipt = _read_crash_receipt(receipt_path)
+        attached = BackupRestoreStack.attach_from_receipt(receipt)
+        attached.before_fingerprint = before_fingerprint
+        journal_path = Path(receipt["journal_path"])
+        journal = read_journal(journal_path)
+        if journal["stage"] != "DB_RESTORED":
+            _fail("JOURNAL_STAGE_INVALID")
+        live_before = attached.capture_core_identities()
+        saved = [
+            {"id": item["id"], "kind": item["kind"]} for item in journal["resources"]
+        ]
+        try:
+            new_items = new_labeled_resources(
+                saved,
+                live_before,
+                scope=SCOPE,
+                project_id=str(receipt["project_id"]),
+                parent_project_id=str(receipt["parent_project_id"]),
+            )
+        except RestoreRecoveryError as exc:
+            raise BackupRestoreError(exc.code) from exc
+        abort_new = [
+            item for item in new_items if item["kind"] in ABORT_DELETE_KINDS
+        ]
+        new_volume = sum(1 for item in abort_new if item["kind"] == "volume")
+        new_container = sum(1 for item in abort_new if item["kind"] == "container")
+        if new_volume != 2 or new_container != 3:
+            _fail("CRASH_NEW_RESOURCE_COUNT")
+        package = Path(receipt["package_path"])
+        manifest = json.loads((package / "manifest.json").read_bytes().decode("ascii"))
+        expected = {
+            "expected_project_id": str(receipt["project_id"]),
+            "expected_parent_project_id": str(receipt["parent_project_id"]),
+            "expected_database": str(manifest["database"]),
+            "expected_scope": SCOPE,
+        }
+        verify_package(package, **expected)
+        os.kill(child.pid, signal.SIGKILL)
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except OSError:
+            pass
+        child.wait(timeout=10)
+        if child.returncode != -signal.SIGKILL:
+            _fail("HARD_DEATH_NOT_SIGKILL")
+        hard_death_signal = 9
+        live_after_kill = attached.capture_core_identities()
+        after_kill_ids = {
+            (item["kind"], item["id"]) for item in live_after_kill
+        }
+        for item in abort_new:
+            if (item["kind"], item["id"]) not in after_kill_ids:
+                _fail("CRASH_FINALLY_RAN")
+        verify_package(package, **expected)
+        tamper = subprocess.Popen(
+            [
+                PYTHON,
+                "-B",
+                probe,
+                "recover",
+                "--receipt",
+                str(receipt_path),
+                "--tamper-labels",
+            ],
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        tamper_stdout, tamper_stderr = tamper.communicate(timeout=60)
+        live_after_tamper = attached.capture_core_identities()
+        tamper_ids = {(item["kind"], item["id"]) for item in live_after_tamper}
+        remaining_after_tamper = sum(
+            1 for item in abort_new if (item["kind"], item["id"]) in tamper_ids
+        )
+        evaluated = evaluate_tamper_probe(
+            returncode=tamper.returncode,
+            stdout=tamper_stdout or b"",
+            stderr=tamper_stderr or b"",
+            remaining_abort_ids=remaining_after_tamper,
+        )
+        tamper_rejected = evaluated["tamper_rejected"]
+        tamper_reason_verified = evaluated["tamper_reason_verified"]
+        tamper_zero_delete = evaluated["tamper_zero_delete"]
+        recover = subprocess.Popen(
+            [
+                PYTHON,
+                "-B",
+                probe,
+                "recover",
+                "--receipt",
+                str(receipt_path),
+            ],
+            cwd=str(ROOT),
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        recover.communicate(timeout=60)
+        if recover.returncode != 0:
+            _fail("CRASH_RECOVER_FAILED")
+        if child.pid != recover.pid:
+            fresh_recovery_process = 1
+        else:
+            _fail("CRASH_RECOVERY_PID_COLLISION")
+        live_after = attached.capture_core_identities()
+        remain_ids = {(item["kind"], item["id"]) for item in live_after}
+        remaining = sum(
+            1 for item in abort_new if (item["kind"], item["id"]) in remain_ids
+        )
+        if remaining != 0:
+            _fail("RESTORE_ABORT_ID_REMAINS")
+        deleted = new_volume + new_container
+        recovered_doc = read_journal(journal_path)
+        journal_recovered = int(recovered_doc["stage"] == "RECOVERED")
+        if journal_recovered != 1:
+            _fail("JOURNAL_STAGE_INVALID")
+        verify_package(package, **expected)
+        package_reverified = 1
+        rebuild_started = 0
+        attached.stop()
+        first = dedicated_counts()
+        first_at = time.monotonic()
+        while time.monotonic() - first_at < 0.5:
+            time.sleep(0.05)
+        second = dedicated_counts()
+        second_at = time.monotonic()
+        leftover = first if first != (0, 0, 0) else second
+        fallback_cleanup_used = apply_post_stop_fallback(
+            leftover,
+            (
+                lambda: attached._destroy_labeled_leftovers("container", ["rm", "-f"]),
+                lambda: attached._destroy_labeled_leftovers("volume", ["volume", "rm", "-f"]),
+                lambda: attached._destroy_labeled_leftovers("network", ["network", "rm"]),
+            ),
+        )
+        if fallback_cleanup_used == 1:
+            attached.dedicated_after = dedicated_counts()
+            attached.shared_match = int(
+                canonical_shared_fingerprint() == before_fingerprint
+            )
+        reject_fallback_cleanup(fallback_cleanup_used)
+        stable_zero_observations = observe_stable_zero(
+            ((first, first_at), (second, second_at))
+        )
+        attached.dedicated_after = second
+        attached.shared_match = int(
+            canonical_shared_fingerprint() == before_fingerprint
+        )
+        if attached.dedicated_after != (0, 0, 0) or dedicated_counts() != (0, 0, 0):
+            _fail("CLEANUP_RESIDUAL")
+        cleaned = 1
+        payload = {
+            "schema": CRASH_SCHEMA,
+            "f1_head": F1_HEAD,
+            "hard_death_signal": hard_death_signal,
+            "fresh_recovery_process": fresh_recovery_process,
+            "tamper_rejected": tamper_rejected,
+            "tamper_zero_delete": tamper_zero_delete,
+            "tamper_reason_verified": tamper_reason_verified,
+            "new_volume": new_volume,
+            "new_container": new_container,
+            "deleted": deleted,
+            "remaining": remaining,
+            "fallback_cleanup_used": fallback_cleanup_used,
+            "stable_zero_observations": stable_zero_observations,
+            "package_reverified": package_reverified,
+            "rebuild_started": rebuild_started,
+            "journal_recovered": journal_recovered,
+            "shared_match": attached.shared_match,
+            "skipped": 0,
+            "dedicated_c": attached.dedicated_after[0],
+            "dedicated_v": attached.dedicated_after[1],
+            "dedicated_n": attached.dedicated_after[2],
+        }
+        return validate_crash_payload(payload)
+    finally:
+        if cleaned != 1:
+            try:
+                if child is not None and child.poll() is None:
+                    os.kill(child.pid, signal.SIGKILL)
+                    child.wait(timeout=10)
+            except OSError:
+                pass
+            try:
+                _precise_crash_cleanup(receipt_path, before_fingerprint)
+            except Exception:
+                pass
+        if work.exists():
+            shutil.rmtree(work, ignore_errors=True)

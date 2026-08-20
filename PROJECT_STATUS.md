@@ -6,11 +6,11 @@
 ## 代码与版本
 
 - 开发 checkout：`/Users/lichenhao/Desktop/安环项目/material-rag-backend-runtime-20260819/source/repo`
-- 分支：`codex/material-rag-postgres-integration` @ `f0e60a41c503c49504fdb208f06b5aad40d3e0c9`（stacked draft PR #2，base=`codex/material-rag-scanner-protocol`。backup/restore 专属机器门留本地 dirty，未再 commit/push。旧 recovery dirty checkout 只读）
+- 分支：`codex/material-rag-postgres-integration` @ `21e7eea81107eaf73dcc5ca125c754b67e2c7224`（stacked draft PR #2，base=`codex/material-rag-scanner-protocol`。该 commit 已 push，PR #2 head 同 OID。本轮 crash 假绿封口留本地 dirty，未再 commit/push）
 - 干净基线：`origin/main@8d2e791b019ede7f1c3b5e939258952503bf7b89`
 - 当前工程基线：`codex/engineering-closeout@69f6d41`，其上为材料录入切片
 - F1 Alembic：源码唯一 head 为 `f1_0015`（`down_revision=f1_0014`，另增 3 张 FORCE RLS 表，目录 38）。`migrate_f1.migrate_with_connection` 内部闭集 `{f1_0014,f1_0015}`，且 `type(target) is not str` 之后才查闭集；默认工程目标锁定 `f1_0014`；专属 `infra/f1/material-rag/migrate.py` 显式请求 `f1_0015`。`[]`/`{}`/`set()`/`bytearray()` 等非法对象统一 `F1_MIGRATE_TARGET_INVALID`，不泄漏 TypeError。P2 wave1–4 静态 graph 承认脚本 head=`f1_0015`。默认 seed/verify/backup 的 0014/35 合同保持原样。未把 material-RAG 并入默认运行栈
-- 远端边界：发布目标为 `origin/codex/material-rag-scanner-protocol`；本次仅提交、推送并创建草稿 PR，不部署、不写生产
+- 远端边界：发布目标为 `origin/codex/material-rag-scanner-protocol`；PR #2 已 OPEN+draft 且 head=`21e7eea`。本轮不 commit/push、不部署、不写生产
 - 旧 `codex/f1-1-1-repair` 只保留作历史证据，不再继续开发或推送
 
 ## 阶段状态
@@ -27,7 +27,7 @@
 | P7 | `P7_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | PostgreSQL/API/RLS 人工结果与回滚门；本地 PostgreSQL + MinIO 备份/恢复链 | 故障切换、部署或生产访问 |
 | P8 | `P8_COMPLETE_NOT_RELEASE_VERIFIED / INTERNAL_PWA_ONLY / NOT_PRODUCTION` | 3 类 OIDC 身份；管理员 17、顾问 2、企业 2 页；离线静态壳与真实 A→B waiting update 用户确认链 | OS 级应用安装 `BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY / PWA_OS_INSTALL_NOT_TESTED`、设备矩阵、正式小程序发布 |
 | 材料录入降本 | `SMOKE_PASSED / NOT_PRODUCTION` | 实库 `f1_0011 → … → f1_0014`；同一合成文本 PDF 在服务公司／客户域各上传一次，真实 MinIO/ClamAV、预览、释放、2 analysis/2 page/8 candidate、2 scope、负责人/非负责人/跨租户上下层 RLS 及客户材料 API+DB 政策硬拒绝通过；服务公司 policy draft=1、publication=0 | 真实 Demo PDF、批量浏览器、物理 RAG 索引/检索、OCR、准确率、备份恢复实跑、P4 报告入口、Inspector 运行时、发布验收与生产 |
-| 双知识域物理 RAG | `MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_RESTORE_ABORT_CLEANUP_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / CRASH_RECOVERY_RUNTIME_NOT_TESTED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION` | 合同 `Ran 46 / OK`；专属 Docker 身份 abort 绿灯：2 卷+3 容器精确删除、remaining=0、package 复验、journal recovered、C/V/N=0、共享不变 | 正式用户 restore、领导 UAT、Ark、生产、crash journal SIGKILL/断电 runtime。未写 `UAT_PASSED` / `CRASH_RECOVERY_RUNTIME_PASSED`。 |
+| 双知识域物理 RAG | `MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION` | 合同 `Ran 56 / OK`；crash 门：SIGKILL 后 fresh process 精确删 5，且 `fallback_cleanup_used=0 stable_zero_observations=2 tamper_reason_verified=1`；fallback 或错误 tamper 不能假绿。实际闭集 9 文件，不是 7。C/V/N=0、共享不变 | 正式用户 restore、领导 UAT、Ark、生产、断电/全阶段 crash。未写 `UAT_PASSED` / `CRASH_RECOVERY_RUNTIME_PASSED`。 |
 
 已保留的技术摘要为：直接相关检查 `230/230 OK`，备份 `20260810T224332Z-2a861bccbba9` 完成 `reset → restore`，恢复后 health ready、verify 五门全绿、浏览器与 PWA 更新链通过。这些摘要不替代当前 pending 的精确顺序重放证据表。P8 构建仍有单 JS 约 1.48 MiB 的非阻断性能债。
 
@@ -62,4 +62,4 @@
 
 ## 下一步
 
-材料类型与知识归属仍分开，客户材料不能进入公司政策草稿。当前分支精确为 `codex/material-rag-postgres-integration` @ `f0e60a41`，restore abort dirty 不 commit、不更新 PR #2。backup/restore 专属机器门已绿，正式用户 restore 仍未开放。Ark/headed UAT 继续延期。不是 `UAT_PASSED`，不是 `RELEASE_VERIFIED`，未 headed open，未人工签字，未写 `HUMAN_UAT_READY`，未部署。不处理 F0-I key。不恢复旧 F1.1.1 发布验收或 PWA OS 探针，不进入真实 UAT 签字、生产或正式小程序。`pdf-inspector` 仍为 `RUNTIME_DISABLED`。
+材料类型与知识归属仍分开，客户材料不能进入公司政策草稿。当前分支精确为 `codex/material-rag-postgres-integration` @ `21e7eea`（已 push，PR #2 draft head 同 OID）。本轮 SIGKILL crash 门留本地 dirty，不 commit、不更新 PR #2。backup/restore 专属机器门与 DB_RESTORED abort recovery 已绿，正式用户 restore 仍未开放。Ark/headed UAT 继续延期。不是 `UAT_PASSED`，不是 `RELEASE_VERIFIED`，未 headed open，未人工签字，未写 `HUMAN_UAT_READY`，未部署。不处理 F0-I key。不恢复旧 F1.1.1 发布验收或 PWA OS 探针，不进入真实 UAT 签字、生产或正式小程序。`pdf-inspector` 仍为 `RUNTIME_DISABLED`。

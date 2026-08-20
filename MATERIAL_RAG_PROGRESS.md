@@ -1,5 +1,40 @@
 # MATERIAL RAG Progress
 
+## 2026-08-20｜SIGKILL checkpoint + 三阶段矩阵｜STARTED
+
+- 任务0 相符：branch=`codex/material-rag-postgres-integration` HEAD=`21e7eea81107eaf73dcc5ca125c754b67e2c7224` staged=0 dirty=9（8M+1A，均在白名单）`git diff --check=0`；ls-remote 与 PR #2 head 均为 21e7eea，OPEN+draft，base=`codex/material-rag-scanner-protocol@c58ef92…`。9 文件与证据 `source/file-manifest` 字节一致；包根 `a7744600…71e9`。
+- 阶段A：显式 stage 九路径，commit `test(material-rag): prove SIGKILL restore recovery gate`，普通 push，更新 PR #2 标题/正文；仍 draft、不 merge、不改 base。
+- 阶段B：本地未提交矩阵 `VOLUMES_REPLACED/DB_RESTORED/MINIO_REPLAYED`；保留旧 crash-check。合同≤6、矩阵 live≤3、旧门≤1。不测断电。建议：无。
+- 现役先保持 `CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / NOT_PUSHED`。未写 `CRASH_RECOVERY_RUNTIME_PASSED`。
+
+## 2026-08-20｜crash 假绿封口｜PASSED
+
+- 现役：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。未写 `UAT_PASSED` / `CRASH_RECOVERY_RUNTIME_PASSED`。未开放用户 restore。未 commit/push。HEAD 仍为已 push 的 `21e7eea`；PR #2 仍 OPEN+draft。
+- 合同 2/5：先红 `Ran 56 tests in 0.300s / FAILED (errors=2)` exit=1；实现后 `Ran 56 tests in 0.297s / OK` exit=0 skipped=0。反向：leftover 触发精确三标签清理后 `fallback_cleanup_used=1` 且 `CRASH_FALLBACK_CLEANUP_USED`；tamper 非 `returncode=2`+空 stdout+`RESOURCE_LABEL_MISMATCH\n`+5 ID 仍在 → `CRASH_TAMPER_INVALID`。clone 合同 `Ran 56 tests in 0.326s / OK` skipped=0 后已删。
+- Docker crash 1/3：exit=0 wall=25.698s，stderr 空，stdout 恰 2 行 canonical crash JSON + `LOCAL_MATERIAL_RAG_CRASH_RECOVERY_OK`；`hard_death_signal=9 fresh_recovery_process=1 tamper_rejected=1 tamper_zero_delete=1 tamper_reason_verified=1 new_volume=2 new_container=3 deleted=5 remaining=0 fallback_cleanup_used=0 stable_zero_observations=2 package_reverified=1 rebuild_started=0 journal_recovered=1 shared_match=1 skipped=0`。未重跑 v3。
+- 实际闭集 9 文件（非 7）：4 代码 `infra/f1/material_rag_backup_restore.py`、`infra/f1/material-rag/crash_recovery_probe.py`、`tests/test_material_rag_backup_restore.py`、`scripts/localctl` + 5 份状态文档。专属 C/V/N=0。共享 fingerprint=`f08864aa…b0d065` 不变。证据包 `material-rag-crash-false-green-20260820-v1`。旧包 v1 只读未改写。
+- 建议：stop 后先做两次间隔 ≥0.5s 的 C/V/N=0 观测，任一次非零才做精确三标签诊断清理并失败本门；不用字面量填 `fallback_cleanup_used=0`。只证明 DB_RESTORED SIGKILL abort recovery。
+
+## 2026-08-20｜crash 假绿封口｜STARTED
+
+- 任务0 相符：branch=`codex/material-rag-postgres-integration` HEAD=`21e7eea81107eaf73dcc5ca125c754b67e2c7224` staged=0 dirty=9（8M+1untracked，均在白名单）`git diff --check=0`；`git ls-remote` 与 PR #2 head 均为 21e7eea，OPEN+draft。旧包 58 项根 `d1fcb42f…c9f8` 只读。共享 fingerprint=`f08864aa…b0d065`，专属 C/V/N=0。compose/restore_recovery 相对 HEAD 无漂移。
+- 目标：封 fallback 执行仍报 0、以及 tamper 任意非零当标签拒绝。合同先红后绿 Ran≥56；crash Docker 一门；clone 只跑合同。不重跑 v3/155。不 commit/push。
+- 预算：合同≤5、crash Docker≤3。建议：无。现役先保持上一轮 `CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED`。未写 `CRASH_RECOVERY_RUNTIME_PASSED`。
+
+## 2026-08-20｜DB_RESTORED SIGKILL crash recovery｜PASSED
+
+- 现役：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。未写 `UAT_PASSED` / `CRASH_RECOVERY_RUNTIME_PASSED`。未开放用户 restore。未 commit/push。HEAD 仍为已 push 的 `21e7eea`；PR #2 仍 OPEN+draft。
+- 合同：首次红 `Ran 54 tests in 0.260s / FAILED (failures=2, errors=6)` exit=1；实现后 `Ran 54 tests in 0.270s / OK` exit=0 skipped=0。clone 合同 `Ran 54 tests in 0.307s / OK` skipped=0。
+- Docker：crash-check attempt1 exit=0 wall=23.670s，stderr 空，stdout 恰 2 行 canonical crash JSON + `LOCAL_MATERIAL_RAG_CRASH_RECOVERY_OK`；`hard_death_signal=9 fresh_recovery_process=1 tamper_rejected=1 tamper_zero_delete=1 new_volume=2 new_container=3 deleted=5 remaining=0 fallback_cleanup_used=0 package_reverified=1 rebuild_started=0 journal_recovered=1 shared_match=1 skipped=0`。v3 attempt1 `DEDICATED_PREEXISTING` wall=0.818s（crash stop 后计数曾短暂非零）；attempt2 exit=0 wall=108.717s，stderr 空，v3 两行绿灯，C/V/N=0，共享 fingerprint 不变。
+- 建议替换：暂停用 `WAIT_AFTER=DB_RESTORED` sentinel，不用 `maybe_crash` 当 hard death。crash 门 stop 后若 dedicated 非 0 则按三标签再清一次。证据包 `material-rag-crash-runtime-20260820-v1`。只证明 DB_RESTORED SIGKILL abort recovery。
+
+## 2026-08-20｜DB_RESTORED SIGKILL crash recovery｜STARTED
+
+- 任务0 相符：branch=`codex/material-rag-postgres-integration` HEAD=`21e7eea81107eaf73dcc5ca125c754b67e2c7224` worktree clean staged=0 `git diff --check=0`；`git ls-remote` 同分支与 PR #2 head 均为 21e7eea；PR #2 OPEN+draft，base=`codex/material-rag-scanner-protocol`。checkpoint 根 `7c45b00d…6b21` 只读。
+- 目标：真实 child SIGKILL（journal 恰为 DB_RESTORED）后，第二 fresh process 按 journal 精确删 5；只证明 abort recovery，不冒充断电/全阶段。合同先红后绿；新 crash Docker 一门 + 原 v3 一门；clone 只跑合同。
+- 预算：Docker 总周期≤5。不 commit/push。不开放用户 restore。建议替换：暂停用 `WAIT_AFTER=DB_RESTORED` sentinel，不用 `maybe_crash` 当 hard death。
+- 现役先保持 `MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_RUNTIME_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。未写 `CRASH_RECOVERY_RUNTIME_PASSED`。
+
 ## 2026-08-20｜restore abort 自主修通｜PASSED
 
 - 现役：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_RESTORE_ABORT_CLEANUP_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / CRASH_RECOVERY_RUNTIME_NOT_TESTED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。未写 `UAT_PASSED` / `CRASH_RECOVERY_RUNTIME_PASSED`。未开放用户 restore。未 commit/push。

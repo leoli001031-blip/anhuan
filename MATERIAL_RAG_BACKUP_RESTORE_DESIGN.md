@@ -1,8 +1,9 @@
 # material-RAG backup/restore 下一轮可实施设计
 
-现役：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_RESTORE_ABORT_CLEANUP_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / CRASH_RECOVERY_RUNTIME_NOT_TESTED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。
-2026-08-20 自主修通：真实枚举先按 compose project / 预保存 handle 列出本项目 C/V/N，再强制核三标签；check schema `anhuan-material-rag-backup-restore-check-v3`（v2 不得兼容假绿）。合同 `Ran 46 / OK`；Docker 门 stderr 空、stdout 两行，同数换卷 2 卷 + 3 容器精确删除、remaining=0、package 复验、无 rebuild、journal recovered、C/V/N=0、共享不变。journal 只保留 IMPLEMENTED / RUNTIME_NOT_TESTED，未写 `CRASH_RECOVERY_RUNTIME_PASSED`。正式面向用户的 restore 命令仍未开放。不改 `infra/f1/local_backup.py`、默认 closeout 链。
-旧证据包 `material-rag-restore-abort-normal-validation-20260820-v1` 只读。本轮证据 `material-rag-restore-abort-autonomous-20260820-v1`。
+现役：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。
+2026-08-20 crash 假绿封口：`fallback_cleanup_used` 必须反映真实执行；stop 后若仍有专属资源，允许精确三标签诊断清理，但本门失败、不得输出 OK。tamper 只有 `returncode=2`、stdout 空、stderr 恰为 `RESOURCE_LABEL_MISMATCH\n` 且 5 个 abort ID 仍在，才 `tamper_rejected=1` / `tamper_reason_verified=1`。两次间隔 ≥0.5s 的 C/V/N=0 锁定 `stable_zero_observations=2`。合同 `Ran 56 / OK`；crash 门 stderr 空、两行绿灯。实际闭集 9 文件（4 代码 + 5 文档），不是 7。未写 `CRASH_RECOVERY_RUNTIME_PASSED`。正式面向用户的 restore 命令仍未开放。HEAD=`21e7eea81107eaf73dcc5ca125c754b67e2c7224` 已 push；PR #2 仍 OPEN+draft。本轮不 commit/push。
+旧证据包 `material-rag-crash-runtime-20260820-v1` 只读。本轮证据 `material-rag-crash-false-green-20260820-v1`。
+2026-08-20 DB_RESTORED SIGKILL：内部命令 `material-rag-backup-restore-crash-check`；child 在 journal 原子写入 `DB_RESTORED` 后暂停，监督进程 SIGKILL（`hard_death_signal=9`），第二 fresh process 仅凭 0600 receipt+journal 精确恢复。错标签反向零删除后再删新 2 卷+3 容器。当时合同 `Ran 54 / OK`。未写 `CRASH_RECOVERY_RUNTIME_PASSED`（不冒充断电/全阶段）。
 
 ## 本轮已封的三个假绿
 

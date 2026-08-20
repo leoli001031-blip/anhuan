@@ -1546,6 +1546,429 @@ print(json.dumps({"deleted": result["deleted"], "rebuild_started": result["rebui
                 else:
                     os.environ[crash_key] = previous
 
+    def _parser_commands(self, parser) -> set[str]:
+        for action in parser._actions:
+            choices = getattr(action, "choices", None)
+            if isinstance(choices, dict) and "backup" in choices:
+                return set(choices)
+        raise AssertionError("localctl subparsers missing")
+
+    def _valid_crash_payload(self) -> dict:
+        from infra.f1.material_rag_backup_restore import CRASH_PAYLOAD_KEYS, CRASH_SCHEMA
+
+        return {key: 0 for key in CRASH_PAYLOAD_KEYS} | {
+            "schema": CRASH_SCHEMA,
+            "f1_head": F1_HEAD,
+            "hard_death_signal": 9,
+            "fresh_recovery_process": 1,
+            "tamper_rejected": 1,
+            "tamper_zero_delete": 1,
+            "tamper_reason_verified": 1,
+            "new_volume": 2,
+            "new_container": 3,
+            "deleted": 5,
+            "remaining": 0,
+            "fallback_cleanup_used": 0,
+            "stable_zero_observations": 2,
+            "package_reverified": 1,
+            "rebuild_started": 0,
+            "journal_recovered": 1,
+            "shared_match": 1,
+            "skipped": 0,
+            "dedicated_c": 0,
+            "dedicated_v": 0,
+            "dedicated_n": 0,
+        }
+
+    def test_crash_check_parser_is_isolated_from_user_restore(self) -> None:
+        localctl = load_localctl()
+        parser = localctl._parser()
+        commands = self._parser_commands(parser)
+        self.assertIn("material-rag-backup-restore-crash-check", commands)
+        self.assertIn("material-rag-backup-restore-check", commands)
+        self.assertIn("restore", commands)
+        parsed = parser.parse_args(["material-rag-backup-restore-crash-check"])
+        self.assertEqual(parsed.command, "material-rag-backup-restore-crash-check")
+        check = parser.parse_args(["material-rag-backup-restore-check"])
+        self.assertEqual(check.command, "material-rag-backup-restore-check")
+        restore = parser.parse_args(["restore", "--confirm-local-data"])
+        self.assertEqual(restore.command, "restore")
+        self.assertTrue(restore.confirm_local_data)
+
+    def test_exception_and_finally_cleanup_are_not_hard_death(self) -> None:
+        recovery = load_restore_recovery()
+        crash_key = "MATERIAL_RAG_RESTORE_CRASH_AFTER"
+        previous = os.environ.get(crash_key)
+        os.environ[crash_key] = "DB_RESTORED"
+        try:
+            with self.assertRaises(recovery.RestoreRecoveryError) as raised:
+                recovery.maybe_crash("DB_RESTORED")
+            self.assertEqual(raised.exception.code, "RESTORE_CRASH_INJECTED")
+        finally:
+            if previous is None:
+                os.environ.pop(crash_key, None)
+            else:
+                os.environ[crash_key] = previous
+        gate = (ROOT / "infra/f1/material_rag_backup_restore.py").read_text(
+            encoding="utf-8"
+        )
+        probe = (
+            ROOT / "infra/f1/material-rag/crash_recovery_probe.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("signal.SIGKILL", gate)
+        self.assertIn("os.kill(", gate)
+        self.assertIn("run_crash_machine_gate", gate)
+        self.assertNotIn("RESTORE_CRASH_INJECTED", probe)
+        self.assertIn("finally:", probe)
+        self.assertIn("stack.stop()", probe)
+        pause = inspect.getsource(
+            __import__(
+                "infra.f1.material_rag_backup_restore",
+                fromlist=["BackupRestoreStack"],
+            ).BackupRestoreStack._write_restore_journal
+        )
+        self.assertIn("MATERIAL_RAG_RESTORE_WAIT_AFTER", pause)
+        self.assertLess(pause.index("write_journal"), pause.index("WAIT_AFTER"))
+
+    def test_crash_and_recovery_must_use_distinct_pids(self) -> None:
+        probe_path = ROOT / "infra/f1/material-rag/crash_recovery_probe.py"
+        self.assertTrue(probe_path.is_file())
+        probe = probe_path.read_text(encoding="utf-8")
+        gate = inspect.getsource(
+            __import__(
+                "infra.f1.material_rag_backup_restore",
+                fromlist=["run_crash_machine_gate"],
+            ).run_crash_machine_gate
+        )
+        self.assertIn('if __name__ == "__main__"', probe)
+        self.assertIn("crash_recovery_probe.py", gate)
+        self.assertIn("subprocess.Popen", gate)
+        self.assertIn('"recover"', gate)
+        self.assertIn("fresh_recovery_process", gate)
+        self.assertIn("child.pid", gate)
+        self.assertIn("recover.pid", gate)
+        self.assertIn("!=", gate)
+
+    def test_sigkill_requires_journal_stage_db_restored(self) -> None:
+        gate = inspect.getsource(
+            __import__(
+                "infra.f1.material_rag_backup_restore",
+                fromlist=["run_crash_machine_gate"],
+            ).run_crash_machine_gate
+        )
+        self.assertIn('"DB_RESTORED"', gate)
+        self.assertIn("signal.SIGKILL", gate)
+        self.assertLess(gate.index('"DB_RESTORED"'), gate.index("SIGKILL"))
+        self.assertIn("hard_death_signal", gate)
+        journal = inspect.getsource(
+            __import__(
+                "infra.f1.material_rag_backup_restore",
+                fromlist=["BackupRestoreStack"],
+            ).BackupRestoreStack._write_restore_journal
+        )
+        self.assertIn('"DB_RESTORED"', journal)
+        self.assertIn("MATERIAL_RAG_RESTORE_WAIT_AFTER", journal)
+
+    def test_wrong_project_or_label_crash_recovery_zero_delete(self) -> None:
+        recovery = load_restore_recovery()
+        probe = (
+            ROOT / "infra/f1/material-rag/crash_recovery_probe.py"
+        ).read_text(encoding="utf-8")
+        gate = inspect.getsource(
+            __import__(
+                "infra.f1.material_rag_backup_restore",
+                fromlist=["run_crash_machine_gate"],
+            ).run_crash_machine_gate
+        )
+        self.assertIn("tamper", probe)
+        self.assertIn("RESOURCE_LABEL_MISMATCH", probe)
+        self.assertIn("tamper_zero_delete", gate)
+        self.assertIn("tamper_rejected", gate)
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            parent.chmod(0o700)
+            package = write_valid_package(parent / "pkg")
+            manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+            path = parent / "restore.journal"
+            old = labeled("volume", hid("old-pg"))
+            new_pg = labeled("volume", hid("new-pg"))
+            new_mn = labeled("volume", hid("new-mn"))
+            new_a = labeled("container", hid("new-ct-a"))
+            new_b = labeled("container", hid("new-ct-b"))
+            new_c = labeled("container", hid("new-ct-c"))
+            recovery.write_journal(
+                path,
+                journal_document(
+                    stage="DB_RESTORED",
+                    dump=manifest["db_dump_sha256"],
+                    tree=manifest["minio_tree_sha256"],
+                    resources=[{"kind": "volume", "id": old["id"]}],
+                ),
+            )
+            live = [new_pg, new_mn, new_a, new_b, new_c]
+            world = IdentityWorld(list(live))
+            with self.assertRaises(recovery.RestoreRecoveryError) as project:
+                recovery.recover_from_journal(
+                    path,
+                    expected_scope=SCOPE,
+                    expected_project_id="c" * 32,
+                    expected_parent_project_id=PARENT_ID,
+                    expected_dump_sha256=manifest["db_dump_sha256"],
+                    expected_tree_sha256=manifest["minio_tree_sha256"],
+                    live=live,
+                    destroyer=world,
+                    package_check=lambda: verify_package(package, **expected()),
+                )
+            self.assertEqual(project.exception.code, "JOURNAL_PROJECT_MISMATCH")
+            self.assertEqual(world.destroyed, ())
+            for item in live:
+                self.assertIsNotNone(world.inspect(item["kind"], item["id"]))
+            bad = dict(new_pg)
+            bad["labels"] = {**owned_labels(), "io.anhuan.project-id": "c" * 32}
+            world.inspect_overrides[("volume", new_pg["id"])] = bad
+            labeled_live = [bad, new_mn, new_a, new_b, new_c]
+            with self.assertRaises(recovery.RestoreRecoveryError) as labels:
+                recovery.recover_from_journal(
+                    path,
+                    expected_scope=SCOPE,
+                    expected_project_id=PROJECT_ID,
+                    expected_parent_project_id=PARENT_ID,
+                    expected_dump_sha256=manifest["db_dump_sha256"],
+                    expected_tree_sha256=manifest["minio_tree_sha256"],
+                    live=labeled_live,
+                    destroyer=world,
+                    package_check=lambda: verify_package(package, **expected()),
+                )
+            self.assertEqual(labels.exception.code, "RESOURCE_LABEL_MISMATCH")
+            self.assertEqual(world.destroyed, ())
+            for item in live:
+                self.assertIsNotNone(world.inspect(item["kind"], item["id"]))
+
+    def test_post_stop_leftover_fallback_must_fail_gate(self) -> None:
+        from infra.f1.material_rag_backup_restore import (
+            CRASH_PAYLOAD_KEYS,
+            apply_post_stop_fallback,
+            observe_stable_zero,
+            reject_fallback_cleanup,
+            run_crash_machine_gate,
+            validate_crash_payload,
+        )
+
+        invoked: list[str] = []
+
+        def destroy_container() -> None:
+            invoked.append("container")
+
+        def destroy_volume() -> None:
+            invoked.append("volume")
+
+        def destroy_network() -> None:
+            invoked.append("network")
+
+        destroyers = (destroy_container, destroy_volume, destroy_network)
+        used = apply_post_stop_fallback((1, 0, 0), destroyers)
+        self.assertEqual(used, 1)
+        self.assertEqual(invoked, ["container", "volume", "network"])
+        with self.assertRaises(BackupRestoreError) as raised:
+            reject_fallback_cleanup(used)
+        self.assertEqual(raised.exception.code, "CRASH_FALLBACK_CLEANUP_USED")
+        invoked.clear()
+        self.assertEqual(apply_post_stop_fallback((0, 0, 0), destroyers), 0)
+        self.assertEqual(invoked, [])
+        reject_fallback_cleanup(0)
+        self.assertEqual(
+            observe_stable_zero((((0, 0, 0), 0.0), ((0, 0, 0), 0.5))),
+            2,
+        )
+        with self.assertRaises(BackupRestoreError) as gap:
+            observe_stable_zero((((0, 0, 0), 0.0), ((0, 0, 0), 0.49)))
+        self.assertEqual(gap.exception.code, "CRASH_UNSTABLE_ZERO")
+        with self.assertRaises(BackupRestoreError) as leftover:
+            observe_stable_zero((((1, 0, 0), 0.0), ((0, 0, 0), 1.0)))
+        self.assertEqual(leftover.exception.code, "CRASH_UNSTABLE_ZERO")
+        self.assertIn("stable_zero_observations", CRASH_PAYLOAD_KEYS)
+        payload = self._valid_crash_payload()
+        payload["fallback_cleanup_used"] = 1
+        with self.assertRaises(BackupRestoreError) as hard:
+            validate_crash_payload(payload)
+        self.assertEqual(hard.exception.code, "CRASH_PAYLOAD_HARDCODED")
+        gate = inspect.getsource(run_crash_machine_gate)
+        self.assertIn("apply_post_stop_fallback", gate)
+        self.assertIn("reject_fallback_cleanup", gate)
+        self.assertIn("observe_stable_zero", gate)
+        self.assertLess(
+            gate.index("apply_post_stop_fallback"),
+            gate.index("reject_fallback_cleanup"),
+        )
+        self.assertLess(
+            gate.index("reject_fallback_cleanup"),
+            gate.index("return validate_crash_payload"),
+        )
+        self.assertNotIn("LOCAL_MATERIAL_RAG_CRASH_RECOVERY_OK", gate)
+
+    def test_tamper_only_exact_label_mismatch_counts_as_rejected(self) -> None:
+        from infra.f1.material_rag_backup_restore import (
+            CRASH_PAYLOAD_KEYS,
+            evaluate_tamper_probe,
+            run_crash_machine_gate,
+            validate_crash_payload,
+        )
+
+        accepted = evaluate_tamper_probe(
+            returncode=2,
+            stdout=b"",
+            stderr=b"RESOURCE_LABEL_MISMATCH\n",
+            remaining_abort_ids=5,
+        )
+        self.assertEqual(accepted["tamper_rejected"], 1)
+        self.assertEqual(accepted["tamper_reason_verified"], 1)
+        self.assertEqual(accepted["tamper_zero_delete"], 1)
+        cases = (
+            (0, b"", b"RESOURCE_LABEL_MISMATCH\n", 5),
+            (1, b"", b"RESOURCE_LABEL_MISMATCH\n", 5),
+            (2, b"{}\n", b"RESOURCE_LABEL_MISMATCH\n", 5),
+            (2, b"", b"JOURNAL_PROJECT_MISMATCH\n", 5),
+            (2, b"", b"RESOURCE_LABEL_MISMATCH\n", 4),
+            (2, b"", b"RESOURCE_LABEL_MISMATCH", 5),
+        )
+        for returncode, stdout, stderr, remaining in cases:
+            with self.subTest(
+                returncode=returncode, stdout=stdout, stderr=stderr, remaining=remaining
+            ):
+                with self.assertRaises(BackupRestoreError) as raised:
+                    evaluate_tamper_probe(
+                        returncode=returncode,
+                        stdout=stdout,
+                        stderr=stderr,
+                        remaining_abort_ids=remaining,
+                    )
+                self.assertEqual(raised.exception.code, "CRASH_TAMPER_INVALID")
+        self.assertIn("tamper_reason_verified", CRASH_PAYLOAD_KEYS)
+        payload = self._valid_crash_payload()
+        payload["tamper_reason_verified"] = 0
+        with self.assertRaises(BackupRestoreError) as hard:
+            validate_crash_payload(payload)
+        self.assertEqual(hard.exception.code, "CRASH_PAYLOAD_HARDCODED")
+        gate = inspect.getsource(run_crash_machine_gate)
+        self.assertIn("evaluate_tamper_probe", gate)
+        self.assertNotIn("if tamper.returncode == 0", gate)
+        localctl = load_localctl()
+        validator = localctl._validate_material_rag_crash_payload
+        good = self._valid_crash_payload()
+        validator(good)
+        missing_reason = dict(good)
+        del missing_reason["tamper_reason_verified"]
+        with self.assertRaises(localctl.LocalError):
+            validator(missing_reason)
+        missing_stable = dict(good)
+        del missing_stable["stable_zero_observations"]
+        with self.assertRaises(localctl.LocalError):
+            validator(missing_stable)
+
+    def test_correct_fresh_recovery_deletes_two_volumes_three_containers(self) -> None:
+        from infra.f1.material_rag_backup_restore import (
+            CRASH_PAYLOAD_KEYS,
+            validate_crash_payload,
+        )
+
+        required = {
+            "schema",
+            "f1_head",
+            "hard_death_signal",
+            "fresh_recovery_process",
+            "tamper_rejected",
+            "tamper_zero_delete",
+            "tamper_reason_verified",
+            "new_volume",
+            "new_container",
+            "deleted",
+            "remaining",
+            "fallback_cleanup_used",
+            "stable_zero_observations",
+            "package_reverified",
+            "rebuild_started",
+            "journal_recovered",
+            "shared_match",
+            "skipped",
+            "dedicated_c",
+            "dedicated_v",
+            "dedicated_n",
+        }
+        self.assertEqual(set(CRASH_PAYLOAD_KEYS), required)
+        payload = self._valid_crash_payload()
+        self.assertEqual(payload["new_volume"], 2)
+        self.assertEqual(payload["new_container"], 3)
+        self.assertEqual(payload["deleted"], 5)
+        self.assertEqual(payload["remaining"], 0)
+        self.assertEqual(payload["rebuild_started"], 0)
+        self.assertEqual(payload["package_reverified"], 1)
+        self.assertEqual(payload["journal_recovered"], 1)
+        self.assertEqual(payload["fallback_cleanup_used"], 0)
+        validate_crash_payload(payload)
+        gate = inspect.getsource(
+            __import__(
+                "infra.f1.material_rag_backup_restore",
+                fromlist=["run_crash_machine_gate"],
+            ).run_crash_machine_gate
+        )
+        self.assertIn("new_volume", gate)
+        self.assertIn("new_container", gate)
+        self.assertIn("recover_from_journal", gate)
+        self.assertIn("fallback_cleanup_used", gate)
+        probe = (
+            ROOT / "infra/f1/material-rag/crash_recovery_probe.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("recover_from_journal", probe)
+        self.assertNotIn("docker rm", probe)
+        self.assertNotIn("volume rm", probe)
+
+    def test_validate_crash_payload_rejects_missing_extra_and_hardcoded(self) -> None:
+        from infra.f1.material_rag_backup_restore import validate_crash_payload
+
+        payload = self._valid_crash_payload()
+        validate_crash_payload(payload)
+        missing = dict(payload)
+        del missing["hard_death_signal"]
+        with self.assertRaises(BackupRestoreError) as raised:
+            validate_crash_payload(missing)
+        self.assertEqual(raised.exception.code, "CRASH_PAYLOAD_KEYS_INVALID")
+        extra = dict(payload)
+        extra["bonus"] = 1
+        with self.assertRaises(BackupRestoreError) as extra_raised:
+            validate_crash_payload(extra)
+        self.assertEqual(extra_raised.exception.code, "CRASH_PAYLOAD_KEYS_INVALID")
+        hardcoded = dict(payload)
+        hardcoded["fresh_recovery_process"] = 0
+        with self.assertRaises(BackupRestoreError) as hard:
+            validate_crash_payload(hardcoded)
+        self.assertEqual(hard.exception.code, "CRASH_PAYLOAD_HARDCODED")
+        signal_only = dict(payload)
+        signal_only["hard_death_signal"] = 15
+        with self.assertRaises(BackupRestoreError) as sig:
+            validate_crash_payload(signal_only)
+        self.assertEqual(sig.exception.code, "CRASH_PAYLOAD_HARDCODED")
+        deleted = dict(payload)
+        deleted["deleted"] = 4
+        with self.assertRaises(BackupRestoreError) as count:
+            validate_crash_payload(deleted)
+        self.assertEqual(count.exception.code, "CRASH_PAYLOAD_HARDCODED")
+
+    def test_localctl_rejects_missing_extra_and_hardcoded_crash_payload(self) -> None:
+        localctl = load_localctl()
+        validator = localctl._validate_material_rag_crash_payload
+        payload = self._valid_crash_payload()
+        validator(payload)
+        with self.assertRaises(localctl.LocalError):
+            validator({k: payload[k] for k in payload if k != "deleted"})
+        extra = dict(payload)
+        extra["token"] = "x"
+        with self.assertRaises(localctl.LocalError):
+            validator(extra)
+        hardcoded = dict(payload)
+        hardcoded["fresh_recovery_process"] = 0
+        with self.assertRaises(localctl.LocalError):
+            validator(hardcoded)
+
 
 class _MaintenanceSnapshotConnection:
     def __init__(self) -> None:

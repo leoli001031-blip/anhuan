@@ -1,5 +1,47 @@
 # MATERIAL RAG Blocked
 
+## 2026-08-20｜SIGKILL checkpoint + 三阶段矩阵｜开工
+
+- 无。
+- 任务0 相符：HEAD=`21e7eea81107eaf73dcc5ca125c754b67e2c7224` dirty=9 均在白名单。origin/PR #2 head 均为 21e7eea。阶段A 授权精确 commit+普通 push；阶段B 本地不提交。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-20｜crash 假绿封口｜收口
+
+- 无。
+- 合同先红后绿 `Ran 56 / OK` skipped=0；crash Docker 一门终绿。专属 C/V/N=0。共享 fingerprint 不变。未改 compose / restore_recovery / f1_0015 / worker / repository / ragflow_adapter / 默认 backup / UAT / 依赖 / workflow。未读 Ark。未 commit/push，未改 PR #2（head 仍为已 push 的 21e7eea）。实际闭集 9 文件，不是 7。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。真实 live retrieval：`LIVE_RETRIEVAL_UAT_DEFERRED`。断电/全阶段 crash 未测。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-20｜crash 假绿封口｜开工
+
+- 无。
+- 任务0 相符：HEAD=`21e7eea81107eaf73dcc5ca125c754b67e2c7224` staged=0 dirty=9 均在白名单。origin 与 PR #2 head 均为 21e7eea。不 fetch/rebase。不 commit/push。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-20｜DB_RESTORED SIGKILL crash recovery｜收口
+
+- 无。
+- 合同先红后绿 `Ran 54 / OK`；crash Docker 一门终绿；v3 非回归 attempt2 终绿。专属 C/V/N=0。共享 fingerprint 不变。未改 compose / f1_0015 / worker / repository / ragflow_adapter / 默认 backup / UAT / 依赖 / workflow。未读 Ark。未 commit/push，未改 PR #2（head 仍为已 push 的 21e7eea）。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。真实 live retrieval：`LIVE_RETRIEVAL_UAT_DEFERRED`。断电/全阶段 crash 未测。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-20｜DB_RESTORED SIGKILL crash recovery｜开工
+
+- 无。
+- 任务0 相符：HEAD=`21e7eea81107eaf73dcc5ca125c754b67e2c7224`，worktree clean，staged=0，`git diff --check=0`。origin 同分支与 PR #2 head 均为 21e7eea。不 fetch/rebase。不 commit/push。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_RUNTIME_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
 ## 2026-08-20｜restore abort 自主修通｜收口
 
 - 无。
