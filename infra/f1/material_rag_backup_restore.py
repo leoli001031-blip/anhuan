@@ -3404,4 +3404,3 @@ def run_machine_gate() -> dict[str, Any]:
     ):
         _fail("GATE_AGGREGATE_INVALID")
     return payload
-
