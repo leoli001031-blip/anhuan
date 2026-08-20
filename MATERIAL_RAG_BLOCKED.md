@@ -1,5 +1,116 @@
 # MATERIAL RAG Blocked
 
+## 2026-08-20｜restore abort 自主修通｜收口
+
+- 无。
+- 合同 2/8 绿；Docker 2/4 终绿。专属 C/V/N=0。共享 fingerprint 不变。未改生产三文件 / `local_backup.py` / RLS / f1_0015 / 共享 `anhuan-f1`。未读 Ark。未 commit/push，未更新 PR #2。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。真实 live retrieval：`LIVE_RETRIEVAL_UAT_DEFERRED`。crash journal runtime 未测。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_RESTORE_ABORT_CLEANUP_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / CRASH_RECOVERY_RUNTIME_NOT_TESTED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-20｜restore abort 自主修通｜开工
+
+- 无。
+- 续跑相符：HEAD=`f0e60a41` dirty=12 staged=0；旧包根 `bf29558e…525f`。合同断言定位错误待修，未进 Docker。
+
+当前状态：`MATERIAL_RAG_RESTORE_ABORT_CLEANUP_IMPLEMENTED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / TARGETED_TEST_BLOCKED / RUNTIME_REVALIDATION_PENDING / BACKEND_CHECKPOINT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-20｜restore abort 正常验证｜收口
+
+- 唯一合同检查失败（一次，未重跑）：`Ran 46 tests in 0.225s / FAILED (failures=1)`，exit=1，wall=0.322s，skipped=0。
+- 固定签名：`FAIL: test_restore_injects_after_volume_or_raw_db_restore` → `AssertionError: 'com.docker.compose.project=' not found`。`_list_project_handles` 只调用 `_compose_project_filter()`，合同把过滤串断言打在了错误的 getsource 范围。失败后未改代码、未重跑。
+- 无 Docker / Ark / 共享栈写 / Git 外部写入。无白名单外漂移。冻结 compose/probe/restore_maintenance SHA 未变。
+- 下一跳（须另开窗口）：修正该合同断言后再跑唯一合同一次；绿后才允许 `./scripts/localctl material-rag-backup-restore-check` 一次。本轮不得恢复 runtime PASSED。
+
+当前状态：`MATERIAL_RAG_RESTORE_ABORT_CLEANUP_IMPLEMENTED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / TARGETED_TEST_BLOCKED / RUNTIME_REVALIDATION_PENDING / BACKEND_CHECKPOINT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-20｜restore abort 正常验证｜开工
+
+- 无。
+- 任务0 相符：HEAD=`f0e60a41c503c49504fdb208f06b5aad40d3e0c9`，dirty=12（6M+6??），staged=0，`git diff --check=0`。offline-v1 根 `503c1544…0db72` 与 12-manifest 一致。旧唯一检查 Ran45/errors=1 不当绿。
+- 不 commit/push，不读 Ark，不开放用户 restore，不手工 Docker cleanup。不是 production。
+
+当前状态：`MATERIAL_RAG_RESTORE_ABORT_CLEANUP_IMPLEMENTED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / TARGETED_TEST_BLOCKED / RUNTIME_REVALIDATION_PENDING / BACKEND_CHECKPOINT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-20｜restore abort 身份清理 + journal｜收口
+
+- 唯一合同检查失败（一次，未重跑）：`Ran 45 tests in 0.196s / FAILED (errors=1)`，exit=1，wall=0.293s，skipped=0。
+- 固定签名：`ERROR: test_restore_injects_after_volume_or_raw_db_restore` → `ValueError: substring not found`（查找 `abort_new_restore_resources(`）。当时实现走 `_recovery(abort_new_restore_resources,`，getsource 无 `(`。失败后已直连调用并改合同；不得把本失败当绿。
+- 无 Docker / Ark / 共享栈写 / Git 外部写入。无白名单外漂移。冻结 compose/probe/localctl/restore_maintenance SHA 未变。
+- 下一跳（正常验证，须另开窗口）：① 唯一合同检查再跑一次，要求 Ran≥38、exit=0、skipped=0；② 通过后再跑专属 Docker 门 `./scripts/localctl material-rag-backup-restore-check`（身份级 abort，禁止再比 C/V/N 数量）。本轮不得恢复 runtime PASSED。
+
+当前状态：`MATERIAL_RAG_RESTORE_ABORT_CLEANUP_IMPLEMENTED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / TARGETED_TEST_BLOCKED / RUNTIME_REVALIDATION_PENDING / BACKEND_CHECKPOINT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-20｜restore abort 身份清理 + journal｜开工
+
+- 无。
+- 任务0 相符：HEAD=`f0e60a41c503c49504fdb208f06b5aad40d3e0c9`，dirty=11，staged=0。partial-failure 包根 `32c65439…8c0f` 与 11 文件工作树一致。
+- 现役降级：成功路径仍作历史观测；`MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_BLOCKED`（计数假绿未封）。不 commit/push，不读 Ark，不开放用户 restore，不跑 Docker。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_SUCCESS_PATH_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_BLOCKED / BACKEND_CHECKPOINT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-19｜partial-failure cleanup｜收口
+
+- 无。
+- 合同 32 红→绿；live 1/2 唯一尾码 `LOCAL_MATERIAL_RAG_BACKUP_RESTORE_OK`；clone 合同 32。四阶段 mutation 后失败清理已证明。正式用户 restore 仍未开放，不构成现役工程 blocker。
+- 未改生产三文件 / `local_backup.py` / RLS / f1_0015 / 共享 `anhuan-f1`。未读 Ark。未 commit/push，未更新 PR #2。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。真实 live retrieval：`LIVE_RETRIEVAL_UAT_DEFERRED`。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / MATERIAL_RAG_POST_RESTORE_REBUILD_PASSED / MATERIAL_RAG_RESTART_RECOVERY_PASSED / MATERIAL_RAG_RESTORE_READ_ISOLATION_PASSED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-19｜partial-failure cleanup｜开工
+
+- 无。
+- 任务0 相符：HEAD=`f0e60a41c503c49504fdb208f06b5aad40d3e0c9`，dirty=11，staged=0，`git diff --check=0`。evidence-v2 根 `08df6321…eb985` 自洽但不是当前 dirty 根。
+- 现役降级：成功路径四项仍成立；`MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_NOT_PROVEN`；`BACKEND_CHECKPOINT_NOT_READY`。不 commit/push，不读 Ark，不开放用户 restore。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_SUCCESS_PATH_PASSED / MATERIAL_RAG_POST_RESTORE_REBUILD_PASSED / MATERIAL_RAG_RESTART_RECOVERY_PASSED / MATERIAL_RAG_RESTORE_READ_ISOLATION_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_NOT_PROVEN / BACKEND_CHECKPOINT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-19｜backup/restore 假绿封口 + 证据包｜收口
+
+- 无。
+- 机器门已绿：合同 27、合并 155、localctl 唯一尾码、clean-clone 155。正式用户 restore 仍未开放，不构成现役工程 blocker。
+- 未改生产三文件 / `local_backup.py` / RLS / f1_0015 / 共享 `anhuan-f1`。未读 Ark。未 commit/push，未更新 PR #2。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。真实 live retrieval：`LIVE_RETRIEVAL_UAT_DEFERRED`。不是 production。
+
+当前状态：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_POST_RESTORE_REBUILD_PASSED / MATERIAL_RAG_RESTART_RECOVERY_PASSED / MATERIAL_RAG_RESTORE_READ_ISOLATION_PASSED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-19｜backup/restore 假绿封口 + 证据包｜开工
+
+- 无。
+- 任务0：HEAD=`f0e60a41c503c49504fdb208f06b5aad40d3e0c9`，10 dirty（6M+4??），staged=0，`git diff --check=0`。旧 ≥12/6 不追认合规。旧 b430 根锚不可从 v1 独立复算。
+- 现役降级：`TARGETED_TEST_PASSED / BACKUP_RESTORE_RUNTIME_BLOCKED / EVIDENCE_PACKAGE_INCOMPLETE / BACKEND_CHECKPOINT_REVIEW_REQUIRED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。
+- 旧三项 RUNTIME/REBUILD/RESTART PASSED 仅历史观测。不 commit/push，不更新 PR #2，不读 Ark。不是 production。
+
+当前状态：`TARGETED_TEST_PASSED / BACKUP_RESTORE_RUNTIME_BLOCKED / EVIDENCE_PACKAGE_INCOMPLETE / BACKEND_CHECKPOINT_REVIEW_REQUIRED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
+## 2026-08-19｜backup/restore 专属机器门｜收口
+
+- 无。
+- 专属机器门已绿：live v8、合并 145、localctl `LOCAL_MATERIAL_RAG_BACKUP_RESTORE_OK`、clean-clone 145。正式面向用户的 restore 命令仍未开放，不构成现役工程 blocker。
+- 未改生产三文件 / `local_backup.py` / RLS / f1_0015 / 共享 `anhuan-f1`。未读 Ark。未 commit/push，未更新 PR #2。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。真实 live retrieval：`LIVE_RETRIEVAL_UAT_DEFERRED`。不是 production。
+
+当前状态：`BACKEND_JOB_LIFECYCLE_INTEGRATION_PASSED / BACKEND_LEASE_FENCE_PASSED / BACKEND_REBUILD_DELETE_RESIDUAL_PASSED / KNOWN_ID_JOB_REDELIVERY_RECOVERY_PASSED / MATERIAL_RAG_BACKUP_RESTORE_DESIGN_READY / MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_POST_RESTORE_REBUILD_PASSED / MATERIAL_RAG_RESTART_RECOVERY_PASSED / BACKEND_CHECKPOINT_READY / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+## 2026-08-19｜backup/restore 专属机器门｜开工
+
+- 无。
+- 任务0 相符：HEAD=`f0e60a41c503c49504fdb208f06b5aad40d3e0c9`，clean，PR #2 draft，专属 C/V/N=0，共享 fingerprint 与前序一致。
+- 不 commit/push，不更新 PR #2，不读 Ark。领导签字未做。不是 production。
+
+当前状态：`BACKEND_JOB_LIFECYCLE_INTEGRATION_PASSED / BACKEND_LEASE_FENCE_PASSED / BACKEND_REBUILD_DELETE_RESIDUAL_PASSED / KNOWN_ID_JOB_REDELIVERY_RECOVERY_PASSED / BACKUP_RESTORE_RUNTIME_NOT_IMPLEMENTED / NOT_PRODUCTION`
+
 ## 2026-08-19｜stale 本地零写 + restore 维护原语｜收口
 
 - 无。

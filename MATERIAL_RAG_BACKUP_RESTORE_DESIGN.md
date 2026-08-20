@@ -1,7 +1,15 @@
 # material-RAG backup/restore 下一轮可实施设计
 
-现役：`MATERIAL_RAG_BACKUP_RESTORE_DESIGN_READY / BACKUP_RESTORE_RUNTIME_NOT_IMPLEMENTED`。
-本文件只设计，不改 `scripts/localctl`、`infra/f1/local_backup.py`、默认 closeout 链，也不做破坏性 restore。正式 restore 命令仍未实现。已撤销“API/worker 身份在线批量清 unit/binding”，并撤销“把非终态 job UPDATE 成 failed”（会撞 `MATERIAL_RAG_JOB_TRANSITION_INVALID`）。
+现役：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_RESTORE_ABORT_CLEANUP_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / CRASH_RECOVERY_RUNTIME_NOT_TESTED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。
+2026-08-20 自主修通：真实枚举先按 compose project / 预保存 handle 列出本项目 C/V/N，再强制核三标签；check schema `anhuan-material-rag-backup-restore-check-v3`（v2 不得兼容假绿）。合同 `Ran 46 / OK`；Docker 门 stderr 空、stdout 两行，同数换卷 2 卷 + 3 容器精确删除、remaining=0、package 复验、无 rebuild、journal recovered、C/V/N=0、共享不变。journal 只保留 IMPLEMENTED / RUNTIME_NOT_TESTED，未写 `CRASH_RECOVERY_RUNTIME_PASSED`。正式面向用户的 restore 命令仍未开放。不改 `infra/f1/local_backup.py`、默认 closeout 链。
+旧证据包 `material-rag-restore-abort-normal-validation-20260820-v1` 只读。本轮证据 `material-rag-restore-abort-autonomous-20260820-v1`。
+
+## 本轮已封的三个假绿
+
+1. MinIO：live canonical tree 含 bucket/key/size/正文 SHA（对外字段为摘要）；同数同大小不同正文 → `MINIO_BODY_SHA_MISMATCH`。
+2. restart：PG+MinIO stop/start 后，父进程卸载 fake 并 `dispose_runtime`，独立 `post_restart_probe.py` 子进程重连 MinIO/PG，走生产 repository/service。
+3. 隔离：恢复重建后 A/B 正向检索；transport 注入双方及兄弟 scope 候选，最终 `cross_tenant_visible=0`、`cross_scope_visible=0`。
+4. cleanup：删 fallback C/V/N 前逐项核对三标签；restore/maintenance/rebuild/restart 各注入一次失败。restore abort 现改为精确资源身份：volume id=`sha256(Name\\0CreatedAt\\0Mountpoint)`，容器/网络用 Docker hex ID；失败只删三标签闭合的新容器与新数据卷。`capture_injected` 的 restore 分支禁止用 C/V/N 数量当成功。内部 journal 阶段闭集 PREPARED→VOLUMES_REPLACED→DB_RESTORED→MINIO_REPLAYED，未完成可 recover→RECOVERED。
 
 ## 为何现役 backup 不能直接用于 material-RAG
 
@@ -120,9 +128,9 @@ Alembic：专属 restore 后 `f1.alembic_version` 必须是 `f1_0015`。默认 c
 
 - 改默认 `f1_0014/35` backup 合同或 `local_backup.py` 字段闭集（除非加 sidecar）
 - 备份或还原 Ark/provider/RAGFlow 原始卷
-- 破坏性真实 restore（本轮只在测试 harness 演练离线 DELETE 维护原语，不实现正式 restore 命令）
+- 开放面向用户的正式 restore 命令（仅专属工程门 `material-rag-backup-restore-check`）
 - 把 material-RAG 并进共享 `anhuan-f1`
 
 ## 现役结论
 
-`MATERIAL_RAG_BACKUP_RESTORE_DESIGN_READY / BACKUP_RESTORE_RUNTIME_NOT_IMPLEMENTED / BACKEND_CHECKPOINT_READY / NOT_PRODUCTION`
+`MATERIAL_RAG_RESTORE_ABORT_CLEANUP_IMPLEMENTED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / TARGETED_TEST_BLOCKED / RUNTIME_REVALIDATION_PENDING / BACKEND_CHECKPOINT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`

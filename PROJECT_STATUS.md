@@ -1,12 +1,12 @@
 # 项目现役状态
 
-更新日期：2026-08-19
+更新日期：2026-08-20
 本页是当前状态的唯一项目级入口；阶段文档中的早期 `当前`、`READY` 或 `NOT_TESTED` 记录均按其日期保留，不覆盖本页。
 
 ## 代码与版本
 
 - 开发 checkout：`/Users/lichenhao/Desktop/安环项目/material-rag-backend-runtime-20260819/source/repo`
-- 分支：`codex/material-rag-postgres-integration` @ `0a094e27ede877a4661aa1dbaa03846404ac567d`（stacked draft PR #2，base=`codex/material-rag-scanner-protocol`。父提交 `c58ef92`。生命周期/重投/设计留本地 dirty，未再 commit/push。旧 recovery dirty checkout 只读）
+- 分支：`codex/material-rag-postgres-integration` @ `f0e60a41c503c49504fdb208f06b5aad40d3e0c9`（stacked draft PR #2，base=`codex/material-rag-scanner-protocol`。backup/restore 专属机器门留本地 dirty，未再 commit/push。旧 recovery dirty checkout 只读）
 - 干净基线：`origin/main@8d2e791b019ede7f1c3b5e939258952503bf7b89`
 - 当前工程基线：`codex/engineering-closeout@69f6d41`，其上为材料录入切片
 - F1 Alembic：源码唯一 head 为 `f1_0015`（`down_revision=f1_0014`，另增 3 张 FORCE RLS 表，目录 38）。`migrate_f1.migrate_with_connection` 内部闭集 `{f1_0014,f1_0015}`，且 `type(target) is not str` 之后才查闭集；默认工程目标锁定 `f1_0014`；专属 `infra/f1/material-rag/migrate.py` 显式请求 `f1_0015`。`[]`/`{}`/`set()`/`bytearray()` 等非法对象统一 `F1_MIGRATE_TARGET_INVALID`，不泄漏 TypeError。P2 wave1–4 静态 graph 承认脚本 head=`f1_0015`。默认 seed/verify/backup 的 0014/35 合同保持原样。未把 material-RAG 并入默认运行栈
@@ -27,7 +27,7 @@
 | P7 | `P7_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | PostgreSQL/API/RLS 人工结果与回滚门；本地 PostgreSQL + MinIO 备份/恢复链 | 故障切换、部署或生产访问 |
 | P8 | `P8_COMPLETE_NOT_RELEASE_VERIFIED / INTERNAL_PWA_ONLY / NOT_PRODUCTION` | 3 类 OIDC 身份；管理员 17、顾问 2、企业 2 页；离线静态壳与真实 A→B waiting update 用户确认链 | OS 级应用安装 `BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY / PWA_OS_INSTALL_NOT_TESTED`、设备矩阵、正式小程序发布 |
 | 材料录入降本 | `SMOKE_PASSED / NOT_PRODUCTION` | 实库 `f1_0011 → … → f1_0014`；同一合成文本 PDF 在服务公司／客户域各上传一次，真实 MinIO/ClamAV、预览、释放、2 analysis/2 page/8 candidate、2 scope、负责人/非负责人/跨租户上下层 RLS 及客户材料 API+DB 政策硬拒绝通过；服务公司 policy draft=1、publication=0 | 真实 Demo PDF、批量浏览器、物理 RAG 索引/检索、OCR、准确率、备份恢复实跑、P4 报告入口、Inspector 运行时、发布验收与生产 |
-| 双知识域物理 RAG | `BACKEND_JOB_LIFECYCLE_INTEGRATION_PASSED / BACKEND_LEASE_FENCE_PASSED / BACKEND_REBUILD_DELETE_RESIDUAL_PASSED / KNOWN_ID_JOB_REDELIVERY_RECOVERY_PASSED / MATERIAL_RAG_BACKUP_RESTORE_DESIGN_READY / BACKUP_RESTORE_RUNTIME_NOT_IMPLEMENTED / BACKEND_CHECKPOINT_READY / NOT_PRODUCTION` | 生命周期远端/stale 本地零写/SQL residual 已加固；harness 离线 DELETE 维护已实演；正式 restore 未实现 | 领导 UAT 签字、真实 Ark 检索、破坏性 restore 运行时、真实客户数据、headed open、生产部署、`RELEASE_VERIFIED`。未写 `UAT_PASSED`。 |
+| 双知识域物理 RAG | `MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_RESTORE_ABORT_CLEANUP_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / MATERIAL_RAG_RESTORE_CRASH_RECOVERY_IMPLEMENTED / CRASH_RECOVERY_RUNTIME_NOT_TESTED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION` | 合同 `Ran 46 / OK`；专属 Docker 身份 abort 绿灯：2 卷+3 容器精确删除、remaining=0、package 复验、journal recovered、C/V/N=0、共享不变 | 正式用户 restore、领导 UAT、Ark、生产、crash journal SIGKILL/断电 runtime。未写 `UAT_PASSED` / `CRASH_RECOVERY_RUNTIME_PASSED`。 |
 
 已保留的技术摘要为：直接相关检查 `230/230 OK`，备份 `20260810T224332Z-2a861bccbba9` 完成 `reset → restore`，恢复后 health ready、verify 五门全绿、浏览器与 PWA 更新链通过。这些摘要不替代当前 pending 的精确顺序重放证据表。P8 构建仍有单 JS 约 1.48 MiB 的非阻断性能债。
 
@@ -62,4 +62,4 @@
 
 ## 下一步
 
-材料类型与知识归属仍分开，客户材料不能进入公司政策草稿。当前分支精确为 `codex/material-rag-postgres-integration` @ `0a094e2`，证据门加固 dirty 不 commit、不更新 PR #2。restore runtime 必须按 `MATERIAL_RAG_BACKUP_RESTORE_DESIGN.md` 的离线 bootstrap maintenance 顺序，且破坏前先验。Ark key 是否轮换不再作为工程 blocker；真实 live retrieval 继续明确记为延后且未测试。不是 `UAT_PASSED`，不是 `RELEASE_VERIFIED`，未 headed open，未人工签字，未写 `HUMAN_UAT_READY`，未部署。不处理 F0-I key。不恢复旧 F1.1.1 发布验收或 PWA OS 探针，不进入真实 UAT 签字、生产或正式小程序。`pdf-inspector` 仍为 `RUNTIME_DISABLED`。
+材料类型与知识归属仍分开，客户材料不能进入公司政策草稿。当前分支精确为 `codex/material-rag-postgres-integration` @ `f0e60a41`，restore abort dirty 不 commit、不更新 PR #2。backup/restore 专属机器门已绿，正式用户 restore 仍未开放。Ark/headed UAT 继续延期。不是 `UAT_PASSED`，不是 `RELEASE_VERIFIED`，未 headed open，未人工签字，未写 `HUMAN_UAT_READY`，未部署。不处理 F0-I key。不恢复旧 F1.1.1 发布验收或 PWA OS 探针，不进入真实 UAT 签字、生产或正式小程序。`pdf-inspector` 仍为 `RUNTIME_DISABLED`。
