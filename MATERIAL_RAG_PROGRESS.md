@@ -1,5 +1,15 @@
 # MATERIAL RAG Progress
 
+## 2026-08-21｜pre-release closeout｜PASSED
+
+- 现役：`PRODUCTION_SHAPED_WORKER_RUNTIME_PASSED / MATERIAL_RAG_RESTORE_PREFLIGHT_PASSED / LIVE_RETRIEVAL_AUTH_PENDING / HUMAN_UAT_SIGNOFF_PENDING / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / NOT_PRODUCTION`。未写 `PRODUCTION_WORKER_PASSED` / `UAT_PASSED` / `RELEASE_VERIFIED` / `CRASH_RECOVERY_POWER_LOSS_PASSED`。
+- 任务0：开工 HEAD=`6f15f83` clean；docs `e2b456f` 普通 push；PR #2 保持 draft。本窗口 worker=`2c4d90b` preflight=`ecc2f28`。
+- Worker：双 flag 默认关；每轮 claim≤1；有界 idle/error backoff；SIGTERM/SIGINT 停新领取；SIGKILL 后 lease 到期由 fresh subprocess + 真实 PG/`run_once` 恢复；heartbeat 0600；指标仅 claimed/completed/retry/lease_lost/idle/last_success。live JSON：`concurrent_claims=1 duplicate_processing=0 stale_local_mutations=0 default_disabled=1 sigkill_recovered=1 ark_calls=0`。
+- Restore preflight：`localctl material-rag-restore-preflight --backup-id <闭集ID>` 只读；`destructive_started=0 ready_to_apply=0`；package `f1_0015` → target `f1_0016` 不 apply。源码无 `guarded_restore(` / `pg_restore`。
+- Live retrieval：无 fresh/rotated receipt，未 lstat 到合格 key 文件。`LIVE_RETRIEVAL_AUTH_PENDING`。不阻塞后端。
+- 门：worker+preflight 合同 8/OK；合并 `Ran 89 tests in 158.518s / OK`；clone HEAD `ecc2f28` `Ran 89 tests in 157.802s / OK`。`git diff --check=0`。专属 C/V/N 两次间隔 0。共享 fingerprint=`f08864aa2b34d9ddc9f98f114590a0a8b58eeba0e7c5c7a989adf45881b0d065`。
+- 建议：按门禁审查/合并 stacked PR。不部署。
+
 ## 2026-08-21｜pre-release closeout｜STARTED
 
 - 任务0：branch=`codex/material-rag-postgres-integration` HEAD=`6f15f835037ff05834a8696b491c39aa7d6d87d0` worktree clean staged=0。`71bb6dd` 为其祖先。`git ls-remote` origin 仍 `71bb6dd`；PR #2 OPEN+draft head=`71bb6dd` base=`codex/material-rag-scanner-protocol@c58ef92` mergeState=CLEAN checks=[]。PR #1 OPEN+draft head=`c58ef92` base=`main@8d2e791` mergeState=CLEAN checks=[]。

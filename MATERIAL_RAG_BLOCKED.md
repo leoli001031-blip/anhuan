@@ -1,5 +1,14 @@
 # MATERIAL RAG Blocked
 
+## 2026-08-21｜pre-release closeout｜收口
+
+- 无后端 blocker。
+- Live retrieval：`LIVE_RETRIEVAL_AUTH_PENDING`（缺 fresh/rotated receipt 与合格 key 文件门）。不阻塞 worker/preflight。
+- 领导签字未做：`HUMAN_UAT_SIGNOFF_PENDING`。断电未测：`CRASH_RECOVERY_POWER_LOSS_NOT_TESTED`。不是 production。
+
+当前状态：`PRODUCTION_SHAPED_WORKER_RUNTIME_PASSED / MATERIAL_RAG_RESTORE_PREFLIGHT_PASSED / LIVE_RETRIEVAL_AUTH_PENDING / HUMAN_UAT_SIGNOFF_PENDING / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / NOT_PRODUCTION`
+
+
 ## 2026-08-21｜pre-release closeout｜开工
 
 - 无。

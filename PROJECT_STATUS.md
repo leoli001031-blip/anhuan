@@ -1,6 +1,6 @@
 # 项目现役状态
 
-更新日期：2026-08-21（本地 HEAD=`6f15f83` 已提交 durable orchestration+closeout checkpoint，尚未 push；远端 PR #2 head 仍 `71bb6dd`）
+更新日期：2026-08-21（worker runtime + restore preflight 已提交；live retrieval AUTH_PENDING；stacked PR 待按门禁合并）
 本页是当前状态的唯一项目级入口；阶段文档中的早期 `当前`、`READY` 或 `NOT_TESTED` 记录均按其日期保留，不覆盖本页。
 
 ## 代码与版本
@@ -27,7 +27,7 @@
 | P7 | `P7_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | PostgreSQL/API/RLS 人工结果与回滚门；本地 PostgreSQL + MinIO 备份/恢复链 | 故障切换、部署或生产访问 |
 | P8 | `P8_COMPLETE_NOT_RELEASE_VERIFIED / INTERNAL_PWA_ONLY / NOT_PRODUCTION` | 3 类 OIDC 身份；管理员 17、顾问 2、企业 2 页；离线静态壳与真实 A→B waiting update 用户确认链 | OS 级应用安装 `BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY / PWA_OS_INSTALL_NOT_TESTED`、设备矩阵、正式小程序发布 |
 | 材料录入降本 | `SMOKE_PASSED / NOT_PRODUCTION` | 实库 `f1_0011 → … → f1_0014`；同一合成文本 PDF 在服务公司／客户域各上传一次，真实 MinIO/ClamAV、预览、释放、2 analysis/2 page/8 candidate、2 scope、负责人/非负责人/跨租户上下层 RLS 及客户材料 API+DB 政策硬拒绝通过；服务公司 policy draft=1、publication=0 | 真实 Demo PDF、批量浏览器、物理 RAG 索引/检索、OCR、准确率、备份恢复实跑、P4 报告入口、Inspector 运行时、发布验收与生产 |
-| 双知识域物理 RAG | `BACKEND_DURABLE_ORCHESTRATION_LOCAL_PASSED / MIGRATION_CLOSEOUT_CONTRACT_PASSED / BACKEND_DUE_QUEUE_LEASE_FENCE_PASSED / EXTERNAL_PROCESSING_DISABLED / MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION` | 本地 HEAD=`6f15f83` 已提交 durable orchestration + closeout 合同；origin/PR #2 head 仍 `71bb6dd`（祖先）。本轮将 docs 同步后普通 push | 正式用户 restore、领导 UAT、Ark、生产、断电/PREPARED live、生产 worker 长跑。未写 `UAT_PASSED` / `PRODUCTION_WORKER_PASSED` / `CRASH_RECOVERY_RUNTIME_PASSED`。 |
+| 双知识域物理 RAG | `PRODUCTION_SHAPED_WORKER_RUNTIME_PASSED / MATERIAL_RAG_RESTORE_PREFLIGHT_PASSED / LIVE_RETRIEVAL_AUTH_PENDING / BACKEND_DURABLE_ORCHESTRATION_LOCAL_PASSED / MIGRATION_CLOSEOUT_CONTRACT_PASSED / MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / HUMAN_UAT_SIGNOFF_PENDING / NOT_PRODUCTION` | worker 合同+真实 PG live；preflight 合同且 `destructive_started=0`；合并/clone `Ran 89 / OK` | 正式用户 restore apply、领导 UAT、Ark live、生产、断电。未写 `UAT_PASSED` / `PRODUCTION_WORKER_PASSED` / `CRASH_RECOVERY_RUNTIME_PASSED`。 |
 
 已保留的技术摘要为：直接相关检查 `230/230 OK`，备份 `20260810T224332Z-2a861bccbba9` 完成 `reset → restore`，恢复后 health ready、verify 五门全绿、浏览器与 PWA 更新链通过。这些摘要不替代当前 pending 的精确顺序重放证据表。P8 构建仍有单 JS 约 1.48 MiB 的非阻断性能债。
 
@@ -62,4 +62,4 @@
 
 ## 下一步
 
-材料类型与知识归属仍分开，客户材料不能进入公司政策草稿。本地 checkpoint `6f15f83` 已提交、尚未 push；PR #2 仍 OPEN+draft，远端 head=`71bb6dd`。本轮授权 docs 同步后普通 push，再补 worker runtime 与 restore preflight。正式用户 restore 仍未开放。Ark/headed UAT 不阻塞其余开发。不是 `UAT_PASSED`，不是 `RELEASE_VERIFIED`，未 headed open，未人工签字，未写 `HUMAN_UAT_READY`，未部署。不处理 F0-I key。不恢复旧 F1.1.1 发布验收或 PWA OS 探针，不进入真实 UAT 签字、生产或正式小程序。`pdf-inspector` 仍为 `RUNTIME_DISABLED`。
+材料类型与知识归属仍分开，客户材料不能进入公司政策草稿。本地 HEAD 含 worker runtime 与 restore preflight。PR #2 仍 OPEN；合并仅在门禁满足后按 PR #1→PR #2 进行。正式用户 restore apply 仍未开放。Ark 为 `LIVE_RETRIEVAL_AUTH_PENDING`。不是 `UAT_PASSED`，不是 `RELEASE_VERIFIED`，未 headed open，未人工签字，未写 `HUMAN_UAT_READY`，未部署。不处理 F0-I key。不恢复旧 F1.1.1 发布验收或 PWA OS 探针，不进入真实 UAT 签字、生产或正式小程序。`pdf-inspector` 仍为 `RUNTIME_DISABLED`。
