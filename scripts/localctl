@@ -9717,6 +9717,8 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("material-rag-backup-restore-check")
     subparsers.add_parser("material-rag-backup-restore-crash-check")
     subparsers.add_parser("material-rag-backup-restore-crash-matrix-check")
+    restore_preflight = subparsers.add_parser("material-rag-restore-preflight")
+    restore_preflight.add_argument("--backup-id", required=True)
     subparsers.add_parser("material-rag-diagnose-clamd")
     subparsers.add_parser("material-rag-uat-start")
     subparsers.add_parser("material-rag-uat-check")
@@ -9816,6 +9818,39 @@ def main() -> int:
                 + "\n"
             )
             print(MATRIX_OK_TOKEN)
+            return 0
+        if arguments.command == "material-rag-restore-preflight":
+            import importlib.util
+
+            preflight_path = ROOT / "infra/f1/material-rag/restore_preflight.py"
+            spec = importlib.util.spec_from_file_location(
+                "material_rag_restore_preflight",
+                preflight_path,
+            )
+            if spec is None or spec.loader is None:
+                raise LocalError("RESTORE_PREFLIGHT_IMPORT")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            store_raw = os.environ.get("MATERIAL_RAG_PREFLIGHT_STORE", "").strip()
+            store = Path(store_raw) if store_raw else STATE_DIR / "material-rag-packages"
+            inspects_raw = os.environ.get(
+                "MATERIAL_RAG_PREFLIGHT_VOLUME_INSPECTS", ""
+            ).strip()
+            if inspects_raw:
+                inspects = json.loads(Path(inspects_raw).read_text(encoding="utf-8"))
+            else:
+                inspects = []
+            try:
+                payload = module.run_preflight(
+                    backup_id=arguments.backup_id,
+                    store=store,
+                    volume_inspects=inspects,
+                )
+            except module.RestorePreflightError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            sys.stdout.write(module.dump_payload(payload))
+            print(module.OK_TOKEN)
             return 0
         if arguments.command == "material-rag-verify":
             state = _initialize_material_rag_control()
