@@ -7,6 +7,7 @@ lease; it never takes a manifest key, arbitrary body, or physical ids.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from .worker import process_claimed_demo_job
 
 ORCH_FLAG = "F1_MATERIAL_RAG_ORCHESTRATION_LOCAL"
 ENGINEERING_FLAG = "F1_LOCAL_ENGINEERING"
+HOLD_AFTER_CLAIM_MS_FLAG = "F1_MATERIAL_RAG_WORKER_HOLD_AFTER_CLAIM_MS"
 PARSER_VERSION = "pgint1"
 _CANARY_BODY = {
     hashlib.sha256(PROVIDER_POLICY_CANARY_TEXT.encode("utf-8")).hexdigest():
@@ -68,12 +70,25 @@ async def _process_fenced_claim(claim: MaterialRagJobClaim):
     )
 
 
+async def _hold_after_claim() -> None:
+    raw = os.environ.get(HOLD_AFTER_CLAIM_MS_FLAG, "")
+    if raw == "":
+        return
+    if not raw.isdigit():
+        raise RuntimeError("MATERIAL_RAG_WORKER_HOLD_INVALID")
+    value = int(raw)
+    if value < 1 or value > 5000:
+        raise RuntimeError("MATERIAL_RAG_WORKER_HOLD_INVALID")
+    await asyncio.sleep(value / 1000.0)
+
+
 async def run_once(*, worker_id: str, lease_seconds: int = 30):
     if not orchestration_enabled():
         return OrchestratorOutcome(kind="DISABLED")
     claim = await claim_next_job(worker_id=worker_id, lease_seconds=lease_seconds)
     if claim is None:
         return OrchestratorOutcome(kind="EMPTY")
+    await _hold_after_claim()
     return await _process_fenced_claim(claim)
 
 

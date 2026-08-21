@@ -1227,6 +1227,23 @@ class PostgresIntegrationStack:
                     released=False,
                     material_kind="policy",
                 )
+                for worker_key, worker_label in (
+                    ("worker_conc", "orch-worker-conc"),
+                    ("worker_stale", "orch-worker-stale"),
+                    ("worker_kill", "orch-worker-kill"),
+                    ("worker_default", "orch-worker-default"),
+                ):
+                    docs[worker_key] = await _insert_lifecycle_document(
+                        session,
+                        tenant=tenant_a,
+                        actor_id=actor_id,
+                        scope_id=scope["id"],
+                        label=worker_label,
+                        source_sha=provider_sha,
+                        body=PROVIDER_POLICY_CANARY_TEXT,
+                        released=False,
+                        material_kind="policy",
+                    )
                 docs["dirty"] = await _insert_lifecycle_document(
                     session,
                     tenant=tenant_a,

@@ -14,6 +14,7 @@ import inspect
 import json
 import os
 import sys
+import tempfile
 import time
 import unittest
 import uuid
@@ -1751,6 +1752,284 @@ class MaterialRagOrchestrationTests(unittest.TestCase):
         for name, ok in required:
             self.assertTrue(ok, name)
         print("LOCAL_MATERIAL_RAG_ORCHESTRATION_OK", flush=True)
+        print(json.dumps(evidence, sort_keys=True), flush=True)
+
+
+class MaterialRagWorkerRuntimeLiveTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        global ORCH
+        if STACK is None:
+            raise AssertionError("STACK_MISSING")
+        if ORCH is None:
+            _install_lifecycle_fakes()
+            _install_storage_fake()
+            ORCH = STACK.seed_orchestration_world()
+        else:
+            _install_storage_fake()
+
+    def setUp(self) -> None:
+        self.assertIsNotNone(ORCH)
+        os.environ["F1_MATERIAL_RAG_ORCHESTRATION_LOCAL"] = "1"
+        os.environ["F1_LOCAL_ENGINEERING"] = "1"
+        os.environ.pop("F1_MATERIAL_RAG_WORKER_RUNTIME_LOCAL", None)
+        os.environ.pop("F1_MATERIAL_RAG_WORKER_HOLD_AFTER_CLAIM_MS", None)
+        os.environ.pop("F1_MATERIAL_RAG_ORCH_INJECT", None)
+
+    def tearDown(self) -> None:
+        os.environ.pop("F1_MATERIAL_RAG_WORKER_RUNTIME_LOCAL", None)
+        os.environ.pop("F1_MATERIAL_RAG_WORKER_HOLD_AFTER_CLAIM_MS", None)
+
+    def _probe_env(self, *, worker: bool) -> dict[str, str]:
+        env = STACK.runtime_env()
+        env["F1_MATERIAL_RAG_ORCHESTRATION_LOCAL"] = "1"
+        env["F1_LOCAL_ENGINEERING"] = "1"
+        if worker:
+            env["F1_MATERIAL_RAG_WORKER_RUNTIME_LOCAL"] = "1"
+        else:
+            env.pop("F1_MATERIAL_RAG_WORKER_RUNTIME_LOCAL", None)
+        env["PYTHONPATH"] = str(ROOT / "src") + os.pathsep + str(ROOT)
+        return env
+
+    def _probe_cmd(
+        self,
+        *,
+        worker_id: str,
+        heartbeat: Path,
+        max_rounds: int,
+        lease_seconds: int,
+        hold_ms: int = 0,
+    ) -> list[str]:
+        command = [
+            sys.executable,
+            "-B",
+            str(ROOT / "infra/f1/material-rag/worker_runtime_probe.py"),
+            "--worker-id",
+            worker_id,
+            "--heartbeat",
+            str(heartbeat),
+            "--max-rounds",
+            str(max_rounds),
+            "--idle-ms",
+            "50",
+            "--error-ms",
+            "50",
+            "--lease-seconds",
+            str(lease_seconds),
+        ]
+        if hold_ms:
+            command.extend(["--hold-ms", str(hold_ms)])
+        return command
+
+    def _lease_until(self, version_id):
+        with STACK._bootstrap() as connection:
+            row = connection.execute(
+                "SELECT status, lease_until FROM f1.material_rag_job "
+                "WHERE document_version_id=%s "
+                "ORDER BY created_at DESC, id DESC LIMIT 1",
+                (version_id,),
+            ).fetchone()
+        if row is None:
+            raise AssertionError("JOB_ROW_MISSING")
+        return row[0], row[1]
+
+    def _queued_count(self) -> int:
+        with STACK._bootstrap() as connection:
+            row = connection.execute(
+                "SELECT count(*) FROM f1.material_rag_job WHERE status='queued'"
+            ).fetchone()
+        return int(row[0])
+
+    def test_fresh_subprocess_claim_sigkill_and_default_off(self) -> None:
+        import signal
+        import subprocess
+        from datetime import datetime, timezone
+
+        from platform_foundation.f1.features.p3.service import act_on_version
+
+        evidence = {
+            "ark_calls": 0,
+            "concurrent_claims": 0,
+            "default_disabled": 0,
+            "duplicate_processing": 1,
+            "sigkill_recovered": 0,
+            "stale_local_mutations": 1,
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            parent = Path(raw)
+            os.chmod(parent, 0o700)
+            drain = subprocess.run(
+                self._probe_cmd(
+                    worker_id="worker-drain",
+                    heartbeat=parent / "drain.json",
+                    max_rounds=8,
+                    lease_seconds=30,
+                ),
+                cwd=str(ROOT),
+                env=self._probe_env(worker=True),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(drain.returncode, 0, drain.stderr)
+            self.assertEqual(self._queued_count(), 0)
+
+            conc = ORCH.docs["worker_conc"]
+            _run(act_on_version(ORCH.tenant_a, conc.version_id, action="release"))
+            env_a = self._probe_env(worker=True)
+            env_a["F1_MATERIAL_RAG_WORKER_HOLD_AFTER_CLAIM_MS"] = "1500"
+            env_b = dict(env_a)
+            hb_a = parent / "conc-a.json"
+            hb_b = parent / "conc-b.json"
+            first = subprocess.Popen(
+                self._probe_cmd(
+                    worker_id="worker-conc-a",
+                    heartbeat=hb_a,
+                    max_rounds=1,
+                    lease_seconds=5,
+                    hold_ms=1500,
+                ),
+                cwd=str(ROOT),
+                env=env_a,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            second = subprocess.Popen(
+                self._probe_cmd(
+                    worker_id="worker-conc-b",
+                    heartbeat=hb_b,
+                    max_rounds=1,
+                    lease_seconds=5,
+                    hold_ms=1500,
+                ),
+                cwd=str(ROOT),
+                env=env_b,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            _out_a, err_a = first.communicate()
+            _out_b, err_b = second.communicate()
+            self.assertEqual(first.returncode, 0, err_a)
+            self.assertEqual(second.returncode, 0, err_b)
+            metrics = [
+                json.loads(path.read_text(encoding="utf-8"))
+                for path in (hb_a, hb_b)
+            ]
+            claimed = sum(item["claimed"] for item in metrics)
+            completed = sum(item["completed"] for item in metrics)
+            self.assertEqual(claimed, 1)
+            self.assertEqual(completed, 1)
+            self.assertEqual(
+                STACK.lifecycle_snapshot(conc.version_id)["job_status"], "done"
+            )
+            evidence["concurrent_claims"] = claimed
+            evidence["duplicate_processing"] = 0 if completed == 1 else 1
+
+            kill_doc = ORCH.docs["worker_kill"]
+            _run(act_on_version(ORCH.tenant_a, kill_doc.version_id, action="release"))
+            units_before = STACK.lifecycle_snapshot(kill_doc.version_id)["unit_count"]
+            env_kill = self._probe_env(worker=True)
+            env_kill["F1_MATERIAL_RAG_WORKER_HOLD_AFTER_CLAIM_MS"] = "2000"
+            killer = subprocess.Popen(
+                self._probe_cmd(
+                    worker_id="worker-kill",
+                    heartbeat=parent / "kill.json",
+                    max_rounds=1,
+                    lease_seconds=3,
+                    hold_ms=2000,
+                ),
+                cwd=str(ROOT),
+                env=env_kill,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            time.sleep(0.5)
+            status, _until = self._lease_until(kill_doc.version_id)
+            self.assertEqual(status, "running")
+            self.assertEqual(
+                STACK.lifecycle_snapshot(kill_doc.version_id)["unit_count"],
+                units_before,
+            )
+            killer.send_signal(signal.SIGKILL)
+            killer.communicate()
+            status_after, until_after = self._lease_until(kill_doc.version_id)
+            self.assertEqual(status_after, "running")
+            self.assertEqual(
+                STACK.lifecycle_snapshot(kill_doc.version_id)["unit_count"],
+                units_before,
+            )
+            evidence["stale_local_mutations"] = 0
+            remaining = (until_after - datetime.now(timezone.utc)).total_seconds()
+            if remaining > 0:
+                time.sleep(remaining + 0.05)
+            recovered = subprocess.run(
+                self._probe_cmd(
+                    worker_id="worker-fresh",
+                    heartbeat=parent / "fresh.json",
+                    max_rounds=1,
+                    lease_seconds=30,
+                ),
+                cwd=str(ROOT),
+                env=self._probe_env(worker=True),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(recovered.returncode, 0, recovered.stderr)
+            self.assertIn("LOCAL_MATERIAL_RAG_WORKER_RUNTIME_OK", recovered.stdout)
+            fresh = json.loads((parent / "fresh.json").read_text(encoding="utf-8"))
+            self.assertEqual(fresh["claimed"], 1)
+            self.assertEqual(fresh["completed"], 1)
+            self.assertEqual(
+                STACK.lifecycle_snapshot(kill_doc.version_id)["job_status"], "done"
+            )
+            evidence["sigkill_recovered"] = 1
+            self.assertNotIn("/api/plan/v3/embeddings/multimodal", recovered.stdout)
+            self.assertNotIn("doubao-embedding-vision", recovered.stdout)
+            evidence["ark_calls"] = 0
+
+            default_doc = ORCH.docs["worker_default"]
+            _run(act_on_version(ORCH.tenant_a, default_doc.version_id, action="release"))
+            self.assertEqual(STACK.count_jobs_for_version(default_doc.version_id), 1)
+            disabled = subprocess.run(
+                self._probe_cmd(
+                    worker_id="worker-default",
+                    heartbeat=parent / "disabled.json",
+                    max_rounds=1,
+                    lease_seconds=30,
+                ),
+                cwd=str(ROOT),
+                env=self._probe_env(worker=False),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(disabled.returncode, 0, disabled.stderr)
+            self.assertIn(
+                "LOCAL_MATERIAL_RAG_WORKER_RUNTIME_DISABLED", disabled.stdout
+            )
+            self.assertEqual(
+                STACK.lifecycle_snapshot(default_doc.version_id)["job_status"],
+                "queued",
+            )
+            payload = json.loads((parent / "disabled.json").read_text(encoding="utf-8"))
+            self.assertEqual(payload["claimed"], 0)
+            evidence["default_disabled"] = 1
+
+        required = (
+            ("default_disabled", evidence["default_disabled"] == 1),
+            ("concurrent_claims", evidence["concurrent_claims"] == 1),
+            ("duplicate_processing", evidence["duplicate_processing"] == 0),
+            ("stale_local_mutations", evidence["stale_local_mutations"] == 0),
+            ("sigkill_recovered", evidence["sigkill_recovered"] == 1),
+            ("ark_calls", evidence["ark_calls"] == 0),
+        )
+        for name, ok in required:
+            self.assertTrue(ok, name)
+        print("LOCAL_MATERIAL_RAG_WORKER_RUNTIME_OK", flush=True)
         print(json.dumps(evidence, sort_keys=True), flush=True)
 
 
