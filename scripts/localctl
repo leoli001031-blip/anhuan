@@ -9624,6 +9624,76 @@ def _material_rag_uat_command(command: str) -> int:
         return 0
 
 
+def _validate_material_rag_backup_restore_payload(payload: dict[str, object]) -> dict[str, object]:
+    from infra.f1.material_rag_backup_restore import (
+        BackupRestoreError,
+        CHECK_PAYLOAD_KEYS,
+        CHECK_SCHEMA,
+        CHECK_SCHEMA_V2,
+        validate_check_payload,
+    )
+
+    if CHECK_SCHEMA == CHECK_SCHEMA_V2:
+        raise LocalError("CHECK_PAYLOAD_SCHEMA_STALE")
+    if set(payload) != set(CHECK_PAYLOAD_KEYS):
+        raise LocalError("CHECK_PAYLOAD_KEYS_INVALID")
+    try:
+        validate_check_payload(payload)
+    except BackupRestoreError as error:
+        raise LocalError(str(error)) from error
+    return payload
+
+
+def _validate_material_rag_crash_payload(payload: dict[str, object]) -> dict[str, object]:
+    from infra.f1.material_rag_backup_restore import (
+        BackupRestoreError,
+        CRASH_PAYLOAD_KEYS,
+        CRASH_SCHEMA,
+        validate_crash_payload,
+    )
+
+    if set(payload) != set(CRASH_PAYLOAD_KEYS):
+        raise LocalError("CRASH_PAYLOAD_KEYS_INVALID")
+    try:
+        validate_crash_payload(payload)
+    except BackupRestoreError as error:
+        raise LocalError(str(error)) from error
+    if payload.get("schema") != CRASH_SCHEMA:
+        raise LocalError("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("fallback_cleanup_used") != 0:
+        raise LocalError("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("stable_zero_observations") != 2:
+        raise LocalError("CRASH_PAYLOAD_HARDCODED")
+    if payload.get("tamper_reason_verified") != 1:
+        raise LocalError("CRASH_PAYLOAD_HARDCODED")
+    return payload
+
+
+def _validate_material_rag_matrix_payload(payload: dict[str, object]) -> dict[str, object]:
+    from infra.f1.material_rag_backup_restore import (
+        BackupRestoreError,
+        MATRIX_PAYLOAD_KEYS,
+        MATRIX_SCHEMA,
+        validate_matrix_payload,
+    )
+
+    if set(payload) != set(MATRIX_PAYLOAD_KEYS):
+        raise LocalError("MATRIX_PAYLOAD_KEYS_INVALID")
+    try:
+        validate_matrix_payload(payload)
+    except BackupRestoreError as error:
+        raise LocalError(str(error)) from error
+    if payload.get("schema") != MATRIX_SCHEMA:
+        raise LocalError("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("stages_passed") != 3:
+        raise LocalError("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("fallback_cleanup_total") != 0:
+        raise LocalError("MATRIX_PAYLOAD_HARDCODED")
+    if payload.get("minio_replayed_identity_ok") != 1:
+        raise LocalError("MATRIX_PAYLOAD_HARDCODED")
+    return payload
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="localctl")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -9644,6 +9714,11 @@ def _parser() -> argparse.ArgumentParser:
     restore.add_argument("--confirm-local-data", action="store_true")
     subparsers.add_parser("material-verify")
     subparsers.add_parser("material-rag-verify")
+    subparsers.add_parser("material-rag-backup-restore-check")
+    subparsers.add_parser("material-rag-backup-restore-crash-check")
+    subparsers.add_parser("material-rag-backup-restore-crash-matrix-check")
+    restore_preflight = subparsers.add_parser("material-rag-restore-preflight")
+    restore_preflight.add_argument("--backup-id", required=True)
     subparsers.add_parser("material-rag-diagnose-clamd")
     subparsers.add_parser("material-rag-uat-start")
     subparsers.add_parser("material-rag-uat-check")
@@ -9669,6 +9744,114 @@ def main() -> int:
             "material-rag-uat-open",
         }:
             return _material_rag_uat_command(arguments.command)
+        if arguments.command == "material-rag-backup-restore-check":
+            from infra.f1.material_rag_backup_restore import (
+                BackupRestoreError,
+                OK_TOKEN,
+                run_machine_gate,
+            )
+
+            try:
+                payload = run_machine_gate()
+                _validate_material_rag_backup_restore_payload(payload)
+            except BackupRestoreError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            sys.stdout.write(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            print(OK_TOKEN)
+            return 0
+        if arguments.command == "material-rag-backup-restore-crash-check":
+            from infra.f1.material_rag_backup_restore import (
+                BackupRestoreError,
+                CRASH_OK_TOKEN,
+                run_crash_machine_gate,
+            )
+
+            try:
+                payload = run_crash_machine_gate()
+                _validate_material_rag_crash_payload(payload)
+            except BackupRestoreError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            sys.stdout.write(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            print(CRASH_OK_TOKEN)
+            return 0
+        if arguments.command == "material-rag-backup-restore-crash-matrix-check":
+            from infra.f1.material_rag_backup_restore import (
+                BackupRestoreError,
+                MATRIX_OK_TOKEN,
+                run_crash_matrix_gate,
+            )
+
+            try:
+                payload = run_crash_matrix_gate()
+                _validate_material_rag_matrix_payload(payload)
+            except BackupRestoreError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            sys.stdout.write(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            print(MATRIX_OK_TOKEN)
+            return 0
+        if arguments.command == "material-rag-restore-preflight":
+            import importlib.util
+
+            preflight_path = ROOT / "infra/f1/material-rag/restore_preflight.py"
+            spec = importlib.util.spec_from_file_location(
+                "material_rag_restore_preflight",
+                preflight_path,
+            )
+            if spec is None or spec.loader is None:
+                raise LocalError("RESTORE_PREFLIGHT_IMPORT")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            store_raw = os.environ.get("MATERIAL_RAG_PREFLIGHT_STORE", "").strip()
+            store = Path(store_raw) if store_raw else STATE_DIR / "material-rag-packages"
+            inspects_raw = os.environ.get(
+                "MATERIAL_RAG_PREFLIGHT_VOLUME_INSPECTS", ""
+            ).strip()
+            if inspects_raw:
+                inspects = json.loads(Path(inspects_raw).read_text(encoding="utf-8"))
+            else:
+                inspects = []
+            try:
+                payload = module.run_preflight(
+                    backup_id=arguments.backup_id,
+                    store=store,
+                    volume_inspects=inspects,
+                )
+            except module.RestorePreflightError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            sys.stdout.write(module.dump_payload(payload))
+            print(module.OK_TOKEN)
+            return 0
         if arguments.command == "material-rag-verify":
             state = _initialize_material_rag_control()
             verification_error: LocalError | None = None

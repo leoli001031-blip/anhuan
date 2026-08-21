@@ -65,9 +65,9 @@ LEGACY_DEFINER_OWNERS = {
     "f1.verify_citations(uuid[],bytea,text)": "f0d_migration",
 }
 ALL_DEFINER_OWNERS = {**DEFINER_OWNERS, **LEGACY_DEFINER_OWNERS}
-F1_ALLOWED_MIGRATE_TARGETS = frozenset({"f1_0014", "f1_0015"})
+F1_ALLOWED_MIGRATE_TARGETS = frozenset({"f1_0014", "f1_0015", "f1_0016"})
 F1_DEFAULT_MIGRATE_TARGET = "f1_0014"
-F1_MATERIAL_RAG_MIGRATE_TARGET = "f1_0015"
+F1_MATERIAL_RAG_MIGRATE_TARGET = "f1_0016"
 
 
 def _closed_f1_migrate_target(target: object) -> str:
@@ -394,7 +394,7 @@ def migrate_with_connection(
 
     ``target`` is an internal closed set: default engineering stays at
     ``f1_0014``; only the dedicated material-RAG migrator may request
-    ``f1_0015``.  The optional callback is intentionally Python-only and is
+    ``f1_0016``.  The optional callback is intentionally Python-only and is
     used by the closeout failure-atomicity test.  Neither the target nor the
     callback is exposed through argv or an environment switch.
     """

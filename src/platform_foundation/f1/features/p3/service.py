@@ -10,6 +10,7 @@ import base64
 import binascii
 import json
 import math
+import os
 import re
 import uuid
 from collections.abc import Mapping
@@ -55,6 +56,13 @@ from .contracts import (
 MANAGER_ROLES = frozenset(("super_admin", "enterprise_admin", "plant_admin"))
 P3_PIPELINE_KIND = "controlled_ingestion"
 _PREVIEW_UNIT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+
+
+def _material_rag_orchestration_enabled() -> bool:
+    return (
+        os.environ.get("F1_MATERIAL_RAG_ORCHESTRATION_LOCAL") == "1"
+        and os.environ.get("F1_LOCAL_ENGINEERING") == "1"
+    )
 
 _VERSION_COLUMNS = (
     "version.id AS version_id, version.document_record_id, version.version_no, "
@@ -1500,6 +1508,23 @@ async def act_on_version(
                 },
             )
             audit_result = "retry_queued"
+
+        if action == "release" and _material_rag_orchestration_enabled():
+            from platform_foundation.f1.features.material_rag.repository import (
+                enqueue_job_in_session,
+            )
+
+            await enqueue_job_in_session(
+                session,
+                tenant,
+                document_version_id=version_id,
+                action="index",
+                idempotency_key=f"p3-release-index:{version_id}",
+            )
+            if os.environ.get("F1_MATERIAL_RAG_ORCH_INJECT") == "FAIL_AFTER_JOB_INSERT":
+                raise IngestionError(
+                    "MATERIAL_RAG_ORCH_INJECTED_FAILURE", http_status=500
+                )
 
         if not no_change:
             await session.execute(

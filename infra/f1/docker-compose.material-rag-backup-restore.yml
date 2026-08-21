@@ -1,0 +1,221 @@
+# Narrow dedicated material-RAG backup/restore machine-gate stack.
+# Closed service set: secret-init + postgres + minio + one-shot ops.
+# Host migrator/unittest/localctl stay outside. External retrieval backends
+# may be faked by the host gate; PostgreSQL and MinIO are real.
+x-br-labels: &br-labels
+  io.anhuan.scope: material-rag-verification
+  io.anhuan.project-id: ${LOCAL_MATERIAL_RAG_PROJECT_ID:?LOCAL_MATERIAL_RAG_PROJECT_ID_REQUIRED}
+  io.anhuan.parent-project-id: ${LOCAL_PARENT_PROJECT_ID:?LOCAL_PARENT_PROJECT_ID_REQUIRED}
+
+services:
+  secret-init:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    pull_policy: never
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        umask 077;
+        mkdir -p /postgres /minio;
+        chown 999:999 /postgres;
+        chown 1000:1000 /minio;
+        chmod 0700 /postgres /minio;
+        for name in f0d_bootstrap_password f0d_migration_password f0d_runtime_password f0d_worker_password;
+        do cp "/source/$${name}" "/postgres/$${name}"; done;
+        for name in minio_root_user minio_root_password;
+        do cp "/source/$${name}" "/minio/$${name}"; done;
+        chown 999:999 /postgres/*;
+        chown 1000:1000 /minio/*;
+        chmod 0600 /postgres/* /minio/*
+    volumes:
+      - ${LOCAL_MATERIAL_RAG_BR_SECRETS_DIR:?LOCAL_MATERIAL_RAG_BR_SECRETS_DIR_REQUIRED}:/source:ro
+      - br_postgres_secrets:/postgres
+      - br_minio_secrets:/minio
+    network_mode: none
+    labels: *br-labels
+    restart: "no"
+
+  postgres:
+    image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
+    pull_policy: never
+    environment:
+      POSTGRES_USER: f0d_bootstrap
+      POSTGRES_DB: ${LOCAL_MATERIAL_RAG_DATABASE:?LOCAL_MATERIAL_RAG_DATABASE_REQUIRED}
+      POSTGRES_PASSWORD_FILE: /run/secrets/f1/f0d_bootstrap_password
+      PGDATA: /var/lib/postgresql/18/docker
+    ports:
+      - "127.0.0.1:${LOCAL_MATERIAL_RAG_BR_HOST_PORT:?LOCAL_MATERIAL_RAG_BR_HOST_PORT_REQUIRED}:5432"
+    volumes:
+      - br_postgres_data:/var/lib/postgresql
+      - br_postgres_secrets:/run/secrets/f1:ro
+      - ./local/00_roles.sql:/docker-entrypoint-initdb.d/00_roles.sql:ro
+    networks: [br_internal]
+    labels: *br-labels
+    depends_on:
+      secret-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U f0d_bootstrap -d '$${POSTGRES_DB}'"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+    restart: "no"
+
+  minio:
+    image: minio/minio:RELEASE.2024-07-29T22-14-52Z@sha256:29110b4abbcc7c2a71f19f5e375d50c2771c94272efba59c9a0532c88403672d
+    pull_policy: never
+    command: ["server", "--console-address", ":9001", "/data"]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/f1/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/f1/minio_root_password
+    ports:
+      - "127.0.0.1:${LOCAL_MATERIAL_RAG_BR_MINIO_PORT:?LOCAL_MATERIAL_RAG_BR_MINIO_PORT_REQUIRED}:9000"
+    volumes:
+      - br_minio_data:/data
+      - br_minio_secrets:/run/secrets/f1:ro
+    networks: [br_internal]
+    labels: *br-labels
+    depends_on:
+      secret-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && exec 3<&-"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+    restart: "no"
+
+  backup-db:
+    image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
+    pull_policy: never
+    user: ${LOCAL_UID:?LOCAL_UID_REQUIRED}:${LOCAL_GID:?LOCAL_GID_REQUIRED}
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - >-
+        umask 077;
+        test -d /backup && test ! -e /backup/database.dump;
+        exec pg_dump --format=custom --file=/backup/database.dump
+        --host=postgres --username=f0d_bootstrap
+        --dbname="$${PGDATABASE}"
+    environment:
+      PGDATABASE: ${LOCAL_MATERIAL_RAG_DATABASE:?LOCAL_MATERIAL_RAG_DATABASE_REQUIRED}
+      PGPASSFILE: /run/secrets/f1/pgpass
+    volumes:
+      - ${LOCAL_MATERIAL_RAG_BR_BACKUP_DIR:?LOCAL_MATERIAL_RAG_BR_BACKUP_DIR_REQUIRED}:/backup
+      - ${LOCAL_MATERIAL_RAG_BR_SECRETS_DIR:?LOCAL_MATERIAL_RAG_BR_SECRETS_DIR_REQUIRED}:/run/secrets/f1:ro
+    networks: [br_internal]
+    labels: *br-labels
+    profiles: [ops]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backup-minio:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    pull_policy: never
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - >-
+        umask 077;
+        test -d /backup && test ! -e /backup/minio-data;
+        test -z "$$(find /source -type l -print -quit)";
+        test -z "$$(find /source ! -type d ! -type f -print -quit)";
+        mkdir -m 0700 /backup/minio-data;
+        find /source -mindepth 1 -maxdepth 1 ! -name '.minio.sys'
+        -exec cp -R {} /backup/minio-data/ \;;
+        chown -R "$${LOCAL_UID}:$${LOCAL_GID}" /backup/minio-data;
+        find /backup/minio-data -type d -exec chmod 0700 '{}' \;;
+        find /backup/minio-data -type f -exec chmod 0600 '{}' \;
+    environment:
+      LOCAL_GID: ${LOCAL_GID:?LOCAL_GID_REQUIRED}
+      LOCAL_UID: ${LOCAL_UID:?LOCAL_UID_REQUIRED}
+    volumes:
+      - ${LOCAL_MATERIAL_RAG_BR_BACKUP_DIR:?LOCAL_MATERIAL_RAG_BR_BACKUP_DIR_REQUIRED}:/backup
+      - br_minio_data:/source:ro
+    networks: [br_internal]
+    labels: *br-labels
+    profiles: [ops]
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  restore-db:
+    image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
+    pull_policy: never
+    user: ${LOCAL_UID:?LOCAL_UID_REQUIRED}:${LOCAL_GID:?LOCAL_GID_REQUIRED}
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - >-
+        test -f /backup/database.dump;
+        exec pg_restore --clean --if-exists --exit-on-error
+        --single-transaction --host=postgres --username=f0d_bootstrap
+        --dbname="$${PGDATABASE}" /backup/database.dump
+    environment:
+      PGDATABASE: ${LOCAL_MATERIAL_RAG_DATABASE:?LOCAL_MATERIAL_RAG_DATABASE_REQUIRED}
+      PGPASSFILE: /run/secrets/f1/pgpass
+    volumes:
+      - ${LOCAL_MATERIAL_RAG_BR_BACKUP_DIR:?LOCAL_MATERIAL_RAG_BR_BACKUP_DIR_REQUIRED}:/backup:ro
+      - ${LOCAL_MATERIAL_RAG_BR_SECRETS_DIR:?LOCAL_MATERIAL_RAG_BR_SECRETS_DIR_REQUIRED}:/run/secrets/f1:ro
+    networks: [br_internal]
+    labels: *br-labels
+    profiles: [ops]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  maintenance:
+    image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
+    pull_policy: never
+    user: ${LOCAL_UID:?LOCAL_UID_REQUIRED}:${LOCAL_GID:?LOCAL_GID_REQUIRED}
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - >-
+        role="$$(psql --host=postgres --username=f0d_bootstrap
+        --dbname="$${PGDATABASE}" --tuples-only --no-align --no-psqlrc
+        --command="SHOW session_replication_role")";
+        test "$$role" = origin;
+        exec psql --host=postgres --username=f0d_bootstrap
+        --dbname="$${PGDATABASE}" --set=ON_ERROR_STOP=1 --no-psqlrc
+        --command="SELECT current_user, session_user;
+        SELECT CASE WHEN current_user = 'f0d_bootstrap'
+        AND session_user = 'f0d_bootstrap' THEN 1 ELSE 1/0 END;
+        BEGIN;
+        DELETE FROM f1.material_rag_job;
+        DELETE FROM f1.material_rag_unit;
+        UPDATE f1.material_rag_scope_binding SET
+        dataset_ref_ciphertext=NULL, dataset_ref_sha256=NULL,
+        dataset_ref_aad_sha256=NULL, status='deleted', error_reason=NULL;
+        COMMIT;"
+    environment:
+      PGDATABASE: ${LOCAL_MATERIAL_RAG_DATABASE:?LOCAL_MATERIAL_RAG_DATABASE_REQUIRED}
+      PGPASSFILE: /run/secrets/f1/pgpass
+    volumes:
+      - ${LOCAL_MATERIAL_RAG_BR_SECRETS_DIR:?LOCAL_MATERIAL_RAG_BR_SECRETS_DIR_REQUIRED}:/run/secrets/f1:ro
+    networks: [br_internal]
+    labels: *br-labels
+    profiles: [ops]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+networks:
+  br_internal:
+    labels: *br-labels
+
+volumes:
+  br_postgres_secrets:
+    labels: *br-labels
+  br_postgres_data:
+    labels: *br-labels
+  br_minio_secrets:
+    labels: *br-labels
+  br_minio_data:
+    labels: *br-labels

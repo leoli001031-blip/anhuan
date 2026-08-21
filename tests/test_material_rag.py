@@ -1089,18 +1089,18 @@ class MaterialRagStaticBoundaryTests(unittest.TestCase):
         self.assertIn("material_rag_unit_scope_delete_worker_select", migration)
         self.assertNotIn("BYPASSRLS", migration)
 
-    def test_dedicated_migrate_requests_closed_f1_0015_not_head(self) -> None:
+    def test_dedicated_migrate_requests_closed_f1_0016_not_head(self) -> None:
         migrator = (
             ROOT / "infra/f1/material-rag/migrate.py"
         ).read_text(encoding="utf-8")
         self.assertIn("F1_MATERIAL_RAG_MIGRATE_TARGET", migrator)
         self.assertIn("target=migrate_f1.F1_MATERIAL_RAG_MIGRATE_TARGET", migrator)
-        self.assertIn('"f1_0015"', migrator)
+        self.assertIn('"f1_0016"', migrator)
         self.assertNotIn("command.upgrade", migrator)
         self.assertNotIn('"head"', migrator)
         self.assertNotIn("os.environ", migrator)
         self.assertNotIn("sys.argv", migrator)
-        self.assertIn('"f1_0015"', migrator.split("def _verify_catalog", 1)[1])
+        self.assertIn('"f1_0016"', migrator.split("def _verify_catalog", 1)[1])
 
     def test_worker_requires_claim_bound_manifest_and_live_release(self) -> None:
         worker = (
@@ -4338,6 +4338,101 @@ class MaterialRagProviderReadyDiagnosticsTests(unittest.TestCase):
         self.assertEqual(evidence["curl_code"], 22)
         self.assertEqual(evidence["curl_exit_class"], "HTTP")
         self.assertEqual(evidence["response_size_class"], "EMPTY")
+
+
+class MaterialRagOrchestrationContractTests(unittest.TestCase):
+    def test_f1_0016_claim_next_is_invoker_skip_locked_and_not_broad(self) -> None:
+        path = ROOT / "infra/f1/alembic/versions/f1_0016_material_rag_orchestration.py"
+        source = path.read_text(encoding="utf-8")
+        self.assertIn('revision: str = "f1_0016"', source)
+        self.assertIn('down_revision: str | None = "f1_0015"', source)
+        fn = source.split("CREATE FUNCTION f1.claim_next_material_rag_job", 1)[1].split(
+            "CREATE POLICY", 1
+        )[0]
+        self.assertIn("SECURITY INVOKER", fn)
+        self.assertNotIn("SECURITY DEFINER", fn)
+        self.assertIn("SET search_path = pg_catalog", fn)
+        self.assertIn("FOR UPDATE OF job SKIP LOCKED", fn)
+        self.assertIn("session_user <> 'f1_worker'", fn)
+        self.assertIn("LIMIT 1", fn)
+        self.assertNotIn("BYPASSRLS", source)
+        self.assertNotIn("USING (true)", source)
+        self.assertNotIn("USING(true)", source.replace(" ", ""))
+        self.assertNotIn("session_replication_role", source)
+        self.assertIn(
+            "GRANT EXECUTE ON FUNCTION f1.claim_next_material_rag_job(text,integer) TO f1_worker",
+            source,
+        )
+        self.assertIn(
+            "REVOKE ALL ON FUNCTION f1.claim_next_material_rag_job(text,integer) FROM PUBLIC",
+            source,
+        )
+        self.assertNotIn("TO f1_api", source)
+        self.assertIn("material_rag_job_worker_due_select", source)
+        self.assertIn("material_rag_job_worker_due_update", source)
+        self.assertIn("FOR UPDATE TO f1_worker", source)
+        self.assertNotIn("CREATE TABLE", source)
+
+    def test_migrate_closed_set_keeps_default_0014_and_rag_0016(self) -> None:
+        migrate = (ROOT / "infra/f1/migrate_f1.py").read_text(encoding="utf-8")
+        self.assertIn('F1_DEFAULT_MIGRATE_TARGET = "f1_0014"', migrate)
+        self.assertIn('F1_MATERIAL_RAG_MIGRATE_TARGET = "f1_0016"', migrate)
+        self.assertIn('"f1_0014"', migrate)
+        self.assertIn('"f1_0015"', migrate)
+        self.assertIn('"f1_0016"', migrate)
+        self.assertIn("type(target) is not str", migrate)
+
+    def test_p3_release_enqueues_in_same_session_only_under_exact_dual_switch(self) -> None:
+        p3 = (ROOT / "src/platform_foundation/f1/features/p3/service.py").read_text(
+            encoding="utf-8"
+        )
+        release = p3.split("async def act_on_version", 1)[1]
+        self.assertIn("enqueue_job_in_session", release)
+        self.assertLess(
+            release.index("enqueue_job_in_session"),
+            release.index("await session.commit()"),
+        )
+        self.assertIn('os.environ.get("F1_MATERIAL_RAG_ORCHESTRATION_LOCAL") == "1"', p3)
+        self.assertIn('os.environ.get("F1_LOCAL_ENGINEERING") == "1"', p3)
+        self.assertNotIn('os.environ.get("F1_MATERIAL_RAG_ORCHESTRATION_LOCAL") in', p3)
+
+    def test_orchestrator_run_once_has_no_public_manifest_or_physical_ids(self) -> None:
+        import inspect
+
+        from platform_foundation.f1.features.material_rag.orchestrator import run_once
+
+        names = tuple(inspect.signature(run_once).parameters)
+        self.assertEqual(names, ("worker_id", "lease_seconds"))
+        source = inspect.getsource(run_once)
+        for forbidden in (
+            "manifest_key",
+            "dataset_id",
+            "chunk_id",
+            "units=",
+            "manifest_proof=",
+            "body=",
+        ):
+            self.assertNotIn(forbidden, source)
+        self.assertIn("claim_next_job", source)
+        orch = (
+            ROOT / "src/platform_foundation/f1/features/material_rag/orchestrator.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("process_claimed_demo_job", orch)
+        self.assertIn("def orchestration_enabled", orch)
+        self.assertIn('os.environ.get(ORCH_FLAG) == "1"', orch)
+        self.assertNotIn("ark", orch.lower())
+
+    def test_enqueue_requires_current_released_version(self) -> None:
+        repository = (
+            ROOT / "src/platform_foundation/f1/features/material_rag/repository.py"
+        ).read_text(encoding="utf-8")
+        fn = repository.split("async def enqueue_job_in_session", 1)[1].split(
+            "async def enqueue_job(", 1
+        )[0]
+        self.assertIn("version.version_no = record.latest_version_no", fn)
+        self.assertIn("MATERIAL_VERSION_NOT_CURRENT", fn)
+        self.assertIn("MATERIAL_VERSION_NOT_INDEXABLE", fn)
+        self.assertNotIn("await session.commit()", fn)
 
 
 if __name__ == "__main__":

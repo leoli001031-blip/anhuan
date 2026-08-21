@@ -19,6 +19,7 @@ F0_ENV = ROOT / "migrations/env.py"
 F1_ENV = ROOT / "infra/f1/alembic/env.py"
 F1_MIGRATOR = ROOT / "infra/f1/migrate_f1.py"
 LOCAL_MIGRATOR = ROOT / "infra/f1/local_migrate.py"
+MATERIAL_RAG_MIGRATOR = ROOT / "infra/f1/material-rag/migrate.py"
 LOCAL_SEED = ROOT / "infra/f1/local_seed.py"
 LOCAL_ROLES = ROOT / "infra/f1/local/00_roles.sql"
 LOCAL_COMPOSE = ROOT / "infra/f1/docker-compose.local.yml"
@@ -353,8 +354,15 @@ class AlembicOrchestrationContracts(unittest.TestCase):
             sys.path.insert(0, str(ROOT))
         from infra.f1 import migrate_f1
 
+        self.assertEqual(
+            migrate_f1.F1_ALLOWED_MIGRATE_TARGETS,
+            frozenset({"f1_0014", "f1_0015", "f1_0016"}),
+        )
+        self.assertEqual(migrate_f1.F1_DEFAULT_MIGRATE_TARGET, "f1_0014")
+        self.assertEqual(migrate_f1.F1_MATERIAL_RAG_MIGRATE_TARGET, "f1_0016")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0014"), "f1_0014")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0015"), "f1_0015")
+        self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0016"), "f1_0016")
         closed_source = ast.unparse(_function(F1_MIGRATOR, "_closed_f1_migrate_target"))
         self.assertIn("type(target) is not str", closed_source)
         self.assertNotIn("isinstance(target", closed_source)
@@ -366,10 +374,21 @@ class AlembicOrchestrationContracts(unittest.TestCase):
             source.index("_closed_f1_migrate_target"),
             source.index("command.upgrade"),
         )
+        rag_transaction = _transaction_body(MATERIAL_RAG_MIGRATOR, "migrate")
+        self.assertIn("migrate_with_connection", rag_transaction)
+        self.assertIn("target=migrate_f1.F1_MATERIAL_RAG_MIGRATE_TARGET", rag_transaction)
+        rag_migrate = ast.unparse(_function(MATERIAL_RAG_MIGRATOR, "migrate"))
+        self.assertNotIn("os.environ", rag_migrate)
+        self.assertNotIn("sys.argv", rag_migrate)
+        self.assertNotIn("os.environ", _source(LOCAL_MIGRATOR))
+        self.assertNotIn("sys.argv", _source(LOCAL_MIGRATOR))
+        self.assertNotIn("sys.argv", _source(F1_MIGRATOR))
+        self.assertNotIn("F1_MATERIAL_RAG_MIGRATE_TARGET", main_transaction)
+        self.assertNotIn("F1_MATERIAL_RAG_MIGRATE_TARGET", local_transaction)
         for illegal in (
             "head",
             "f1_0013",
-            "f1_0016",
+            "f1_0017",
             "f1_0014 ",
             "",
             None,
