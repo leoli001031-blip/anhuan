@@ -1,5 +1,13 @@
 # MATERIAL RAG Blocked
 
+## 2026-08-21｜pre-release closeout｜开工
+
+- 无。
+- HEAD=`6f15f83` 本地已提交 orchestration+closeout checkpoint，origin 仍 `71bb6dd`。本轮授权普通 push 与 draft PR 更新。不是 production。
+
+当前状态：`BACKEND_DURABLE_ORCHESTRATION_LOCAL_PASSED / MIGRATION_CLOSEOUT_CONTRACT_PASSED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`
+
+
 ## 2026-08-21｜migration closeout contract｜收口
 
 - 无。

@@ -1,6 +1,7 @@
 # material-RAG backup/restore 下一轮可实施设计
 
 现役：`MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。
+2026-08-21 本地 HEAD=`6f15f83` 已提交 durable orchestration + closeout 合同，尚未 push。正式面向用户的 restore 命令仍未开放；本轮只允许 operator preflight/dry-run（`destructive_started=0` `ready_to_apply=0`），禁止 apply/down/删卷/pg_restore/MinIO 回放。
 2026-08-21 三阶段 SIGKILL 矩阵已验收并封入本 checkpoint：内部命令 `material-rag-backup-restore-crash-matrix-check` 覆盖 `VOLUMES_REPLACED / DB_RESTORED / MINIO_REPLAYED`；各阶段真实 SIGKILL 后 fresh process 按 receipt+journal 精确恢复；MINIO_REPLAYED 另核 live 对象树与 package 一致。PREPARED 只离线合同。合同 `Ran 60 / OK`。旧单阶段 `material-rag-backup-restore-crash-check` 非回归。提交与远端身份以 Git 与 PR head 为准。未写 `CRASH_RECOVERY_RUNTIME_PASSED`。正式面向用户的 restore 命令仍未开放。
 旧证据包 `material-rag-crash-false-green-20260820-v1`、checkpoint 推送包 `material-rag-sigkill-checkpoint-push-20260820-v1`、矩阵包 `material-rag-crash-matrix-20260820-v1` 只读。
 2026-08-20 SIGKILL 单阶段门与假绿封口已纳入当时 parent checkpoint（历史记录，SHA 见 Git）。`NOT_PUSHED` 仅为当时矩阵 delta 的历史标签，不再冒充现役。

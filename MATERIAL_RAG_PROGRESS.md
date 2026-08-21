@@ -1,5 +1,12 @@
 # MATERIAL RAG Progress
 
+## 2026-08-21｜pre-release closeout｜STARTED
+
+- 任务0：branch=`codex/material-rag-postgres-integration` HEAD=`6f15f835037ff05834a8696b491c39aa7d6d87d0` worktree clean staged=0。`71bb6dd` 为其祖先。`git ls-remote` origin 仍 `71bb6dd`；PR #2 OPEN+draft head=`71bb6dd` base=`codex/material-rag-scanner-protocol@c58ef92` mergeState=CLEAN checks=[]。PR #1 OPEN+draft head=`c58ef92` base=`main@8d2e791` mergeState=CLEAN checks=[]。
+- 本地已提交 `feat(material-rag): checkpoint durable orchestration gate`（`6f15f83`），尚未 push。本轮先 docs commit 再普通 push，更新 draft PR #2。
+- 顺序：A docs/push/PR → B production-shaped worker runtime → C restore preflight（只读）→ D live retrieval 或 `AUTH_PENDING` → E 先 PR #1 再 PR #2。不部署、不 apply restore。
+- 最大风险：误走破坏性 restore、非 fast-forward、权限扩大、key 泄露。建议：无。未写 `PRODUCTION_WORKER_PASSED` / `UAT_PASSED`。
+
 ## 2026-08-21｜migration closeout contract｜PASSED
 
 - 现役：`BACKEND_DURABLE_ORCHESTRATION_LOCAL_PASSED / MIGRATION_CLOSEOUT_CONTRACT_PASSED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / NOT_PRODUCTION`。未写 `PRODUCTION_WORKER_PASSED` / `UAT_PASSED` / `RELEASE_VERIFIED`。未 commit/push，未改 PR #2。HEAD 仍 `71bb6dd`。不开 Docker。
