@@ -1,0 +1,171 @@
+# Isolated overlay for local synthetic material-RAG UAT.
+# Independent compose project/image/ports are supplied by localctl.
+# External embedding keys are not mounted. Default stack is unchanged.
+services:
+  secret-init:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  postgres:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  keycloak:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  keycloak-provisioner:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  minio:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  redis:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  clamd:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  migrator:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  seed:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  verifier:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  migration-atomicity:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  business-verifier:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  ingestion-verifier:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  material-verifier:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  targeted-tests:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  backup-db:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  backup-minio:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  restore-db:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  restore-minio:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  api:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    environment:
+      F1_MATERIAL_RAG_UAT_LOCAL: "1"
+      F1_LOCAL_ENGINEERING: "1"
+      F1_EXTERNAL_PIPELINES_ENABLED: "false"
+  worker:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  dispatcher:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  web:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    build:
+      args:
+        VITE_MATERIAL_RAG_UAT_LOCAL: "1"
+
+networks:
+  localnet:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  edge:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+
+volumes:
+  migrator_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  seed_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  provisioner_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  api_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  worker_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  dispatcher_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  postgres_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  keycloak_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  minio_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  backup_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  postgres_data:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  keycloak_data:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  minio_data:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  redis_data:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"

@@ -6,6 +6,7 @@ import {
   clearInternalPwaShellCaches,
   getInternalPwaSnapshot,
   promptInternalPwaInstall,
+  refreshInternalPwaReachability,
   refreshInternalPwaRegistration,
   registerInternalPwaServiceWorker,
   type InternalPwaInstallChoice,
@@ -37,6 +38,7 @@ export function useInternalPwaStatus(): InternalPwaStatus {
     window.addEventListener(INTERNAL_PWA_STATE_EVENT, sync);
     void registerInternalPwaServiceWorker().then(sync).catch(() => setErrorCode("SW_REGISTRATION_FAILED"));
     void refreshInternalPwaRegistration().then(sync).catch(() => undefined);
+    void refreshInternalPwaReachability().then(sync).catch(() => undefined);
     return () => window.removeEventListener(INTERNAL_PWA_STATE_EVENT, sync);
   }, [sync]);
 
@@ -56,6 +58,13 @@ export function useInternalPwaStatus(): InternalPwaStatus {
     checkForUpdate: () => run(checkForInternalPwaUpdate),
     applyUpdate: () => run(applyWaitingInternalPwaUpdate),
     clearShellCaches: () => run(clearInternalPwaShellCaches),
-    refresh: async () => { await run(async () => { await refreshInternalPwaRegistration(); }); },
+    refresh: async () => {
+      await run(async () => {
+        await Promise.all([
+          refreshInternalPwaRegistration(),
+          refreshInternalPwaReachability(),
+        ]);
+      });
+    },
   };
 }

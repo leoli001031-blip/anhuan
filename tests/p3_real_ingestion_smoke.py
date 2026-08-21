@@ -471,7 +471,7 @@ def _validate_migration_head(scratch: ScratchPostgres) -> None:
             "(SELECT string_agg(version_num, ',' ORDER BY version_num) "
             "FROM f1.alembic_version)"
         ).fetchone()
-    if heads != ("f0d_0006", "f1_0010"):
+    if heads != ("f0d_0006", "f1_0014"):
         raise SmokeFailure("MIGRATION_HEAD_RED")
 
 

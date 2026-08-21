@@ -1,0 +1,665 @@
+services:
+  secret-init:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        umask 077;
+        mkdir -p /migrator /seed /provisioner /api /worker /dispatcher /postgres /keycloak /minio /backupops;
+        chown 0:0 /migrator /seed /provisioner /api /worker /dispatcher;
+        chown 999:999 /postgres;
+        chown 1000:0 /keycloak;
+        chown 1000:1000 /minio;
+        chown "$${LOCAL_UID}:$${LOCAL_GID}" /backupops;
+        chmod 0700 /migrator /seed /provisioner /api /worker /dispatcher /postgres /keycloak /minio /backupops;
+        for name in
+        f0d_migration_dsn f1_bootstrap_dsn f1_migration_dsn
+        f1_api_password f1_worker_password;
+        do test -f "/source/$${name}" && cp "/source/$${name}" "/migrator/$${name}" && chmod 0600 "/migrator/$${name}";
+        done;
+        cp /source/f1_bootstrap_dsn /seed/f1_bootstrap_dsn;
+        chmod 0600 /seed/f1_bootstrap_dsn;
+        for name in keycloak_admin_password oidc_admin_anhuan_local oidc_tester oidc_tenant_a oidc_tenant_b oidc_invitee oidc_auditor oidc_employee;
+        do test -f "/source/$${name}" && cp "/source/$${name}" "/provisioner/$${name}" && chmod 0600 "/provisioner/$${name}";
+        done;
+        for name in f1_api_password minio_root_user minio_root_password invite_signing_key f1_qa_key f0i_key;
+        do test -f "/source/$${name}" && cp "/source/$${name}" "/api/$${name}" && chmod 0600 "/api/$${name}";
+        done;
+        for name in f1_worker_password minio_root_user minio_root_password f0i_key;
+        do test -f "/source/$${name}" && cp "/source/$${name}" "/worker/$${name}" && chmod 0600 "/worker/$${name}";
+        done;
+        cp /source/f1_worker_password /dispatcher/f1_worker_password;
+        chmod 0600 /dispatcher/f1_worker_password;
+        for name in f0d_bootstrap_password f0d_migration_password f0d_runtime_password f0d_worker_password;
+        do test -f "/source/$${name}" && cp "/source/$${name}" "/postgres/$${name}" && chown 999:999 "/postgres/$${name}" && chmod 0600 "/postgres/$${name}";
+        done;
+        cp /source/keycloak_admin_password /keycloak/keycloak_admin_password;
+        chown 1000:0 /keycloak/keycloak_admin_password;
+        chmod 0600 /keycloak/keycloak_admin_password;
+        for name in minio_root_user minio_root_password;
+        do test -f "/source/$${name}" && cp "/source/$${name}" "/minio/$${name}" && chown 1000:1000 "/minio/$${name}" && chmod 0600 "/minio/$${name}";
+        done;
+        printf '*:*:*:f0d_bootstrap:%s\n' "$$(cat /source/f0d_bootstrap_password)" > /backupops/pgpass;
+        chown "$${LOCAL_UID}:$${LOCAL_GID}" /backupops/pgpass;
+        chmod 0600 /backupops/pgpass
+    environment:
+      LOCAL_GID: ${LOCAL_GID:?LOCAL_GID_REQUIRED}
+      LOCAL_UID: ${LOCAL_UID:?LOCAL_UID_REQUIRED}
+    volumes:
+      - ${LOCAL_SECRETS_DIR:?LOCAL_SECRETS_DIR_REQUIRED}:/source:ro
+      - migrator_secrets:/migrator
+      - seed_secrets:/seed
+      - provisioner_secrets:/provisioner
+      - api_secrets:/api
+      - worker_secrets:/worker
+      - dispatcher_secrets:/dispatcher
+      - postgres_secrets:/postgres
+      - keycloak_secrets:/keycloak
+      - minio_secrets:/minio
+      - backup_secrets:/backupops
+    networks: [localnet]
+    labels: &labels
+      io.anhuan.scope: engineering-closeout
+      io.anhuan.project-id: ${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}
+    restart: "no"
+
+  postgres:
+    image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
+    environment:
+      POSTGRES_USER: f0d_bootstrap
+      POSTGRES_DB: ${LOCAL_DATABASE:?LOCAL_DATABASE_REQUIRED}
+      POSTGRES_PASSWORD_FILE: /run/secrets/f1/f0d_bootstrap_password
+      PGDATA: /var/lib/postgresql/18/docker
+    volumes:
+      - postgres_data:/var/lib/postgresql
+      - postgres_secrets:/run/secrets/f1:ro
+      - ./local/00_roles.sql:/docker-entrypoint-initdb.d/00_roles.sql:ro
+    networks: [localnet]
+    labels: *labels
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -q -U f0d_bootstrap -d '${LOCAL_DATABASE}'",
+        ]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+    restart: unless-stopped
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1.1@sha256:75ca4b2e4e954ff89c20ba8e5aeeef3bd0d250847fedb1c9752949823b319dda
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - >-
+        export KC_BOOTSTRAP_ADMIN_PASSWORD="$$(cat /run/secrets/f1/keycloak_admin_password)";
+        export KEYCLOAK_ADMIN_PASSWORD="$${KC_BOOTSTRAP_ADMIN_PASSWORD}";
+        exec /opt/keycloak/bin/kc.sh "$${@}"
+      - --
+    command:
+      - start-dev
+      - --import-realm
+      - --proxy-headers=xforwarded
+      - --http-enabled=true
+      - --hostname-strict=false
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KEYCLOAK_ADMIN: admin
+    volumes:
+      - keycloak_data:/opt/keycloak/data
+      - keycloak_secrets:/run/secrets/f1:ro
+      - ./keycloak/realm-local.json:/opt/keycloak/data/import/realm-local.json:ro
+    networks: [localnet]
+    labels: *labels
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "exec 3<>/dev/tcp/127.0.0.1/8080 && exec 3<&- || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    restart: unless-stopped
+
+  keycloak-provisioner:
+    build:
+      context: ../..
+      dockerfile: infra/f1/local.Dockerfile
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "-m", "platform_foundation.f1.keycloak_provision"]
+    environment:
+      F1_SECRETS_DIR: /run/secrets/f1
+      F1_KEYCLOAK_REALM: anhuan
+      F1_WEB_PUBLIC_ORIGIN: ${LOCAL_WEB_ORIGIN:?LOCAL_WEB_ORIGIN_REQUIRED}
+      F1_LOCAL_ENGINEERING: "1"
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_URL: http://keycloak:8080
+    volumes:
+      - provisioner_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    restart: "no"
+
+  minio:
+    image: minio/minio:RELEASE.2024-07-29T22-14-52Z@sha256:29110b4abbcc7c2a71f19f5e375d50c2771c94272efba59c9a0532c88403672d
+    command: ["server", "--console-address", ":9001", "/data"]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/f1/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/f1/minio_root_password
+    volumes:
+      - minio_data:/data
+      - minio_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "exec 3<>/dev/tcp/127.0.0.1/9000 && exec 3<&- || exit 1",
+        ]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks: [localnet]
+    labels: *labels
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    restart: unless-stopped
+
+  clamd:
+    image: clamav/clamav:1.4.6-debian13-slim@sha256:aaf6efb85740dc60872e2c13e5b7778c2d57b05b960f854a2461eaf729250d18
+    platform: linux/arm64
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "true"
+      CLAMD_STARTUP_TIMEOUT: "300"
+      CLAMD_CONF_MaxFileSize: "52428800"
+      CLAMD_CONF_MaxScanSize: "52428800"
+      CLAMD_CONF_StreamMaxLength: "52428800"
+    networks: [localnet]
+    labels: *labels
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1073741824
+    healthcheck:
+      test: ["CMD-SHELL", "clamdscan --ping=1 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+    restart: unless-stopped
+
+  migrator:
+    build:
+      context: ../..
+      dockerfile: infra/f1/local.Dockerfile
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "/app/infra/f1/local_migrate.py"]
+    environment: &runtime_environment
+      F1_SECRETS_DIR: /run/secrets/f1
+      F1_PG_HOST: postgres
+      F1_PG_PORT: "5432"
+      F1_PG_DATABASE: ${LOCAL_DATABASE:?LOCAL_DATABASE_REQUIRED}
+      F1_KEYCLOAK_REALM: anhuan
+      F1_KEYCLOAK_ISSUER_URL: ${LOCAL_WEB_ORIGIN:?LOCAL_WEB_ORIGIN_REQUIRED}/realms/anhuan
+      KEYCLOAK_URL: http://keycloak:8080
+      MINIO_ENDPOINT: minio:9000
+      REDIS_URL: redis://redis:6379/0
+      OTEL_SDK_DISABLED: "true"
+      F1_EXTERNAL_PIPELINES_ENABLED: "false"
+    volumes:
+      - migrator_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: [ops]
+    restart: "no"
+
+  seed:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "/app/infra/f1/local_seed.py"]
+    environment: *runtime_environment
+    volumes:
+      - seed_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: [ops]
+    restart: "no"
+
+  verifier:
+    build:
+      context: ../..
+      dockerfile: infra/f1/local.Dockerfile
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "/app/infra/f1/local_verify.py"]
+    environment: *runtime_environment
+    volumes:
+      - seed_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: [ops]
+    restart: "no"
+
+  migration-atomicity:
+    build:
+      context: ../..
+      dockerfile: infra/f1/local.Dockerfile
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command:
+      ["python", "-B", "/app/infra/f1/local_migration_atomicity.py"]
+    environment: *runtime_environment
+    volumes:
+      - migrator_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: [ops]
+    restart: "no"
+
+  business-verifier:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "/app/infra/f1/local_business_verify.py"]
+    environment: *runtime_environment
+    volumes:
+      - migrator_secrets:/run/secrets/f1:ro
+      - ../../tests:/app/tests:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres:
+        condition: service_healthy
+    profiles: [ops]
+    restart: "no"
+
+  ingestion-verifier:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "/app/infra/f1/local_ingestion_verify.py"]
+    environment:
+      <<: *runtime_environment
+      F1_MINIO_ROOT_USER_FILE: /run/secrets/api/minio_root_user
+      F1_MINIO_ROOT_PASSWORD_FILE: /run/secrets/api/minio_root_password
+    volumes:
+      - migrator_secrets:/run/secrets/f1:ro
+      - api_secrets:/run/secrets/api:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      clamd:
+        condition: service_healthy
+    profiles: [ops]
+    restart: "no"
+
+  material-verifier:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "/app/infra/f1/local_material_verify.py"]
+    environment:
+      <<: *runtime_environment
+      F1_MINIO_ROOT_USER_FILE: /run/secrets/api/minio_root_user
+      F1_MINIO_ROOT_PASSWORD_FILE: /run/secrets/api/minio_root_password
+    volumes:
+      - migrator_secrets:/run/secrets/f1:ro
+      - api_secrets:/run/secrets/api:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      clamd:
+        condition: service_healthy
+    profiles: [ops]
+    restart: "no"
+
+  targeted-tests:
+    build:
+      context: ../..
+      dockerfile: infra/f1/local-targeted.Dockerfile
+      args:
+        LOCAL_RUNTIME_IMAGE: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}-targeted
+    command: ["python", "-B", "/app/infra/f1/local_targeted_tests.py"]
+    environment: *runtime_environment
+    volumes:
+      - ../../tests:/app/tests:ro
+    networks: [localnet]
+    labels: *labels
+    profiles: [ops]
+    restart: "no"
+
+  backup-db:
+    image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
+    user: ${LOCAL_UID:?LOCAL_UID_REQUIRED}:${LOCAL_GID:?LOCAL_GID_REQUIRED}
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - >-
+        umask 077;
+        test -d /backup && test ! -e /backup/database.dump;
+        exec pg_dump --format=custom --file=/backup/database.dump
+        --host=postgres --username=f0d_bootstrap
+        --dbname="$${PGDATABASE}"
+    environment:
+      PGDATABASE: ${LOCAL_DATABASE:?LOCAL_DATABASE_REQUIRED}
+      PGPASSFILE: /run/secrets/f1/pgpass
+    volumes:
+      - backup_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    profiles: [ops]
+    restart: "no"
+
+  backup-minio:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - >-
+        umask 077;
+        test -d /backup && test ! -e /backup/minio-data;
+        test -z "$$(find /source -type l -print -quit)";
+        test -z "$$(find /source ! -type d ! -type f -print -quit)";
+        mkdir -m 0700 /backup/minio-data;
+        cp -R /source/. /backup/minio-data/;
+        chown -R "$${LOCAL_UID}:$${LOCAL_GID}" /backup/minio-data;
+        find /backup/minio-data -type d -exec chmod 0700 '{}' \;;
+        find /backup/minio-data -type f -exec chmod 0600 '{}' \;
+    environment:
+      LOCAL_GID: ${LOCAL_GID:?LOCAL_GID_REQUIRED}
+      LOCAL_UID: ${LOCAL_UID:?LOCAL_UID_REQUIRED}
+    volumes:
+      - minio_data:/source:ro
+    networks: [localnet]
+    labels: *labels
+    profiles: [ops]
+    restart: "no"
+
+  restore-db:
+    image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
+    user: ${LOCAL_UID:?LOCAL_UID_REQUIRED}:${LOCAL_GID:?LOCAL_GID_REQUIRED}
+    entrypoint:
+      - /bin/bash
+      - -ec
+      - >-
+        test -f /backup/database.dump;
+        case "$${LOCAL_BACKUP_TABLE_COUNT}" in
+          31)
+            psql --host=postgres --username=f0d_bootstrap
+            --dbname="$${PGDATABASE}" --set=ON_ERROR_STOP=1
+            --command="BEGIN;
+              DROP POLICY IF EXISTS p3_low_level_upload_scope
+                ON f1.upload_task;
+              DROP POLICY IF EXISTS p3_low_level_document_scope
+                ON f1.document;
+              DROP TRIGGER IF EXISTS document_knowledge_scope_update_guard
+                ON f1.document;
+              DROP TRIGGER IF EXISTS upload_task_controlled_scope_guard
+                ON f1.upload_task;
+              DROP FUNCTION IF EXISTS
+                f1.p3_guard_source_document_scope_update();
+              DROP FUNCTION IF EXISTS f1.p3_guard_controlled_upload_scope();
+              ALTER TABLE f1.document DROP CONSTRAINT IF EXISTS
+                document_knowledge_scope_enterprise_fk;
+              ALTER TABLE f1.document DROP COLUMN IF EXISTS
+                knowledge_scope_id;
+              DROP TRIGGER IF EXISTS material_analysis_policy_scope_guard
+                ON f1.material_analysis;
+              DROP TRIGGER IF EXISTS policy_version_document_scope_guard
+                ON f1.policy_version;
+              DROP TABLE IF EXISTS f1.material_field_candidate;
+              DROP TABLE IF EXISTS f1.material_page_classification;
+              DROP TABLE IF EXISTS f1.material_analysis;
+              DROP TABLE IF EXISTS f1.material_knowledge_scope CASCADE;
+              DROP FUNCTION IF EXISTS f1.material_guard_policy_scope();
+              DROP FUNCTION IF EXISTS f1.p5_guard_policy_document_scope();
+              DROP FUNCTION IF EXISTS f1.material_guard_analysis_insert();
+              DROP FUNCTION IF EXISTS f1.material_guard_analysis_update();
+              COMMIT;";;
+          34)
+            psql --host=postgres --username=f0d_bootstrap
+            --dbname="$${PGDATABASE}" --set=ON_ERROR_STOP=1
+            --command="BEGIN;
+              DROP POLICY IF EXISTS p3_low_level_upload_scope
+                ON f1.upload_task;
+              DROP POLICY IF EXISTS p3_low_level_document_scope
+                ON f1.document;
+              DROP TRIGGER IF EXISTS document_knowledge_scope_update_guard
+                ON f1.document;
+              DROP TRIGGER IF EXISTS upload_task_controlled_scope_guard
+                ON f1.upload_task;
+              DROP FUNCTION IF EXISTS
+                f1.p3_guard_source_document_scope_update();
+              DROP FUNCTION IF EXISTS f1.p3_guard_controlled_upload_scope();
+              ALTER TABLE f1.document DROP CONSTRAINT IF EXISTS
+                document_knowledge_scope_enterprise_fk;
+              ALTER TABLE f1.document DROP COLUMN IF EXISTS
+                knowledge_scope_id;
+              DROP TRIGGER IF EXISTS material_analysis_policy_scope_guard
+                ON f1.material_analysis;
+              DROP TRIGGER IF EXISTS policy_version_document_scope_guard
+                ON f1.policy_version;
+              DROP FUNCTION IF EXISTS f1.material_guard_policy_scope();
+              DROP FUNCTION IF EXISTS f1.p5_guard_policy_document_scope();
+              DROP TABLE IF EXISTS f1.material_knowledge_scope CASCADE;
+              COMMIT;";;
+          35) ;;
+          *) exit 64;;
+        esac;
+        exec pg_restore --clean --if-exists --exit-on-error
+        --single-transaction --host=postgres --username=f0d_bootstrap
+        --dbname="$${PGDATABASE}" /backup/database.dump
+    environment:
+      PGDATABASE: ${LOCAL_DATABASE:?LOCAL_DATABASE_REQUIRED}
+      LOCAL_BACKUP_TABLE_COUNT: "35"
+      PGPASSFILE: /run/secrets/f1/pgpass
+    volumes:
+      - backup_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    profiles: [ops]
+    restart: "no"
+
+  restore-minio:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - >-
+        test -d /backup/minio-data;
+        test -z "$$(find /backup/minio-data -type l -print -quit)";
+        test -z "$$(find /backup/minio-data ! -type d ! -type f -print -quit)";
+        test -z "$$(find /target -mindepth 1 -print -quit)";
+        cp -R /backup/minio-data/. /target/;
+        chown -R 1000:1000 /target;
+        find /target -type d -exec chmod 0700 '{}' \;;
+        find /target -type f -exec chmod 0600 '{}' \;
+    volumes:
+      - minio_data:/target
+    networks: [localnet]
+    labels: *labels
+    profiles: [ops]
+    restart: "no"
+
+  api:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command:
+      [
+        "python",
+        "-B",
+        "-m",
+        "uvicorn",
+        "platform_foundation.f1.api.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8001",
+        "--no-access-log",
+      ]
+    environment:
+      <<: *runtime_environment
+      F1_API_PASSWORD_FILE: /run/secrets/f1/f1_api_password
+      F1_INVITE_KEY_FILE: /run/secrets/f1/invite_signing_key
+      F1_QA_KEY_FILE: /run/secrets/f1/f1_qa_key
+      F1_MINIO_ROOT_USER_FILE: /run/secrets/f1/minio_root_user
+      F1_MINIO_ROOT_PASSWORD_FILE: /run/secrets/f1/minio_root_password
+      F1_F0I_KEY_FILE: /run/secrets/f1/f0i_key
+    volumes:
+      - api_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres: {condition: service_healthy}
+      keycloak: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      clamd: {condition: service_healthy}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz',timeout=3)\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    restart: unless-stopped
+
+  worker:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command:
+      - python
+      - -B
+      - -c
+      - >-
+        from redis import Redis;
+        from rq import Queue,Worker;
+        from platform_foundation.f1.upload_task import QUEUE_NAME,REDIS_URL;
+        Worker([Queue(QUEUE_NAME,connection=Redis.from_url(REDIS_URL))]).work()
+    environment:
+      <<: *runtime_environment
+      F1_WORKER_PASSWORD_FILE: /run/secrets/f1/f1_worker_password
+      F1_MINIO_ROOT_USER_FILE: /run/secrets/f1/minio_root_user
+      F1_MINIO_ROOT_PASSWORD_FILE: /run/secrets/f1/minio_root_password
+      F1_F0I_KEY_FILE: /run/secrets/f1/f0i_key
+    volumes:
+      - worker_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"from redis import Redis; from rq import Worker; r=Redis.from_url('redis://redis:6379/0'); raise SystemExit(0 if Worker.all(connection=r) else 1)\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    restart: unless-stopped
+
+  dispatcher:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "-m", "platform_foundation.f1.dispatcher"]
+    environment:
+      <<: *runtime_environment
+      F1_WORKER_PASSWORD_FILE: /run/secrets/f1/f1_worker_password
+      F1_DISPATCH_INTERVAL_SECONDS: "5"
+    volumes:
+      - dispatcher_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import pathlib,time; p=pathlib.Path('/tmp/f1-dispatcher-heartbeat'); lines=p.read_text(encoding='ascii').splitlines() if p.is_file() else []; raise SystemExit(0 if lines[:1]==['ok'] and time.time()-p.stat().st_mtime<30 else 1)\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../..
+      dockerfile: infra/f1/web.Dockerfile
+      args:
+        ANHUAN_ENGINEERING_PROJECT_ID: ${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}
+        ANHUAN_PWA_UPDATE_PROBE: ${LOCAL_PWA_UPDATE_PROBE:-}
+    image: ${LOCAL_WEB_IMAGE:?LOCAL_WEB_IMAGE_REQUIRED}
+    ports:
+      - 127.0.0.1:${LOCAL_WEB_PORT:?LOCAL_WEB_PORT_REQUIRED}:80
+    networks: [localnet, edge]
+    labels: *labels
+    depends_on:
+      api: {condition: service_healthy}
+      keycloak: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    restart: unless-stopped
+
+networks:
+  localnet:
+    internal: true
+    labels:
+      io.anhuan.scope: engineering-closeout
+      io.anhuan.project-id: ${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}
+  edge:
+    labels:
+      io.anhuan.scope: engineering-closeout
+      io.anhuan.project-id: ${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}
+
+volumes:
+  migrator_secrets:
+    labels: &volume_labels
+      io.anhuan.scope: engineering-closeout
+      io.anhuan.project-id: ${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}
+  seed_secrets: {labels: *volume_labels}
+  provisioner_secrets: {labels: *volume_labels}
+  api_secrets: {labels: *volume_labels}
+  worker_secrets: {labels: *volume_labels}
+  dispatcher_secrets: {labels: *volume_labels}
+  postgres_secrets: {labels: *volume_labels}
+  keycloak_secrets: {labels: *volume_labels}
+  minio_secrets: {labels: *volume_labels}
+  backup_secrets: {labels: *volume_labels}
+  postgres_data: {labels: *volume_labels}
+  keycloak_data: {labels: *volume_labels}
+  minio_data: {labels: *volume_labels}
+  redis_data: {labels: *volume_labels}

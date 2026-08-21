@@ -2,7 +2,12 @@ import { useEffect, useState } from "react";
 import { Layout as AntLayout, Menu, Button, Typography, Select } from "antd";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/OidcProvider";
-import { api, getSelectedEnterprise, setSelectedEnterprise } from "../api";
+import {
+  ENTERPRISE_CHANGED_EVENT,
+  api,
+  getSelectedEnterprise,
+  setSelectedEnterprise,
+} from "../api";
 import type { Membership } from "../api";
 import NotificationBell from "../components/NotificationBell";
 import { OnlineOfflineBadge } from "../features/p8";
@@ -15,6 +20,13 @@ export default function Layout() {
   const location = useLocation();
   const [memberships, setMemberships] = useState<Membership[]>([]);
   const [selected, setSelected] = useState<string | null>(getSelectedEnterprise());
+  const [tenantEpoch, setTenantEpoch] = useState(0);
+
+  useEffect(() => {
+    const handleTenantChange = () => setTenantEpoch((current) => current + 1);
+    window.addEventListener(ENTERPRISE_CHANGED_EVENT, handleTenantChange);
+    return () => window.removeEventListener(ENTERPRISE_CHANGED_EVENT, handleTenantChange);
+  }, []);
 
   useEffect(() => {
     api<Membership[]>("/v1/users/me/enterprises", { token: getAccessToken() })
@@ -27,7 +39,6 @@ export default function Layout() {
         setSelected(next);
         if (next !== stored) {
           setSelectedEnterprise(next);
-          window.dispatchEvent(new Event("f1-enterprise-changed"));
         }
       })
       .catch(() => setMemberships([]));
@@ -110,7 +121,6 @@ export default function Layout() {
           onChange={(id) => {
             setSelected(id);
             setSelectedEnterprise(id);
-            window.dispatchEvent(new Event("f1-enterprise-changed"));
           }}
           options={memberships.map((m) => ({
             value: m.enterprise_id,
@@ -125,7 +135,7 @@ export default function Layout() {
         <Button onClick={() => logout()}>退出</Button>
       </Header>
       <Content style={{ padding: "clamp(12px, 3vw, 24px)", overflowX: "hidden" }}>
-        <Outlet />
+        <Outlet key={tenantEpoch} />
       </Content>
     </AntLayout>
   );

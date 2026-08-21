@@ -5,6 +5,8 @@ import type {
   CreatePolicyImpactInput,
   CreatePolicySourceInput,
   CreatePolicyVersionInput,
+  ConfirmMaterialPolicyDraftInput,
+  ConfirmMaterialPolicyDraftResult,
   P5ErrorEnvelope,
   PolicyImpact,
   PolicyImpactCollection,
@@ -43,6 +45,7 @@ interface RequestOptions {
   token: string | null;
   method?: "GET" | "POST" | "PATCH";
   body?: unknown;
+  idempotencyKey?: string;
   signal?: AbortSignal;
 }
 
@@ -58,6 +61,7 @@ function requestHeaders(options: RequestOptions): Headers {
   const enterpriseId = getSelectedEnterprise();
   if (enterpriseId) headers.set("X-Enterprise-Id", enterpriseId);
   if (options.body !== undefined) headers.set("Content-Type", "application/json");
+  if (options.idempotencyKey) headers.set("Idempotency-Key", options.idempotencyKey);
   return headers;
 }
 
@@ -187,6 +191,25 @@ export function createPolicyVersion(
     body: input,
     signal,
   });
+}
+
+export function confirmMaterialPolicyDraft(
+  token: string | null,
+  analysisId: string,
+  input: ConfirmMaterialPolicyDraftInput,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<ConfirmMaterialPolicyDraftResult> {
+  return requestJson<ConfirmMaterialPolicyDraftResult>(
+    itemPath("/material-analyses", analysisId) + "/confirm",
+    {
+      token,
+      method: "POST",
+      body: input,
+      idempotencyKey,
+      signal,
+    },
+  );
 }
 
 export function getPolicyVersion(

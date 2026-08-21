@@ -149,9 +149,35 @@ class UploadPreflight:
 
 
 AllowedAction = Literal[
-    "create_document", "upload_version", "process", "retry", "release", "reject"
+    "create_document",
+    "upload_version",
+    "set_knowledge_scope",
+    "process",
+    "retry",
+    "release",
+    "reject",
 ]
 PreviewKind = Literal["page_text", "sheet_grid", "image"]
+DeclaredMaterialKind = Literal["policy", "report", "unknown"]
+KnowledgeScopeKind = Literal["service_provider", "client"]
+
+
+class KnowledgeScopeOut(BaseModel):
+    """Vendor-neutral knowledge namespace identity.
+
+    ``id`` is the only namespace key exposed by the product API.  Physical
+    dataset names or provider-specific identifiers never cross this boundary.
+    """
+
+    id: uuid.UUID
+    kind: KnowledgeScopeKind
+    client_account_id: uuid.UUID | None = None
+    client_display_name: str | None = Field(default=None, max_length=200)
+
+
+class KnowledgeScopeUpdateIn(BaseModel):
+    kind: KnowledgeScopeKind
+    client_account_id: uuid.UUID | None = None
 
 
 class AllowedTypeOut(BaseModel):
@@ -209,6 +235,8 @@ class VersionOut(BaseModel):
 class DocumentSummaryOut(BaseModel):
     id: uuid.UUID
     display_name: str = Field(min_length=1, max_length=160)
+    declared_material_kind: DeclaredMaterialKind = "unknown"
+    knowledge_scope: KnowledgeScopeOut
     status: Literal["processing", "ready", "blocked", "failed"]
     version_count: int = Field(ge=0)
     latest_version: VersionOut | None
@@ -254,6 +282,18 @@ class PageTextOut(BaseModel):
 
 
 WorksheetCell = str | int | float | bool | None
+
+
+def validate_knowledge_scope_selection(
+    kind: str, client_account_id: uuid.UUID | None
+) -> tuple[KnowledgeScopeKind, uuid.UUID | None]:
+    if kind not in {"service_provider", "client"}:
+        raise IngestionError("P3_KNOWLEDGE_SCOPE_INVALID")
+    if kind == "service_provider" and client_account_id is not None:
+        raise IngestionError("P3_KNOWLEDGE_SCOPE_INVALID")
+    if kind == "client" and client_account_id is None:
+        raise IngestionError("P3_CLIENT_ACCOUNT_REQUIRED")
+    return kind, client_account_id
 
 
 class WorksheetGridOut(BaseModel):
@@ -382,9 +422,14 @@ def collection_allowed_actions(role: str | None) -> list[AllowedAction]:
     return []
 
 
-def document_allowed_actions(role: str | None) -> list[AllowedAction]:
+def document_allowed_actions(
+    role: str | None, *, knowledge_scope_editable: bool = False
+) -> list[AllowedAction]:
     if role in {"super_admin", "enterprise_admin", "plant_admin"}:
-        return ["upload_version"]
+        actions: list[AllowedAction] = ["upload_version"]
+        if knowledge_scope_editable:
+            actions.append("set_knowledge_scope")
+        return actions
     return []
 
 
@@ -420,10 +465,26 @@ def version_allowed_actions(
     return actions
 
 
-RETRYABLE_REASON_CODES = frozenset(
+SCANNER_TRANSPORT_FAILURE_CODES = frozenset(
     {
         "P3_SCANNER_UNAVAILABLE",
+        "P3_SCANNER_DNS_FAILED",
+        "P3_SCANNER_REFUSED",
         "P3_SCANNER_TIMEOUT",
+        "P3_SCANNER_CONNECT_REFUSED",
+        "P3_SCANNER_CONNECT_RESET",
+        "P3_SCANNER_CONNECT_PIPE",
+        "P3_SCANNER_VERSION_REFUSED",
+        "P3_SCANNER_VERSION_RESET",
+        "P3_SCANNER_VERSION_PIPE",
+        "P3_SCANNER_STREAM_REFUSED",
+        "P3_SCANNER_STREAM_RESET",
+        "P3_SCANNER_STREAM_PIPE",
+    }
+)
+RETRYABLE_REASON_CODES = frozenset(
+    {
+        *SCANNER_TRANSPORT_FAILURE_CODES,
         "P3_SCAN_PROTOCOL_ERROR",
         "P3_SOURCE_READ_FAILED",
         "P3_PREVIEW_TIMEOUT",
@@ -452,12 +513,30 @@ PUBLIC_REASON_CODES = {
     "P3_MEMBERSHIP_NOT_FOUND": "NOT_FOUND",
     "P3_MANAGER_REQUIRED": "FORBIDDEN",
     "P3_TITLE_INVALID": "INVALID_REQUEST",
+    "P3_MATERIAL_KIND_INVALID": "INVALID_REQUEST",
     "P3_CURSOR_INVALID": "INVALID_REQUEST",
     "P3_FILTER_INVALID": "INVALID_REQUEST",
+    "P3_KNOWLEDGE_SCOPE_INVALID": "INVALID_REQUEST",
+    "P3_CLIENT_ACCOUNT_REQUIRED": "INVALID_REQUEST",
+    "P3_CLIENT_ACCOUNT_NOT_FOUND": "NOT_FOUND",
+    "P3_KNOWLEDGE_SCOPE_LOCKED": "ILLEGAL_STATE_TRANSITION",
+    "P3_KNOWLEDGE_SCOPE_CONFLICT": "ILLEGAL_STATE_TRANSITION",
+    "MATERIAL_SCOPE_NOT_CONFIGURED": "MATERIAL_SCOPE_NOT_CONFIGURED",
     "P3_LIMIT_INVALID": "INVALID_REQUEST",
     "P3_ILLEGAL_STATE_TRANSITION": "ILLEGAL_STATE_TRANSITION",
     "P3_QUARANTINE_FINALIZE_CONFLICT": "ILLEGAL_STATE_TRANSITION",
     "P3_SCANNER_UNAVAILABLE": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_DNS_FAILED": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_REFUSED": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_CONNECT_REFUSED": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_CONNECT_RESET": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_CONNECT_PIPE": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_VERSION_REFUSED": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_VERSION_RESET": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_VERSION_PIPE": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_STREAM_REFUSED": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_STREAM_RESET": "SCAN_ENGINE_UNAVAILABLE",
+    "P3_SCANNER_STREAM_PIPE": "SCAN_ENGINE_UNAVAILABLE",
     "P3_SCANNER_TIMEOUT": "SCAN_ENGINE_UNAVAILABLE",
     "P3_SCAN_ENGINE_ERROR": "SCAN_ENGINE_UNAVAILABLE",
     "P3_SCAN_PROTOCOL_ERROR": "SCAN_ENGINE_UNAVAILABLE",
@@ -527,6 +606,9 @@ __all__ = (
     "DocumentSummaryOut",
     "FormatLimit",
     "IngestionError",
+    "KnowledgeScopeKind",
+    "KnowledgeScopeOut",
+    "KnowledgeScopeUpdateIn",
     "MAX_ATTEMPTS",
     "MAX_DOCX_PAGES",
     "MAX_JPEG_PIXELS",
@@ -551,6 +633,7 @@ __all__ = (
     "QuarantineState",
     "RESOURCE_POLICY_VERSION",
     "RETRYABLE_REASON_CODES",
+    "SCANNER_TRANSPORT_FAILURE_CODES",
     "WorksheetGridOut",
     "SCAN_TIMEOUT_SECONDS",
     "ScanStatus",
@@ -567,4 +650,5 @@ __all__ = (
     "public_reason_code",
     "reason_is_retryable",
     "version_allowed_actions",
+    "validate_knowledge_scope_selection",
 )

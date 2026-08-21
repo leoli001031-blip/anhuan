@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import inspect
 import io
 import json
 import struct
+import sys
 import unittest
 import zipfile
 from pathlib import Path
@@ -23,7 +25,7 @@ from pypdf import PdfWriter
 from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
 
 from platform_foundation.f1 import models
-from platform_foundation.f1.features.p3 import contracts, preview, scanner
+from platform_foundation.f1.features.p3 import contracts, preview, processor, scanner
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -152,6 +154,19 @@ def _pdf_bytes() -> bytes:
     return output.getvalue()
 
 
+def _pdf_with_aa_actions() -> bytes:
+    from pypdf.generic import DictionaryObject, NameObject
+
+    output = io.BytesIO()
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=72, height=72)
+    additional = DictionaryObject()
+    additional[NameObject("/O")] = DictionaryObject()
+    page[NameObject("/AA")] = additional
+    writer.write(output)
+    return output.getvalue()
+
+
 def _docx_bytes(text: str = "synthetic") -> bytes:
     document = (
         '<?xml version="1.0" encoding="UTF-8"?>'
@@ -240,8 +255,14 @@ class P3MigrationAndTenantContractTests(unittest.TestCase):
         script = ScriptDirectory.from_config(
             Config(str(ROOT / "infra/f1/alembic.ini"))
         )
-        self.assertEqual(script.get_heads(), ["f1_0010"])
+        self.assertEqual(script.get_heads(), ["f1_0015"])
         self.assertEqual(script.get_revision("f1_0006").down_revision, "f1_0005")
+        self.assertEqual(script.get_revision("f1_0015").down_revision, "f1_0014")
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from infra.f1.migrate_f1 import F1_DEFAULT_MIGRATE_TARGET
+
+        self.assertEqual(F1_DEFAULT_MIGRATE_TARGET, "f1_0014")
 
     def test_p3_does_not_rewrite_frozen_f1_migrations(self) -> None:
         observed = {
@@ -318,6 +339,43 @@ class P3MigrationAndTenantContractTests(unittest.TestCase):
 
 
 class P3PipelineBoundaryTests(unittest.TestCase):
+    def test_processor_forwards_a_bounded_real_scanner_endpoint(self) -> None:
+        signature = inspect.signature(processor.process_controlled_ingestion)
+        self.assertEqual(signature.parameters["scanner_host"].default, "clamd")
+        self.assertEqual(signature.parameters["scanner_port"].default, 3310)
+        source = inspect.getsource(processor.process_controlled_ingestion)
+        self.assertIn("scan_stream,", source)
+        self.assertIn("host=scanner_host", source)
+        self.assertIn("port=scanner_port", source)
+        self.assertNotIn("scan_stream =", source)
+
+    def test_retry_post_resets_then_runs_the_real_processor(self) -> None:
+        source = ast.get_source_segment(
+            _source(P3_ROUTER),
+            _definition(P3_ROUTER, "retry_version"),
+        )
+        self.assertIsNotNone(source)
+        assert source is not None
+        reset = source.index(
+            'await act_on_version(tenant, version_id, action="retry")'
+        )
+        process = source.index(
+            "await process_controlled_ingestion(tenant, version_id)"
+        )
+        result = source.index("return await get_version(tenant, version_id)")
+        self.assertLess(reset, process)
+        self.assertLess(process, result)
+
+    def test_document_list_types_every_optional_postgres_bind(self) -> None:
+        literals = " ".join(_string_literals(P3_SERVICE, "list_documents"))
+        for marker in (
+            "CAST(:content_type AS text)",
+            "CAST(:status AS text)",
+            "CAST(:cursor_updated_at AS timestamptz)",
+            "CAST(:cursor_id AS uuid)",
+        ):
+            self.assertIn(marker, literals)
+
     def test_p3_sources_do_not_create_outbox_or_enter_legacy_indexing(self) -> None:
         paths = tuple(sorted(P3_FEATURES.glob("*.py"))) + (P3_ROUTER,)
         forbidden_calls = {
@@ -349,7 +407,7 @@ class P3PipelineBoundaryTests(unittest.TestCase):
                     f"legacy import in {path.name}",
                 )
 
-    def test_upload_finishes_held_and_does_not_start_processing(self) -> None:
+    def test_upload_finalizes_held_before_router_starts_processing(self) -> None:
         finalize = " ".join(_string_literals(P3_SERVICE, "finalize_quarantine"))
         self.assertIn("object_state='quarantined'", finalize)
         self.assertIn("quarantine_status='held'", finalize)
@@ -362,6 +420,18 @@ class P3PipelineBoundaryTests(unittest.TestCase):
                 "run_upload_pipeline",
             }.isdisjoint(calls)
         )
+        router_source = _source(P3_ROUTER)
+        for function_name in ("create_document", "append_version"):
+            segment = ast.get_source_segment(
+                router_source,
+                _definition(P3_ROUTER, function_name),
+            )
+            self.assertIsNotNone(segment)
+            assert segment is not None
+            self.assertLess(
+                segment.index("await complete_upload("),
+                segment.index("await process_controlled_ingestion("),
+            )
 
     def test_controlled_api_exposes_an_explicit_scan_preview_action(self) -> None:
         post_paths = _router_paths("post")
@@ -609,6 +679,11 @@ class P3FormatScannerAndPreviewTests(unittest.TestCase):
             lambda: preview.build_preview(
                 "pdf", io.BytesIO(body + b"\n/JavaScript")
             ),
+        )
+        preview.build_preview("pdf", io.BytesIO(body + b"\n/AA*\xd9binary"))
+        self.assert_preview_error(
+            "P3_PDF_ACTIVE_CONTENT",
+            lambda: preview.build_preview("pdf", io.BytesIO(_pdf_with_aa_actions())),
         )
 
     def test_docx_preview_rejects_external_relationship_and_zip_bomb(self) -> None:

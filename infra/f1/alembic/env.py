@@ -12,8 +12,8 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
-from sqlalchemy.engine import make_url
+from sqlalchemy import engine_from_config, pool, text
+from sqlalchemy.engine import Connection, make_url
 
 
 config = context.config
@@ -59,6 +59,26 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    supplied = config.attributes.get("connection")
+    if supplied is not None:
+        if not isinstance(supplied, Connection):
+            raise RuntimeError("F1_EXTERNAL_CONNECTION_INVALID")
+        identity = supplied.execute(
+            text("SELECT current_user, session_user")
+        ).one()
+        if tuple(identity) != ("f0d_migration", "f0d_bootstrap"):
+            raise RuntimeError("F1_EXTERNAL_CONNECTION_IDENTITY_MISMATCH")
+        context.configure(
+            connection=supplied,
+            target_metadata=target_metadata,
+            transactional_ddl=True,
+            include_schemas=True,
+            version_table_schema="f1",
+        )
+        with context.begin_transaction():
+            context.run_migrations()
+        return
+
     section = config.get_section(config.config_ini_section, {})
     section["sqlalchemy.url"] = _migration_url().replace("%", "%%")
     connectable = engine_from_config(

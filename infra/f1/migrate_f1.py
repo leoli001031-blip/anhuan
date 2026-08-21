@@ -26,7 +26,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 import psycopg  # noqa: E402
 from psycopg import sql  # noqa: E402
-from sqlalchemy.engine import URL, make_url  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.engine import Connection, URL, make_url  # noqa: E402
 
 from platform_foundation.f1.config import pg_database, pg_host, pg_port  # noqa: E402
 
@@ -64,6 +65,16 @@ LEGACY_DEFINER_OWNERS = {
     "f1.verify_citations(uuid[],bytea,text)": "f0d_migration",
 }
 ALL_DEFINER_OWNERS = {**DEFINER_OWNERS, **LEGACY_DEFINER_OWNERS}
+F1_ALLOWED_MIGRATE_TARGETS = frozenset({"f1_0014", "f1_0015"})
+F1_DEFAULT_MIGRATE_TARGET = "f1_0014"
+F1_MATERIAL_RAG_MIGRATE_TARGET = "f1_0015"
+
+
+def _closed_f1_migrate_target(target: object) -> str:
+    if type(target) is not str or target not in F1_ALLOWED_MIGRATE_TARGETS:
+        raise RuntimeError("F1_MIGRATE_TARGET_INVALID")
+    return target
+
 
 
 def _read_secret(name: str) -> str:
@@ -150,88 +161,106 @@ def _migration_dsn() -> str:
     )
 
 
-def _provision_roles(database_name: str) -> None:
+def _provision_roles(
+    connection: psycopg.Connection, database_name: str
+) -> None:
     passwords = {
         "f1_api": _read_secret("f1_api_password"),
         "f1_worker": _read_secret("f1_worker_password"),
     }
-    with psycopg.connect(
-        _bootstrap_dsn(), autocommit=True
-    ) as connection:
-        for role in DEFINER_ROLES:
-            exists = connection.execute(
-                "SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)
-            ).fetchone()
-            if exists is None:
-                connection.execute(
-                    sql.SQL(
-                        "CREATE ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
-                        "NOINHERIT NOREPLICATION NOBYPASSRLS"
-                    ).format(sql.Identifier(role))
-                )
-            unsafe = connection.execute(
-                "SELECT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole "
-                "OR rolinherit OR rolreplication OR rolbypassrls "
-                "FROM pg_roles WHERE rolname = %s",
-                (role,),
-            ).fetchone()
-            if unsafe is None or bool(unsafe[0]):
-                raise RuntimeError("F1_DEFINER_ROLE_UNSAFE")
-        membership = connection.execute(
-            "SELECT 1 FROM pg_auth_members AS m "
-            "JOIN pg_roles AS granted ON granted.oid = m.roleid "
-            "JOIN pg_roles AS member ON member.oid = m.member "
-            "WHERE granted.rolname = ANY(%s) OR member.rolname = ANY(%s) LIMIT 1",
-            (list(DEFINER_ROLES), list(DEFINER_ROLES)),
+    for role in DEFINER_ROLES:
+        exists = connection.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)
         ).fetchone()
-        if membership is not None:
-            raise RuntimeError("F1_DEFINER_ROLE_MEMBERSHIP_FORBIDDEN")
-        for role, password in passwords.items():
-            exists = connection.execute(
-                "SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)
-            ).fetchone()
-            if exists is None:
-                connection.execute(
-                    sql.SQL(
-                        "CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
-                        "NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT {} "
-                        "PASSWORD {}"
-                    ).format(
-                        sql.Identifier(role),
-                        sql.Literal(ROLE_LIMITS[role]),
-                        sql.Literal(password),
-                    )
+        if exists is None:
+            connection.execute(
+                sql.SQL(
+                    "CREATE ROLE {} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                    "NOINHERIT NOREPLICATION NOBYPASSRLS"
+                ).format(sql.Identifier(role))
+            )
+        unsafe = connection.execute(
+            "SELECT rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole "
+            "OR rolinherit OR rolreplication OR rolbypassrls "
+            "FROM pg_roles WHERE rolname = %s",
+            (role,),
+        ).fetchone()
+        if unsafe is None or bool(unsafe[0]):
+            raise RuntimeError("F1_DEFINER_ROLE_UNSAFE")
+
+    for role, password in passwords.items():
+        exists = connection.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)
+        ).fetchone()
+        if exists is None:
+            connection.execute(
+                sql.SQL(
+                    "CREATE ROLE {} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                    "NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT {} "
+                    "PASSWORD {}"
+                ).format(
+                    sql.Identifier(role),
+                    sql.Literal(ROLE_LIMITS[role]),
+                    sql.Literal(password),
                 )
-            can_connect = connection.execute(
-                "SELECT has_database_privilege(%s, %s, 'CONNECT')",
-                (role, database_name),
-            ).fetchone()
-            if can_connect is None or not bool(can_connect[0]):
-                connection.execute(
-                    sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
-                        sql.Identifier(database_name), sql.Identifier(role)
-                    )
+            )
+        flags = connection.execute(
+            "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, "
+            "rolinherit, rolreplication, rolbypassrls, rolconnlimit "
+            "FROM pg_roles WHERE rolname = %s",
+            (role,),
+        ).fetchone()
+        if flags is None or tuple(flags) != (
+            True,
+            False,
+            False,
+            False,
+            False,
+            False,
+            False,
+            ROLE_LIMITS[role],
+        ):
+            raise RuntimeError("F1_RUNTIME_ROLE_UNSAFE")
+        can_connect = connection.execute(
+            "SELECT has_database_privilege(%s, %s, 'CONNECT')",
+            (role, database_name),
+        ).fetchone()
+        if can_connect is None or not bool(can_connect[0]):
+            connection.execute(
+                sql.SQL("GRANT CONNECT ON DATABASE {} TO {}").format(
+                    sql.Identifier(database_name), sql.Identifier(role)
                 )
+            )
+
+    protected_roles = list((*DEFINER_ROLES, *ROLES))
+    membership = connection.execute(
+        "SELECT 1 FROM pg_auth_members AS m "
+        "JOIN pg_roles AS granted ON granted.oid = m.roleid "
+        "JOIN pg_roles AS member ON member.oid = m.member "
+        "WHERE granted.rolname = ANY(%s) OR member.rolname = ANY(%s) LIMIT 1",
+        (protected_roles, protected_roles),
+    ).fetchone()
+    if membership is not None:
+        raise RuntimeError("F1_ROLE_MEMBERSHIP_FORBIDDEN")
 
 
-def _ensure_f1_version_schema() -> None:
+def _ensure_f1_version_schema(connection: psycopg.Connection) -> None:
     """Create the independent Alembic version schema exactly once.
 
     Alembic creates ``f1.alembic_version`` before executing the root revision,
     so a truly fresh database needs the namespace first.  Existing namespaces
     are accepted only when owned by the migration role; replay performs no DDL.
     """
-    with psycopg.connect(_bootstrap_dsn(), autocommit=True) as connection:
-        owner = connection.execute(
-            "SELECT r.rolname FROM pg_namespace AS n "
-            "JOIN pg_roles AS r ON r.oid = n.nspowner WHERE n.nspname = 'f1'"
-        ).fetchone()
-        if owner is None:
-            connection.execute("CREATE SCHEMA f1 AUTHORIZATION f0d_migration")
-            connection.execute("REVOKE ALL ON SCHEMA f1 FROM PUBLIC")
-            return
-        if str(owner[0]) != "f0d_migration":
-            raise RuntimeError("F1_SCHEMA_OWNER_MISMATCH")
+    owner = connection.execute(
+        "SELECT r.rolname FROM pg_namespace AS n "
+        "JOIN pg_roles AS r ON r.oid = n.nspowner WHERE n.nspname = 'f1'"
+    ).fetchone()
+    if owner is None:
+        connection.execute("CREATE SCHEMA f1 AUTHORIZATION f0d_migration")
+        connection.execute("REVOKE ALL ON SCHEMA f1 FROM PUBLIC")
+        return
+    if str(owner[0]) != "f0d_migration":
+        raise RuntimeError("F1_SCHEMA_OWNER_MISMATCH")
 
 
 def _resolved_definer_contract(connection: psycopg.Connection) -> dict[str, tuple[int, str]]:
@@ -310,7 +339,7 @@ def _assert_owner_map(
             raise RuntimeError("F1_DEFINER_OWNER_MISMATCH")
 
 
-def _finalize_definer_owners(database_name: str) -> None:
+def _finalize_definer_owners(connection: psycopg.Connection) -> None:
     """Atomically move the exact function set to membership-free owners.
 
     Every function is first resolved through ``to_regprocedure`` and checked
@@ -318,19 +347,17 @@ def _finalize_definer_owners(database_name: str) -> None:
     exact schema-wide owner map.  Any failure rolls back every owner change;
     rerunning after an interrupted successful finalization is idempotent.
     """
-    with psycopg.connect(_bootstrap_dsn(), autocommit=False) as connection:
-        resolved = _resolved_definer_contract(connection)
-        for signature, role in DEFINER_OWNERS.items():
-            current_owner = resolved[signature][1]
-            if current_owner not in {"f0d_migration", role}:
-                raise RuntimeError("F1_DEFINER_OWNER_UNEXPECTED")
-        for signature, role in DEFINER_OWNERS.items():
-            current_owner = resolved[signature][1]
-            if current_owner == role:
-                continue
-            _alter_owner_by_oid(connection, resolved[signature][0], role)
-        _assert_owner_map(connection, resolved)
-        connection.commit()
+    resolved = _resolved_definer_contract(connection)
+    for signature, role in DEFINER_OWNERS.items():
+        current_owner = resolved[signature][1]
+        if current_owner not in {"f0d_migration", role}:
+            raise RuntimeError("F1_DEFINER_OWNER_UNEXPECTED")
+    for signature, role in DEFINER_OWNERS.items():
+        current_owner = resolved[signature][1]
+        if current_owner == role:
+            continue
+        _alter_owner_by_oid(connection, resolved[signature][0], role)
+    _assert_owner_map(connection, resolved)
 
 
 def _restore_definer_owners(database_name: str) -> None:
@@ -357,25 +384,68 @@ def _restore_definer_owners(database_name: str) -> None:
         connection.commit()
 
 
-def main() -> int:
-    database_name = pg_database()
-    f1_migration_dsn = _migration_dsn()
-    _provision_roles(database_name)
-    _ensure_f1_version_schema()
-    previous = os.environ.get("F1_MIGRATION_DSN")
-    os.environ["F1_MIGRATION_DSN"] = f1_migration_dsn
+def migrate_with_connection(
+    connection: Connection,
+    *,
+    after_upgrade: object | None = None,
+    target: object = F1_DEFAULT_MIGRATE_TARGET,
+) -> None:
+    """Run F1 DDL and owner finalization in the caller's transaction.
+
+    ``target`` is an internal closed set: default engineering stays at
+    ``f1_0014``; only the dedicated material-RAG migrator may request
+    ``f1_0015``.  The optional callback is intentionally Python-only and is
+    used by the closeout failure-atomicity test.  Neither the target nor the
+    callback is exposed through argv or an environment switch.
+    """
+    target = _closed_f1_migrate_target(target)
+    raw = connection.connection.driver_connection
+    if not isinstance(raw, psycopg.Connection):
+        raise RuntimeError("F1_EXTERNAL_CONNECTION_DRIVER_INVALID")
+    identity = raw.execute(
+        "SELECT current_user, session_user, current_database()"
+    ).fetchone()
+    if identity is None or tuple(identity) != (
+        "f0d_bootstrap",
+        "f0d_bootstrap",
+        pg_database(),
+    ):
+        raise RuntimeError("F1_BOOTSTRAP_CONNECTION_IDENTITY_MISMATCH")
+
+    _provision_roles(raw, pg_database())
+    _ensure_f1_version_schema(raw)
+    connection.exec_driver_sql("SET LOCAL ROLE f0d_migration")
     try:
         from alembic import command
         from alembic.config import Config
 
         alembic_ini = str(Path(__file__).resolve().parent / "alembic.ini")
-        command.upgrade(Config(alembic_ini), "head")
-        _finalize_definer_owners(database_name)
+        alembic_config = Config(alembic_ini)
+        alembic_config.attributes["connection"] = connection
+        command.upgrade(alembic_config, target)
     finally:
-        if previous is None:
-            os.environ.pop("F1_MIGRATION_DSN", None)
-        else:
-            os.environ["F1_MIGRATION_DSN"] = previous
+        connection.exec_driver_sql("RESET ROLE")
+
+    if after_upgrade is not None:
+        if not callable(after_upgrade):
+            raise RuntimeError("F1_AFTER_UPGRADE_CALLBACK_INVALID")
+        after_upgrade()
+    _finalize_definer_owners(raw)
+
+
+def main() -> int:
+    pg_database()
+    _migration_dsn()  # Validate the independently stored migration identity.
+    bootstrap_url = make_url(_bootstrap_dsn()).set(
+        drivername="postgresql+psycopg"
+    )
+    engine = create_engine(bootstrap_url, pool_pre_ping=True)
+    try:
+        with engine.connect() as connection:
+            with connection.begin():
+                migrate_with_connection(connection)
+    finally:
+        engine.dispose()
     print("F1_MIGRATE_OK")
     return 0
 

@@ -1,6 +1,6 @@
 # P3 CONTROLLED INGESTION Progress
 
-> **现役摘要（2026-08-11）：** `P3_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION`。当前迁移 head 为 `f1_0010`，代码/证据 checkpoint 为 `9d712cd`；下文保留启动时状态与过程。总状态见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)。
+> **阶段收口摘要（2026-08-11）：** `P3_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION`。该阶段收口时迁移 head 为 `f1_0010`，代码/证据 checkpoint 为 `9d712cd`；下文保留启动时状态与过程。现役源码头与总状态见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)。
 
 ## 2026-08-10 安全换挡
 

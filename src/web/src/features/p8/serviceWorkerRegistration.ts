@@ -31,10 +31,53 @@ let installPrompt: InternalBeforeInstallPromptEvent | null = null;
 let installedInSession = false;
 let globalListenersReady = false;
 let reloadOnNextController = false;
+let apiReachable = typeof navigator === "undefined" ? true : navigator.onLine;
+let reachabilityPromise: Promise<boolean> | null = null;
 const wiredRegistrations = new WeakSet<ServiceWorkerRegistration>();
 
 function emitState(): void {
   if (typeof window !== "undefined") window.dispatchEvent(new Event(INTERNAL_PWA_STATE_EVENT));
+}
+
+function setApiReachable(next: boolean): void {
+  if (apiReachable === next) return;
+  apiReachable = next;
+  emitState();
+}
+
+export async function refreshInternalPwaReachability(): Promise<boolean> {
+  if (typeof window === "undefined" || typeof navigator === "undefined") return true;
+  if (!navigator.onLine) {
+    setApiReachable(false);
+    return false;
+  }
+  if (reachabilityPromise) return reachabilityPromise;
+  reachabilityPromise = fetch("/api/healthz", {
+    cache: "no-store",
+    credentials: "omit",
+    headers: { Accept: "application/json" },
+    redirect: "error",
+    signal: AbortSignal.timeout(4_000),
+  })
+    .then(async (response) => {
+      await response.body?.cancel().catch(() => undefined);
+      return response.status === 200;
+    })
+    .catch(() => false)
+    .then((reachable) => {
+      setApiReachable(reachable);
+      return reachable;
+    })
+    .finally(() => { reachabilityPromise = null; });
+  return reachabilityPromise;
+}
+
+function handleConnectivityChange(): void {
+  if (typeof navigator !== "undefined" && !navigator.onLine) {
+    setApiReachable(false);
+    return;
+  }
+  void refreshInternalPwaReachability();
 }
 
 export function isInternalPwaStandalone(): boolean {
@@ -57,8 +100,8 @@ function ensureGlobalListeners(): void {
     installedInSession = true;
     emitState();
   });
-  window.addEventListener("online", emitState);
-  window.addEventListener("offline", emitState);
+  window.addEventListener("online", handleConnectivityChange);
+  window.addEventListener("offline", handleConnectivityChange);
   const displayMode = window.matchMedia?.("(display-mode: standalone)");
   displayMode?.addEventListener?.("change", emitState);
   if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
@@ -137,7 +180,7 @@ export function getInternalPwaSnapshot(): InternalPwaSnapshot {
   ensureGlobalListeners();
   const standalone = isInternalPwaStandalone();
   return {
-    online: typeof navigator === "undefined" ? true : navigator.onLine,
+    online: typeof navigator === "undefined" ? true : navigator.onLine && apiReachable,
     standalone,
     serviceWorkerSupported: typeof navigator !== "undefined" && "serviceWorker" in navigator,
     controlled: typeof navigator !== "undefined" && "serviceWorker" in navigator && Boolean(navigator.serviceWorker.controller),

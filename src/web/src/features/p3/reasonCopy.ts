@@ -18,6 +18,13 @@ const REASON_COPY: Record<string, string> = {
   NOT_FOUND: "记录不存在或当前企业无权访问",
   REQUEST_ABORTED: "请求已取消",
   NETWORK_ERROR: "网络请求失败，请稍后重试",
+  MATERIAL_PDF_PARSE_FAILED: "PDF 结构无法形成可靠的录入草稿",
+  MATERIAL_PDF_ENCRYPTED: "加密 PDF 暂不能生成录入草稿",
+  MATERIAL_PDF_PAGE_LIMIT: "PDF 页数超过材料分析上限",
+  MATERIAL_SOURCE_IDENTITY_MISMATCH: "材料原件身份校验不一致",
+  MATERIAL_SOURCE_READ_FAILED: "暂时无法读取材料原件",
+  MATERIAL_ANALYSIS_FAILED: "材料机器分析未完成",
+  MATERIAL_INTAKE_UNAVAILABLE: "材料分析服务暂时不可用",
 };
 
 const STATUS_COPY: Record<string, string> = {

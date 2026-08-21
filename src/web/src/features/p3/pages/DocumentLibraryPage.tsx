@@ -15,7 +15,7 @@ import type { TableColumnsType } from "antd";
 import { useNavigate } from "react-router-dom";
 import { getSelectedEnterprise } from "../../../api";
 import { useAuth } from "../../../auth/OidcProvider";
-import DocumentUploadModal from "../components/DocumentUploadModal";
+import BatchDocumentUploadModal from "../components/BatchDocumentUploadModal";
 import IngestionStatus from "../components/IngestionStatus";
 import ResourceLimitsCard from "../components/ResourceLimitsCard";
 import {
@@ -28,6 +28,7 @@ import type {
   DocumentCollection,
   DocumentSummary,
   IngestionCapabilities,
+  KnowledgeScopeKind,
 } from "../types";
 
 const EMPTY_COLLECTION: DocumentCollection = {
@@ -43,6 +44,7 @@ export default function DocumentLibraryPage() {
   const [capabilities, setCapabilities] = useState<IngestionCapabilities | null>(null);
   const [statusFilter, setStatusFilter] = useState<string | undefined>();
   const [contentTypeFilter, setContentTypeFilter] = useState<string | undefined>();
+  const [scopeKindFilter, setScopeKindFilter] = useState<KnowledgeScopeKind | undefined>();
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,26 +52,35 @@ export default function DocumentLibraryPage() {
   const activeInitial = useRef<AbortController | null>(null);
   const activeMore = useRef<AbortController | null>(null);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (silent = false) => {
     activeInitial.current?.abort();
     activeMore.current?.abort();
-    setCollection(EMPTY_COLLECTION);
-    setCapabilities(null);
+    if (!silent) {
+      setCollection(EMPTY_COLLECTION);
+      setCapabilities(null);
+    }
     setError(null);
     if (!getSelectedEnterprise()) {
+      setCollection(EMPTY_COLLECTION);
+      setCapabilities(null);
       setLoading(false);
       setError("请先在顶部选择企业");
       return;
     }
     const controller = new AbortController();
     activeInitial.current = controller;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const [nextCapabilities, nextCollection] = await Promise.all([
         getIngestionCapabilities(getAccessToken(), controller.signal),
         listIngestionDocuments(
           getAccessToken(),
-          { status: statusFilter, contentType: contentTypeFilter, limit: 20 },
+          {
+            status: statusFilter,
+            contentType: contentTypeFilter,
+            scopeKind: scopeKindFilter,
+            limit: 20,
+          },
           controller.signal,
         ),
       ]);
@@ -83,7 +94,7 @@ export default function DocumentLibraryPage() {
       if (activeInitial.current === controller) activeInitial.current = null;
       if (!controller.signal.aborted) setLoading(false);
     }
-  }, [contentTypeFilter, getAccessToken, statusFilter]);
+  }, [contentTypeFilter, getAccessToken, scopeKindFilter, statusFilter]);
 
   useEffect(() => {
     void refresh();
@@ -101,6 +112,19 @@ export default function DocumentLibraryPage() {
     };
   }, [refresh]);
 
+  const shouldPoll = collection.items.some((document) =>
+    document.latest_version
+      ? ["received", "processing"].includes(document.latest_version.workflow_status) ||
+        document.latest_version.scan_status === "scanning" ||
+        ["queued", "generating"].includes(document.latest_version.preview_status)
+      : false,
+  );
+  useEffect(() => {
+    if (loading || !shouldPoll) return;
+    const timeout = window.setTimeout(() => void refresh(true), 2500);
+    return () => window.clearTimeout(timeout);
+  }, [collection.items, loading, refresh, shouldPoll]);
+
   const loadMore = async () => {
     if (!collection.next_cursor || loadingMore) return;
     const controller = new AbortController();
@@ -113,6 +137,7 @@ export default function DocumentLibraryPage() {
         {
           status: statusFilter,
           contentType: contentTypeFilter,
+          scopeKind: scopeKindFilter,
           cursor: collection.next_cursor,
           limit: 20,
         },
@@ -173,6 +198,22 @@ export default function DocumentLibraryPage() {
         document.latest_version ? mimeCopy(document.latest_version.content_type) : "—",
     },
     {
+      title: "材料归属",
+      key: "knowledge-scope",
+      width: 190,
+      render: (_, document) =>
+        document.knowledge_scope.kind === "client" ? (
+          <Space direction="vertical" size={0}>
+            <Tag color="purple">客户资料</Tag>
+            <Typography.Text type="secondary" ellipsis>
+              {document.knowledge_scope.client_display_name ?? "客户档案"}
+            </Typography.Text>
+          </Space>
+        ) : (
+          <Tag color="blue">服务公司资料</Tag>
+        ),
+    },
+    {
       title: "版本数",
       dataIndex: "version_count",
       width: 90,
@@ -219,16 +260,21 @@ export default function DocumentLibraryPage() {
             受控文档库
           </Typography.Title>
           <Typography.Text type="secondary">
-            新文件先进入隔离区，经本地扫描与安全预览后再解除隔离
+            新文件先进入隔离区，经本地扫描与安全预览后再解除隔离；仅已解除隔离的版本可进入知识检索
           </Typography.Text>
         </div>
         <Space wrap>
-          <Button icon={<ReloadOutlined />} onClick={() => void refresh()} disabled={loading}>
+          <Button
+            data-testid="ingestion-refresh"
+            icon={<ReloadOutlined />}
+            onClick={() => void refresh()}
+            disabled={loading}
+          >
             刷新
           </Button>
           {canCreate && (
             <Button type="primary" icon={<PlusOutlined />} onClick={() => setUploadOpen(true)}>
-              新建文档
+              批量上传材料
             </Button>
           )}
         </Space>
@@ -236,7 +282,26 @@ export default function DocumentLibraryPage() {
 
       <ResourceLimitsCard capabilities={capabilities} loading={loading} />
 
+      <Alert
+        type="info"
+        showIcon
+        message="材料归属分为服务公司资料和客户资料"
+        description="从受控文档库上传时固定归入当前服务公司；客户专属材料请从对应客户档案详情上传。机器分析不会改变材料归属。问答页只接受本地固定场景，不接受自由文本。"
+        style={{ marginTop: 16 }}
+      />
+
       <Space wrap style={{ marginBlock: 16 }}>
+        <Select
+          allowClear
+          placeholder="全部材料归属"
+          value={scopeKindFilter}
+          style={{ width: 180 }}
+          options={[
+            { value: "service_provider", label: "服务公司资料" },
+            { value: "client", label: "客户资料" },
+          ]}
+          onChange={setScopeKindFilter}
+        />
         <Select
           allowClear
           placeholder="全部处理状态"
@@ -282,7 +347,7 @@ export default function DocumentLibraryPage() {
         <Empty description="当前企业尚未导入文档">
           {canCreate && (
             <Button type="primary" onClick={() => setUploadOpen(true)}>
-              上传第一个文档
+              上传第一批材料
             </Button>
           )}
         </Empty>
@@ -293,7 +358,7 @@ export default function DocumentLibraryPage() {
             dataSource={collection.items}
             columns={columns}
             pagination={false}
-            scroll={{ x: 1190 }}
+            scroll={{ x: 1380 }}
             onRow={(document) => ({
               onDoubleClick: () => navigate("/controlled-documents/" + document.id),
             })}
@@ -308,16 +373,15 @@ export default function DocumentLibraryPage() {
         </>
       )}
 
-      <DocumentUploadModal
+      <BatchDocumentUploadModal
         open={uploadOpen}
-        mode="create"
         token={getAccessToken()}
         capabilities={capabilities}
+        knowledgeScope={{ kind: "service_provider", client_account_id: null }}
+        defaultMaterialKind="unknown"
+        scopeHint="此处上传固定归入当前环保服务公司。若材料只属于某个客户，请关闭窗口并从该客户档案详情上传。"
         onCancel={() => setUploadOpen(false)}
-        onSuccess={({ documentId }) => {
-          setUploadOpen(false);
-          navigate("/controlled-documents/" + documentId);
-        }}
+        onComplete={() => void refresh(true)}
       />
     </div>
   );

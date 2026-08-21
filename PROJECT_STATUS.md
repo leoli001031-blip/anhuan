@@ -1,38 +1,45 @@
 # 项目现役状态
 
-更新日期：2026-08-11
+更新日期：2026-08-19
 本页是当前状态的唯一项目级入口；阶段文档中的早期 `当前`、`READY` 或 `NOT_TESTED` 记录均按其日期保留，不覆盖本页。
 
 ## 代码与版本
 
-- 开发 worktree：`/private/tmp/anhuan-codex-f111-repair`
-- 分支：`codex/f1-1-1-repair`
-- 最近代码/证据 checkpoint：`9d712cd`（完整 SHA `9d712cdd0345136fd0ec6422cb0e05eae51b8e9d`）
-- F1 Alembic：`f1_0001 → … → f1_0010`，唯一源码 head 为 `f1_0010`
-- 当前分支无 upstream/远端集成证据；未 push、未部署、未合入只读 main worktree
-- 本次 neat-freak 文档收口尚未 commit
+- 开发 checkout：当前仓库根目录
+- 分支：`codex/material-rag-scanner-protocol`（本次发布基于 checkpoint `6dd4b9158af3f8eb15922fff5bc715c9a3848f68`；具体发布 commit 与 PR 以 GitHub 为准。checkpoint 机器门为历史证据，本窗口不重跑）
+- 干净基线：`origin/main@8d2e791b019ede7f1c3b5e939258952503bf7b89`
+- 当前工程基线：`codex/engineering-closeout@69f6d41`，其上为材料录入切片
+- F1 Alembic：源码唯一 head 为 `f1_0015`（`down_revision=f1_0014`，另增 3 张 FORCE RLS 表，目录 38）。`migrate_f1.migrate_with_connection` 内部闭集 `{f1_0014,f1_0015}`，且 `type(target) is not str` 之后才查闭集；默认工程目标锁定 `f1_0014`；专属 `infra/f1/material-rag/migrate.py` 显式请求 `f1_0015`。`[]`/`{}`/`set()`/`bytearray()` 等非法对象统一 `F1_MIGRATE_TARGET_INVALID`，不泄漏 TypeError。P2 wave1–4 静态 graph 承认脚本 head=`f1_0015`。默认 seed/verify/backup 的 0014/35 合同保持原样。未把 material-RAG 并入默认运行栈
+- 远端边界：发布目标为 `origin/codex/material-rag-scanner-protocol`；本次仅提交、推送并创建草稿 PR，不部署、不写生产
+- 旧 `codex/f1-1-1-repair` 只保留作历史证据，不再继续开发或推送
 
 ## 阶段状态
 
 | 阶段 | 当前标签 | 已验证层 | 未开放边界 |
 | --- | --- | --- | --- |
+| 工程收口 | `TECHNICAL_ENGINEERING_READY / GOVERNANCE_CLOSEOUT_PENDING / NOT_PRODUCTION` | 已保留 230/230、verify 五门、reset/restore、重启、浏览器/PWA 技术摘要 | 精确顺序的治理证据重放表仍为 pending；OS 级 PWA 安装因浏览器自动化边界未测；未 UAT、未生产 |
 | F1.1.1 | `F1_1_1_PAUSED_NOT_ACCEPTED` | 历史修复与拒绝证据保留 | formal/reverse/SBOM/clean/M4 未恢复；tracked v0.3 仍为 `F1_1_1_REJECTED` |
-| P2 | `TARGETED_TEST_PASSED / SMOKE_PASSED / NOT_PRODUCTION` | 79 项定向检查；随机 PostgreSQL + ASGI API + FORCE RLS 主链 | 真实 Keycloak/OIDC、发布验收、生产 |
-| P3 | `P3_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | 随机 PostgreSQL + MinIO + ClamAV 的上传、扫描、预览、释放与跨租户 404 | 真实客户资料、生产容量、浏览器链 |
+| P2 | `TARGETED_TEST_PASSED / SMOKE_PASSED / NOT_PRODUCTION` | 真实 API + FORCE RLS 主链、跨租户边界、非法关闭 409 与事务零漂移；真实 Keycloak 合成身份 | 真实客户资料、发布验收、生产 |
+| P3 | `P3_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | PostgreSQL + MinIO + ClamAV 上传、扫描、预览、释放；MinIO 写失败与 ClamAV 不可用后恢复；跨租户 404 | 真实客户资料、生产容量、正式解析引擎 |
 | P4 | `P4_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | 随机 PostgreSQL/API/RLS 的 CRM、报告快照主链 | 正式 PDF/HTML、签发、发布、真实客户数据 |
 | P5 | `P5_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | 随机 PostgreSQL/API/RLS 的提交、独立审核、发布状态与影响任务 | 联网法规源、法律意见、外部发布 |
 | P6 | `P6_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | 合成 Oracle 与分歧流程，外部调用为 0 | Gold、真实 OCR/LLM 准确率、发布门 |
-| P7 | `P7_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | 随机 PostgreSQL/API/RLS 的人工结果与回滚门 | 未执行 Docker 恢复、故障切换、shell、部署或生产访问 |
-| P8 | `P8_COMPLETE_NOT_RELEASE_VERIFIED / TARGETED_TEST_PASSED / INTERNAL_PWA_ONLY / NOT_PRODUCTION` | 6 项定向检查与真实 Vite 生产构建产物检查 | 浏览器安装/离线 E2E、设备矩阵、视觉回归、正式小程序发布 |
+| P7 | `P7_COMPLETE_NOT_RELEASE_VERIFIED / SMOKE_PASSED / NOT_PRODUCTION` | PostgreSQL/API/RLS 人工结果与回滚门；本地 PostgreSQL + MinIO 备份/恢复链 | 故障切换、部署或生产访问 |
+| P8 | `P8_COMPLETE_NOT_RELEASE_VERIFIED / INTERNAL_PWA_ONLY / NOT_PRODUCTION` | 3 类 OIDC 身份；管理员 17、顾问 2、企业 2 页；离线静态壳与真实 A→B waiting update 用户确认链 | OS 级应用安装 `BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY / PWA_OS_INSTALL_NOT_TESTED`、设备矩阵、正式小程序发布 |
+| 材料录入降本 | `SMOKE_PASSED / NOT_PRODUCTION` | 实库 `f1_0011 → … → f1_0014`；同一合成文本 PDF 在服务公司／客户域各上传一次，真实 MinIO/ClamAV、预览、释放、2 analysis/2 page/8 candidate、2 scope、负责人/非负责人/跨租户上下层 RLS 及客户材料 API+DB 政策硬拒绝通过；服务公司 policy draft=1、publication=0 | 真实 Demo PDF、批量浏览器、物理 RAG 索引/检索、OCR、准确率、备份恢复实跑、P4 报告入口、Inspector 运行时、发布验收与生产 |
+| 双知识域物理 RAG | `BACKEND_RETRIEVAL_TRUST_BOUNDARY_PASSED / BACKEND_PUBLIC_QA_FAIL_CLOSED_PASSED / BACKEND_CLEAN_CLONE_REPRODUCIBLE / BACKEND_CHECKPOINT_READY / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION` | 检查点 HEAD `6dd4b91`。本窗口离线合同 `Ran 11 / OK`；合并门 `Ran 89 / OK`；clean-clone `Ran 89 / OK`。公共自由提问仍 fail-closed。历史 UAT 机器门未重跑 | 领导 UAT 签字、真实 Ark 检索、真实客户数据、生产部署、`RELEASE_VERIFIED`。live retrieval 未测试但不再阻塞其他离线、本地后端开发。 |
 
-P3-P8 联合定向回归记录为 `58/58 OK`。P8 构建仍有单 JS 约 1.48 MiB 的非阻断性能债；它不能标为 `SMOKE_PASSED`。
+已保留的技术摘要为：直接相关检查 `230/230 OK`，备份 `20260810T224332Z-2a861bccbba9` 完成 `reset → restore`，恢复后 health ready、verify 五门全绿、浏览器与 PWA 更新链通过。这些摘要不替代当前 pending 的精确顺序重放证据表。P8 构建仍有单 JS 约 1.48 MiB 的非阻断性能债。
 
 ## 运行与发布边界
 
-- 上述实库证据来自已精确清理的随机 scratch，不是常驻或生产运行态。
-- 现有共享 `anhuan-f1` Docker 栈不属于 P2-P8 验收权威，禁止据其存在声明系统已部署或可生产使用。
+- 材料录入分支已在专属、双标签本地 Compose 栈从实库 `f1_0011` 迁移到 `f1_0014`，并在随机 scratch 数据库和随机 MinIO 桶将同一份合成 PDF 分别按服务公司域、客户域验证。第一次迁移因 `FORCE RLS` 遮蔽旧文档回填而失败且事务整体回滚；限定 bootstrap session 的有界 `RESET ROLE` 回填修复后重跑得到 `LOCAL_MIGRATE_OK`。提交前又以 `f1_0014` 收紧底层原件/受控任务读取并完成同一验证。没有使用旧共享 `anhuan-f1` 栈作证。
+- 默认工程 closeout 栈目前停止且保留数据卷：本机可见 9 个 `anhuan-closeout-*` 容器全部 Exited，对应卷仍在。material-RAG 最近一次重放的专属 container、volume、network、runtime image 残留为 0。两者不是同一运行环境。
+- 宿主另有桌面 checkout 的共享 `anhuan-f1`（本窗口实测 15 容器全部 exited）和历史 `anhuan-f0d`。本窗口未启停任何共享容器。共享栈仍不是索引、检索或工程完成证据。
+- 真实 `stop → start` 会强制重建 9 个核心容器但保留卷；重启后数据库、业务行和统一 verify 五门仍通过。
+- scratch 数据库和 P3 临时对象只用于 verifier，每轮结束后精确删除。旧共享 `anhuan-f1` 栈不是本轮工程完成证据。
 - 未执行真实 UAT、生产部署、生产数据迁移、正式小程序发布或客户数据验证。
-- 没有新授权时不自动进入下一阶段，也不恢复 F1.1.1 发布验收。
+- F1.1.1 formal/reverse/SBOM/clean/M4 不恢复；本轮最高只能到 `INTERNAL_ENGINEERING_READY / NOT_PRODUCTION`。
 
 ## 文档入口
 
@@ -44,8 +51,15 @@ P3-P8 联合定向回归记录为 `58/58 OK`。P8 构建仍有单 JS 约 1.48 Mi
 - P6：[P6_AUTOMATED_QUALITY_PROGRESS.md](./P6_AUTOMATED_QUALITY_PROGRESS.md)
 - P7：[P7_LOCAL_PRODUCTION_REHEARSAL_PROGRESS.md](./P7_LOCAL_PRODUCTION_REHEARSAL_PROGRESS.md)
 - P8：[P8_INTERNAL_PWA_PROGRESS.md](./P8_INTERNAL_PWA_PROGRESS.md)
+- 工程收口：[ENGINEERING_CLOSEOUT_PROGRESS.md](./ENGINEERING_CLOSEOUT_PROGRESS.md)
+- 本地运行：[LOCAL_OPERATIONS.md](./LOCAL_OPERATIONS.md)
+- 排障：[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)
+- 备份恢复：[RECOVERY.md](./RECOVERY.md)
+- PDF Inspector 决策：[PDF_INSPECTOR_INTEGRATION.md](./PDF_INSPECTOR_INTEGRATION.md)
+- 材料录入切片：[MATERIAL_INTAKE_PROGRESS.md](./MATERIAL_INTAKE_PROGRESS.md)
+- 双知识域物理 RAG：[任务书](./MATERIAL_RAG_TASKBOOK.md)／[进展证据](./MATERIAL_RAG_PROGRESS.md)／[当前阻塞](./MATERIAL_RAG_BLOCKED.md)／[离线 UAT 机器门](./MATERIAL_RAG_UAT_REPORT.md)
 - 本地 Fixture 使用边界：[LOCAL_FIXTURE_BOUNDARY.md](./LOCAL_FIXTURE_BOUNDARY.md)
 
 ## 下一步
 
-当前没有自动执行中的产品阶段。只有用户明确说“正常验证”时才运行直接相关检查；只有明确说“发布验收”或“完整回归”时才考虑扩大验证。commit、push、部署、清理共享数据或移除 worktree 均需单独授权。
+材料类型与知识归属仍分开，客户材料不能进入公司政策草稿。当前分支精确为 `codex/material-rag-scanner-protocol`。本窗口后端检索信任边界离线合同已过，现役 `BACKEND_RETRIEVAL_TRUST_BOUNDARY_PASSED / BACKEND_PUBLIC_QA_FAIL_CLOSED_PASSED / BACKEND_CLEAN_CLONE_REPRODUCIBLE / BACKEND_CHECKPOINT_READY / HUMAN_UAT_NOT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。checkpoint UAT 为历史证据，未重跑。Ark key 是否轮换不再作为其他开发的工程 blocker；真实 live retrieval 继续明确记为延后且未测试。不是 `UAT_PASSED`，不是 `RELEASE_VERIFIED`，未 headed open，未人工签字，未写 `HUMAN_UAT_READY`，未部署。不处理 F0-I key。不恢复旧 F1.1.1 发布验收或 PWA OS 探针，不进入真实 UAT 签字、生产或正式小程序。`pdf-inspector` 仍为 `RUNTIME_DISABLED`。

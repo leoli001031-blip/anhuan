@@ -13,6 +13,12 @@ from typing import BinaryIO
 from xml.etree import ElementTree
 
 from pypdf import PdfReader
+from pypdf.generic import (
+    ArrayObject,
+    DictionaryObject,
+    IndirectObject,
+    NameObject,
+)
 
 from .contracts import (
     MAX_DOCX_PAGES,
@@ -43,8 +49,36 @@ _PDF_ACTIVE_MARKERS = (
     b"/Launch",
     b"/EmbeddedFile",
     b"/OpenAction",
-    b"/AA",
 )
+_PDF_ACTIVE_DICTIONARY_KEYS = frozenset(
+    {
+        "/AA",
+        "/EF",
+        "/EmbeddedFile",
+        "/EmbeddedFiles",
+        "/JS",
+        "/JavaScript",
+        "/Launch",
+        "/OpenAction",
+    }
+)
+_PDF_DANGEROUS_ACTION_NAMES = frozenset(
+    {
+        "/GoToE",
+        "/GoToR",
+        "/ImportData",
+        "/JS",
+        "/JavaScript",
+        "/Launch",
+        "/Movie",
+        "/Rendition",
+        "/RichMedia",
+        "/Sound",
+        "/SubmitForm",
+    }
+)
+_PDF_EMBEDDED_TYPES = frozenset({"/EmbeddedFile", "/FileSpec", "/Filespec"})
+MAX_PDF_GRAPH_NODES = 32_768
 _NESTED_ARCHIVE_RE = re.compile(
     r"\.(?:zip|7z|rar|tar|gz|bz2|xz|docx|xlsx|docm|xlsm)$", re.IGNORECASE
 )
@@ -280,6 +314,82 @@ def _walk_strings(value):
             yield from _walk_strings(item)
 
 
+def _pdf_name_token(value: object) -> str | None:
+    current = value
+    if isinstance(current, IndirectObject):
+        try:
+            current = current.get_object()
+        except Exception as error:
+            raise PreviewFailure("P3_PDF_CORRUPT") from error
+    if not isinstance(current, NameObject):
+        return None
+    token = str(current)
+    if not token.startswith("/") or not 2 <= len(token) <= 64:
+        return None
+    return token
+
+
+def _pdf_dictionary_keys(dictionary: DictionaryObject) -> frozenset[str]:
+    return frozenset(str(key) for key in dictionary.keys())
+
+
+def _reject_active_pdf_dictionary(dictionary: DictionaryObject) -> None:
+    keys = _pdf_dictionary_keys(dictionary)
+    if keys & _PDF_ACTIVE_DICTIONARY_KEYS:
+        raise PreviewFailure("P3_PDF_ACTIVE_CONTENT")
+    type_name = _pdf_name_token(dictionary.get("/Type"))
+    if type_name in _PDF_EMBEDDED_TYPES:
+        raise PreviewFailure("P3_PDF_ACTIVE_CONTENT")
+    subtype = _pdf_name_token(dictionary.get("/Subtype"))
+    if subtype == "/EmbeddedFile":
+        raise PreviewFailure("P3_PDF_ACTIVE_CONTENT")
+    action = _pdf_name_token(dictionary.get("/S"))
+    if action in _PDF_DANGEROUS_ACTION_NAMES:
+        raise PreviewFailure("P3_PDF_ACTIVE_CONTENT")
+
+
+def _pdf_walk_children(value: object) -> tuple[object, ...]:
+    if isinstance(value, IndirectObject):
+        return (value,)
+    if isinstance(value, ArrayObject):
+        return tuple(value)
+    if isinstance(value, DictionaryObject):
+        return tuple(value.values())
+    return ()
+
+
+def _reject_active_pdf_graph(reader: PdfReader) -> None:
+    seen_indirect: set[tuple[int, int]] = set()
+    seen_objects: set[int] = set()
+    visits = 0
+    stack: list[object] = [reader.trailer, reader.root_object, *reader.pages]
+    while stack:
+        current = stack.pop()
+        if current is None:
+            continue
+        if isinstance(current, IndirectObject):
+            identity = (int(current.idnum), int(current.generation))
+            if identity in seen_indirect:
+                continue
+            seen_indirect.add(identity)
+            try:
+                current = current.get_object()
+            except Exception as error:
+                raise PreviewFailure("P3_PDF_CORRUPT") from error
+        if not isinstance(current, (ArrayObject, DictionaryObject)):
+            continue
+        object_id = id(current)
+        if object_id in seen_objects:
+            continue
+        seen_objects.add(object_id)
+        visits += 1
+        if visits > MAX_PDF_GRAPH_NODES:
+            raise PreviewFailure("P3_PDF_CORRUPT")
+        if isinstance(current, DictionaryObject):
+            _reject_active_pdf_dictionary(current)
+        stack.extend(_pdf_walk_children(current))
+
+
 def _pdf_preview(file_obj: BinaryIO) -> dict:
     raw = file_obj.read()
     if any(marker in raw for marker in _PDF_ACTIVE_MARKERS):
@@ -290,6 +400,12 @@ def _pdf_preview(file_obj: BinaryIO) -> dict:
         raise PreviewFailure("P3_PDF_CORRUPT") from error
     if reader.is_encrypted:
         raise PreviewFailure("P3_PDF_ENCRYPTED")
+    try:
+        _reject_active_pdf_graph(reader)
+    except PreviewFailure:
+        raise
+    except Exception as error:
+        raise PreviewFailure("P3_PDF_CORRUPT") from error
     page_count = len(reader.pages)
     if not 1 <= page_count <= MAX_PDF_PAGES:
         raise PreviewFailure("P3_PDF_PAGE_LIMIT")

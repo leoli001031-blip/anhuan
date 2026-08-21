@@ -14,7 +14,7 @@ export default function EnterpriseList() {
   const [rows, setRows] = useState<Enterprise[]>([]);
 
   useEffect(() => {
-    api<Enterprise[]>("/api/v1/enterprises", { token: getAccessToken() })
+    api<Enterprise[]>("/v1/enterprises", { token: getAccessToken() })
       .then(setRows)
       .catch(() => setRows([]));
   }, [getAccessToken]);

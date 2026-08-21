@@ -1,0 +1,61 @@
+x-material-rag-labels: &material-rag-labels
+  io.anhuan.scope: material-rag-verification
+  io.anhuan.project-id: ${LOCAL_MATERIAL_RAG_PROJECT_ID:?LOCAL_MATERIAL_RAG_PROJECT_ID_REQUIRED}
+  io.anhuan.parent-project-id: ${LOCAL_PARENT_PROJECT_ID:?LOCAL_PARENT_PROJECT_ID_REQUIRED}
+
+services:
+  material-rag-clamd:
+    image: clamav/clamav:1.4.6-debian13-slim@sha256:aaf6efb85740dc60872e2c13e5b7778c2d57b05b960f854a2461eaf729250d18
+    platform: linux/arm64
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "true"
+      CLAMD_STARTUP_TIMEOUT: "300"
+      CLAMD_CONF_MaxFileSize: "52428800"
+      CLAMD_CONF_MaxScanSize: "52428800"
+      CLAMD_CONF_StreamMaxLength: "52428800"
+      CLAMD_CONF_TCPSocket: "3310"
+      CLAMD_CONF_TCPAddr: "0.0.0.0"
+    networks:
+      material_rag_internal:
+        aliases: [clamd]
+    labels: *material-rag-labels
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1073741824
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      [
+        "sed -i 's/^#*TCPAddr .*/TCPAddr 0.0.0.0/' /etc/clamav/clamd.conf && (grep -q '^TCPAddr 0.0.0.0$' /etc/clamav/clamd.conf || echo 'TCPAddr 0.0.0.0' >> /etc/clamav/clamd.conf) && sed -i 's/^#*TCPSocket .*/TCPSocket 3310/' /etc/clamav/clamd.conf && sed -i 's|exec tail -f \"/dev/null\"|wait|' /init && exec /init",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "echo PING | nc -w 2 127.0.0.1 3310 | grep -qx PONG && grep -qE ' 00000000:0CEE 00000000:0000 0A ' /proc/net/tcp",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    restart: unless-stopped
+
+  material-rag-clamd-probe:
+    image: python:3.11-slim@sha256:90744cff8f32887f075c47d747a173ff333e9e98801667af93c357fa9f5e28ff
+    working_dir: /app
+    user: "0:0"
+    environment:
+      PYTHONPATH: /app/src
+      F1_CLAMD_HOST: material-rag-clamd
+    volumes:
+      - ../../src:/app/src:ro
+      - ./material-rag/clamd_diagnose.py:/app/clamd_diagnose.py:ro
+    command: ["python", "-B", "/app/clamd_diagnose.py"]
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    depends_on:
+      material-rag-clamd: {condition: service_healthy}
+    restart: "no"
+
+networks:
+  material_rag_internal:
+    internal: true
+    labels: *material-rag-labels

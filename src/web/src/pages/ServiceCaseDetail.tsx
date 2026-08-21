@@ -156,19 +156,19 @@ export default function ServiceCaseDetail() {
 
   if (!serviceCase) {
     return (
-      <div style={{ textAlign: "left" }}>
+      <div data-testid="service-case-not-found" style={{ textAlign: "left" }}>
         <Alert
           type="error"
           showIcon
           message="无法打开服务任务"
           description={error ?? "任务不存在或当前账号无权查看"}
-          action={
-            <Space wrap>
-              <Button onClick={() => void refresh()}>重试</Button>
-              <Button onClick={() => navigate("/service-cases")}>返回列表</Button>
-            </Space>
-          }
         />
+        <Space wrap style={{ marginTop: 12 }}>
+          <Button data-testid="service-case-retry" onClick={() => void refresh()}>
+            重试
+          </Button>
+          <Button onClick={() => navigate("/service-cases")}>返回列表</Button>
+        </Space>
       </div>
     );
   }

@@ -43,3 +43,6 @@ infra/f1/.env
 /private/tmp/anhuan-f1-secrets/
 infra/f1/otel/logs/
 infra/f1/ragflow/logs/
+# Repo-local engineering runtime.  It contains 0600 secrets, generated
+# Compose state, backups, and browser artifacts and must never be committed.
+/.local/

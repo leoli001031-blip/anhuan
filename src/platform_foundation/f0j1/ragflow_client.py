@@ -12,7 +12,28 @@ from typing import Any
 
 
 class RagFlowProbeError(RuntimeError):
-    pass
+    """Body-free RAGFlow failure safe for logs and wrapper exceptions."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        status: int | None = None,
+        already_exists: bool = False,
+    ) -> None:
+        self.reason = reason
+        self.status = status
+        self.already_exists = already_exists
+        suffix = f" status={status}" if status is not None else ""
+        super().__init__(f"{reason}{suffix}")
+
+
+def _response_indicates_already_exists(data: Any) -> bool:
+    """Classify idempotent conflicts without exposing the remote message."""
+    if not isinstance(data, dict):
+        return False
+    message = data.get("message")
+    return isinstance(message, str) and "already" in message.lower()
 
 
 class RagFlowClient:
@@ -50,8 +71,37 @@ class RagFlowClient:
     def list_datasets(self, token: str) -> list[dict[str, Any]]:
         status, data = self._request("GET", "/datasets", token)
         if status != 200 or data.get("code") != 0:
-            raise RagFlowProbeError(f"DATASET_LIST_FAILED status={status}")
+            raise RagFlowProbeError("DATASET_LIST_FAILED", status=status)
         return data.get("data", [])
+
+    def list_all_datasets(self, token: str) -> list[dict[str, Any]]:
+        """List every dataset for identity reconciliation, not one UI page."""
+        result: list[dict[str, Any]] = []
+        page = 1
+        while page <= 10_000:
+            status, data = self._request(
+                "GET", f"/datasets?page={page}&page_size=100", token
+            )
+            if status != 200 or data.get("code") != 0:
+                raise RagFlowProbeError("DATASET_LIST_FAILED", status=status)
+            raw = data.get("data", [])
+            datasets = (
+                raw.get("datasets", raw.get("docs", []))
+                if isinstance(raw, dict)
+                else raw
+            )
+            if not isinstance(datasets, list):
+                raise RagFlowProbeError("DATASET_LIST_FAILED invalid_data")
+            result.extend(item for item in datasets if isinstance(item, dict))
+            total = int(raw.get("total", 0)) if isinstance(raw, dict) else 0
+            if (
+                not datasets
+                or (total and len(result) >= total)
+                or (not total and len(datasets) < 100)
+            ):
+                return result
+            page += 1
+        raise RagFlowProbeError("DATASET_LIST_FAILED pagination_limit")
 
     def create_dataset(self, token: str, name: str, embedding_model: str) -> dict[str, Any]:
         status, data = self._request(
@@ -61,13 +111,13 @@ class RagFlowClient:
             {"name": name, "chunk_method": "naive", "embedding_model": embedding_model},
         )
         if status != 200 or data.get("code") != 0:
-            raise RagFlowProbeError(f"DATASET_CREATE_FAILED status={status} msg={data.get('message')}")
+            raise RagFlowProbeError("DATASET_CREATE_FAILED", status=status)
         return data["data"]
 
     def delete_datasets(self, token: str, ids: list[str]) -> int:
         status, data = self._request("DELETE", "/datasets", token, {"ids": ids})
         if status != 200 or data.get("code") != 0:
-            raise RagFlowProbeError(f"DATASET_DELETE_FAILED status={status}")
+            raise RagFlowProbeError("DATASET_DELETE_FAILED", status=status)
         return int(data.get("data", {}).get("success_count", 0))
 
     # --- documents ---
@@ -79,24 +129,53 @@ class RagFlowClient:
             {"name": name, "parser_method": "naive"},
         )
         if status != 200 or data.get("code") != 0:
-            raise RagFlowProbeError(f"DOC_CREATE_FAILED status={status} msg={data.get('message')}")
+            raise RagFlowProbeError("DOC_CREATE_FAILED", status=status)
         return data["data"]
 
     def list_documents(self, token: str, dataset_id: str) -> list[dict[str, Any]]:
         status, data = self._request("GET", f"/datasets/{dataset_id}/documents", token)
         if status != 200 or data.get("code") != 0:
-            raise RagFlowProbeError(f"DOC_LIST_FAILED status={status}")
+            raise RagFlowProbeError("DOC_LIST_FAILED", status=status)
         docs = data.get("data", {})
         if isinstance(docs, dict):
             return docs.get("docs", [])
         return docs
+
+    def list_all_documents(
+        self, token: str, dataset_id: str
+    ) -> list[dict[str, Any]]:
+        """List every document so duplicate/version checks are authoritative."""
+        result: list[dict[str, Any]] = []
+        page = 1
+        while page <= 10_000:
+            status, data = self._request(
+                "GET",
+                f"/datasets/{dataset_id}/documents?page={page}&page_size=100",
+                token,
+            )
+            if status != 200 or data.get("code") != 0:
+                raise RagFlowProbeError("DOC_LIST_FAILED", status=status)
+            raw = data.get("data", {})
+            documents = raw.get("docs", []) if isinstance(raw, dict) else raw
+            if not isinstance(documents, list):
+                raise RagFlowProbeError("DOC_LIST_FAILED invalid_data")
+            result.extend(item for item in documents if isinstance(item, dict))
+            total = int(raw.get("total", 0)) if isinstance(raw, dict) else 0
+            if (
+                not documents
+                or (total and len(result) >= total)
+                or (not total and len(documents) < 100)
+            ):
+                return result
+            page += 1
+        raise RagFlowProbeError("DOC_LIST_FAILED pagination_limit")
 
     def delete_documents(self, token: str, dataset_id: str, ids: list[str]) -> int:
         status, data = self._request(
             "DELETE", f"/datasets/{dataset_id}/documents", token, {"ids": ids}
         )
         if status != 200:
-            raise RagFlowProbeError(f"DOC_DELETE_FAILED status={status}")
+            raise RagFlowProbeError("DOC_DELETE_FAILED", status=status)
         return int(data.get("data", {}).get("success_count", 0))
 
     # --- chunks ---
@@ -124,7 +203,7 @@ class RagFlowClient:
             payload,
         )
         if status != 200 or data.get("code") != 0:
-            raise RagFlowProbeError(f"CHUNK_ADD_FAILED status={status} msg={data.get('message')}")
+            raise RagFlowProbeError("CHUNK_ADD_FAILED", status=status)
         return data["data"]
 
     def list_chunks(
@@ -141,16 +220,36 @@ class RagFlowClient:
                 token,
             )
             if status != 200 or data.get("code") != 0:
-                raise RagFlowProbeError(
-                    f"CHUNK_LIST_FAILED status={status} msg={data.get('message')}"
-                )
+                raise RagFlowProbeError("CHUNK_LIST_FAILED", status=status)
             chunks = data.get("data", {}).get("chunks", [])
-            all_chunks.extend(chunks)
+            if not isinstance(chunks, list):
+                raise RagFlowProbeError("CHUNK_LIST_FAILED invalid_data")
+            all_chunks.extend(item for item in chunks if isinstance(item, dict))
             total = int(data.get("data", {}).get("total", 0))
-            if page * 100 >= total or len(chunks) == 0:
+            if (
+                not chunks
+                or (total and len(all_chunks) >= total)
+                or (not total and len(chunks) < 100)
+            ):
                 break
             page += 1
         return all_chunks
+
+    def get_chunk(
+        self, token: str, dataset_id: str, document_id: str, chunk_id: str
+    ) -> dict[str, Any]:
+        """Return one chunk including its adapter metadata tags."""
+        status, data = self._request(
+            "GET",
+            f"/datasets/{dataset_id}/documents/{document_id}/chunks/{chunk_id}",
+            token,
+        )
+        if status != 200 or data.get("code") != 0:
+            raise RagFlowProbeError("CHUNK_GET_FAILED", status=status)
+        chunk = data.get("data") or {}
+        if not isinstance(chunk, dict):
+            raise RagFlowProbeError("CHUNK_GET_FAILED invalid_data")
+        return chunk
 
     def real_dataset_chunk_count(self, token: str, dataset_id: str) -> int:
         """Authoritative chunk count: sum of per-document list_chunks.
@@ -192,11 +291,9 @@ class RagFlowClient:
             payload,
         )
         if status != 200:
-            raise RagFlowProbeError(f"CHUNK_DELETE_FAILED status={status}")
+            raise RagFlowProbeError("CHUNK_DELETE_FAILED", status=status)
         if data.get("code") != 0:
-            raise RagFlowProbeError(
-                f"CHUNK_DELETE_FAILED msg={data.get('message')}"
-            )
+            raise RagFlowProbeError("CHUNK_DELETE_FAILED", status=status)
         return True
 
     # --- retrieval ---
@@ -210,7 +307,7 @@ class RagFlowClient:
             {"question": question, "dataset_ids": dataset_ids, "page_size": page_size},
         )
         if status != 200 or data.get("code") != 0:
-            raise RagFlowProbeError(f"RETRIEVAL_FAILED status={status} msg={data.get('message')}")
+            raise RagFlowProbeError("RETRIEVAL_FAILED", status=status)
         return data.get("data", {}).get("chunks", [])
 
     # --- providers ---
@@ -219,7 +316,7 @@ class RagFlowClient:
             "PUT", "/providers", token, {"provider_name": provider_name}
         )
         if status != 200 or data.get("code") != 0:
-            raise RagFlowProbeError(f"PROVIDER_ADD_FAILED status={status}")
+            raise RagFlowProbeError("PROVIDER_ADD_FAILED", status=status)
 
     def create_provider_instance(
         self,
@@ -242,7 +339,13 @@ class RagFlowClient:
             },
         )
         if status != 200 or data.get("code") != 0:
-            raise RagFlowProbeError(f"INSTANCE_CREATE_FAILED status={status} msg={data.get('message')}")
+            raise RagFlowProbeError(
+                "INSTANCE_CREATE_FAILED",
+                status=status,
+                already_exists=(
+                    status == 409 or _response_indicates_already_exists(data)
+                ),
+            )
 
 
 __all__ = ("RagFlowClient", "RagFlowProbeError")

@@ -18,7 +18,7 @@ export default function AuditPage() {
   const [rows, setRows] = useState<AuditRow[]>([]);
 
   useEffect(() => {
-    api<AuditRow[]>("/api/v1/audit", { token: getAccessToken() })
+    api<AuditRow[]>("/v1/audit", { token: getAccessToken() })
       .then(setRows)
       .catch(() => setRows([]));
   }, [getAccessToken]);

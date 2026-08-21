@@ -29,6 +29,7 @@ from .contracts import (
     DocumentListOut,
     DocumentSummaryOut,
     IngestionError,
+    KnowledgeScopeOut,
     MAX_ATTEMPTS,
     MAX_JPEG_PREVIEW_BYTES,
     MAX_PREVIEW_BYTES,
@@ -47,6 +48,7 @@ from .contracts import (
     public_reason_code,
     reason_is_retryable,
     version_allowed_actions,
+    validate_knowledge_scope_selection,
 )
 
 
@@ -79,6 +81,10 @@ class VersionReservation:
     display_filename: str
     record_title: str | None
     plant_id: uuid.UUID | None
+    declared_material_kind: str
+    knowledge_scope_id: uuid.UUID
+    knowledge_scope_kind: str
+    client_account_id: uuid.UUID | None
     processing_stage: str
     created_task: bool
 
@@ -98,6 +104,12 @@ def normalize_title(value: str) -> str:
     if not 1 <= len(normalized) <= 160 or any(ord(char) < 32 for char in normalized):
         raise IngestionError("P3_TITLE_INVALID")
     return normalized
+
+
+def normalize_declared_material_kind(value: str) -> str:
+    if value not in {"policy", "report", "unknown"}:
+        raise IngestionError("P3_MATERIAL_KIND_INVALID", http_status=422)
+    return value
 
 
 async def _current_user_id(session: AsyncSession, tenant: Tenant) -> uuid.UUID:
@@ -135,6 +147,170 @@ async def _ensure_plant(
         raise IngestionError("P3_PLANT_NOT_FOUND", http_status=404)
 
 
+def knowledge_namespace_key(scope_id: uuid.UUID) -> str:
+    """Derive the provider-neutral namespace key from the product scope UUID."""
+    if not isinstance(scope_id, uuid.UUID):
+        raise ValueError("P3_KNOWLEDGE_SCOPE_ID_INVALID")
+    return str(scope_id)
+
+
+async def _resolve_knowledge_scope(
+    session: AsyncSession,
+    tenant: Tenant,
+    *,
+    kind: str,
+    client_account_id: uuid.UUID | None,
+    actor_id: uuid.UUID,
+) -> Mapping[str, Any]:
+    require_manager(tenant)
+    kind, client_account_id = validate_knowledge_scope_selection(
+        kind, client_account_id
+    )
+    if kind == "service_provider":
+        existing = (
+            await session.execute(
+                text(
+                    "SELECT scope.id,scope.scope_kind,scope.client_account_id,"
+                    "NULL::text AS client_display_name "
+                    "FROM f1.material_knowledge_scope AS scope "
+                    "WHERE scope.enterprise_id=:enterprise_id "
+                    "AND scope.scope_kind='service_provider'"
+                ),
+                {"enterprise_id": tenant.enterprise_id},
+            )
+        ).mappings().one_or_none()
+        if existing is not None:
+            return existing
+        scope_id = uuid.uuid4()
+        created = (
+            await session.execute(
+                text(
+                    "INSERT INTO f1.material_knowledge_scope "
+                    "(id,enterprise_id,scope_kind,client_account_id) VALUES "
+                    "(:id,:enterprise_id,'service_provider',NULL) "
+                    "ON CONFLICT DO NOTHING RETURNING "
+                    "id,scope_kind,client_account_id,"
+                    "NULL::text AS client_display_name"
+                ),
+                {"id": scope_id, "enterprise_id": tenant.enterprise_id},
+            )
+        ).mappings().one_or_none()
+        if created is not None:
+            return created
+        existing = (
+            await session.execute(
+                text(
+                    "SELECT scope.id,scope.scope_kind,scope.client_account_id,"
+                    "NULL::text AS client_display_name "
+                    "FROM f1.material_knowledge_scope AS scope "
+                    "WHERE scope.enterprise_id=:enterprise_id "
+                    "AND scope.scope_kind='service_provider'"
+                ),
+                {"enterprise_id": tenant.enterprise_id},
+            )
+        ).mappings().one_or_none()
+        if existing is None:
+            raise IngestionError("MATERIAL_SCOPE_NOT_CONFIGURED", http_status=409)
+        return existing
+
+    account = (
+        await session.execute(
+            text(
+                "SELECT id,display_name,owner_user_id FROM f1.crm_account "
+                "WHERE enterprise_id=:enterprise_id AND id=:account_id"
+            ),
+            {
+                "enterprise_id": tenant.enterprise_id,
+                "account_id": client_account_id,
+            },
+        )
+    ).mappings().one_or_none()
+    if account is None:
+        raise IngestionError("P3_CLIENT_ACCOUNT_NOT_FOUND", http_status=404)
+    if tenant.role not in {"super_admin", "enterprise_admin"} and not (
+        tenant.role == "plant_admin" and account["owner_user_id"] == actor_id
+    ):
+        # Preserve the same non-disclosing boundary as tenant/account RLS.
+        raise IngestionError("P3_CLIENT_ACCOUNT_NOT_FOUND", http_status=404)
+    existing = (
+        await session.execute(
+            text(
+                "SELECT scope.id,scope.scope_kind,scope.client_account_id,"
+                "account.display_name AS client_display_name "
+                "FROM f1.material_knowledge_scope AS scope "
+                "JOIN f1.crm_account AS account "
+                "ON account.enterprise_id=scope.enterprise_id "
+                "AND account.id=scope.client_account_id "
+                "WHERE scope.enterprise_id=:enterprise_id "
+                "AND scope.scope_kind='client' "
+                "AND scope.client_account_id=:account_id"
+            ),
+            {
+                "enterprise_id": tenant.enterprise_id,
+                "account_id": client_account_id,
+            },
+        )
+    ).mappings().one_or_none()
+    if existing is not None:
+        return existing
+    scope_id = uuid.uuid4()
+    created = (
+        await session.execute(
+            text(
+                "INSERT INTO f1.material_knowledge_scope "
+                "(id,enterprise_id,scope_kind,client_account_id) VALUES "
+                "(:id,:enterprise_id,'client',:account_id) "
+                "ON CONFLICT DO NOTHING RETURNING "
+                "id,scope_kind,client_account_id,"
+                "CAST(:client_display_name AS text) AS client_display_name"
+            ),
+            {
+                "id": scope_id,
+                "enterprise_id": tenant.enterprise_id,
+                "account_id": client_account_id,
+                "client_display_name": str(account["display_name"]),
+            },
+        )
+    ).mappings().one_or_none()
+    if created is not None:
+        return created
+    existing = (
+        await session.execute(
+            text(
+                "SELECT scope.id,scope.scope_kind,scope.client_account_id,"
+                "account.display_name AS client_display_name "
+                "FROM f1.material_knowledge_scope AS scope "
+                "JOIN f1.crm_account AS account "
+                "ON account.enterprise_id=scope.enterprise_id "
+                "AND account.id=scope.client_account_id "
+                "WHERE scope.enterprise_id=:enterprise_id "
+                "AND scope.scope_kind='client' "
+                "AND scope.client_account_id=:account_id"
+            ),
+            {
+                "enterprise_id": tenant.enterprise_id,
+                "account_id": client_account_id,
+            },
+        )
+    ).mappings().one_or_none()
+    if existing is None:
+        raise IngestionError("MATERIAL_SCOPE_NOT_CONFIGURED", http_status=409)
+    return existing
+
+
+def _knowledge_scope_out(row: Mapping[str, Any]) -> KnowledgeScopeOut:
+    return KnowledgeScopeOut(
+        id=row["knowledge_scope_id"],
+        kind=str(row["knowledge_scope_kind"]),
+        client_account_id=row.get("client_account_id"),
+        client_display_name=(
+            str(row["client_display_name"])
+            if row.get("client_display_name") is not None
+            else None
+        ),
+    )
+
+
 async def _existing_reservation(
     session: AsyncSession,
     tenant: Tenant,
@@ -148,11 +324,21 @@ async def _existing_reservation(
                 "version.source_document_id, version.upload_task_id, "
                 "task.object_key, task.object_state, task.content_sha256, "
                 "source.size, source.content_type, version.display_filename, "
-                "record.title, record.plant_id, task.processing_stage "
+                "record.title,record.plant_id,record.declared_material_kind,"
+                "scope.id AS knowledge_scope_id,"
+                "scope.scope_kind AS knowledge_scope_kind,"
+                "scope.client_account_id,account.display_name AS client_display_name,"
+                "task.processing_stage "
                 "FROM f1.document_version AS version "
                 "JOIN f1.document_record AS record "
                 "ON record.enterprise_id=version.enterprise_id "
                 "AND record.id=version.document_record_id "
+                "JOIN f1.material_knowledge_scope AS scope "
+                "ON scope.enterprise_id=record.enterprise_id "
+                "AND scope.id=record.knowledge_scope_id "
+                "LEFT JOIN f1.crm_account AS account "
+                "ON account.enterprise_id=scope.enterprise_id "
+                "AND account.id=scope.client_account_id "
                 "JOIN f1.upload_task AS task "
                 "ON task.enterprise_id=version.enterprise_id "
                 "AND task.id=version.upload_task_id "
@@ -183,7 +369,11 @@ async def _existing_reservation(
         display_filename=str(row[9]),
         record_title=str(row[10]),
         plant_id=row[11],
-        processing_stage=str(row[12]),
+        declared_material_kind=str(row[12]),
+        knowledge_scope_id=row[13],
+        knowledge_scope_kind=str(row[14]),
+        client_account_id=row[15],
+        processing_stage=str(row[17]),
         created_task=False,
     )
 
@@ -193,6 +383,9 @@ async def reserve_initial_version(
     *,
     display_name: str,
     plant_id: uuid.UUID | None,
+    declared_material_kind: str = "unknown",
+    knowledge_scope_kind: str = "service_provider",
+    client_account_id: uuid.UUID | None = None,
     preflight: UploadPreflight,
     idempotency_key_sha256: str,
 ) -> VersionReservation:
@@ -202,6 +395,11 @@ async def reserve_initial_version(
         record_id=None,
         title=normalize_title(display_name),
         plant_id=plant_id,
+        declared_material_kind=normalize_declared_material_kind(
+            declared_material_kind
+        ),
+        knowledge_scope_kind=knowledge_scope_kind,
+        client_account_id=client_account_id,
         preflight=preflight,
         idempotency_key_sha256=idempotency_key_sha256,
     )
@@ -220,6 +418,9 @@ async def reserve_next_version(
         record_id=record_id,
         title=None,
         plant_id=None,
+        declared_material_kind=None,
+        knowledge_scope_kind=None,
+        client_account_id=None,
         preflight=preflight,
         idempotency_key_sha256=idempotency_key_sha256,
     )
@@ -231,6 +432,9 @@ async def _reserve_version(
     record_id: uuid.UUID | None,
     title: str | None,
     plant_id: uuid.UUID | None,
+    declared_material_kind: str | None,
+    knowledge_scope_kind: str | None,
+    client_account_id: uuid.UUID | None,
     preflight: UploadPreflight,
     idempotency_key_sha256: str,
 ) -> VersionReservation:
@@ -242,6 +446,9 @@ async def _reserve_version(
                 record_id=record_id,
                 title=title,
                 plant_id=plant_id,
+                declared_material_kind=declared_material_kind,
+                knowledge_scope_kind=knowledge_scope_kind,
+                client_account_id=client_account_id,
                 preflight=preflight,
                 idempotency_key_sha256=idempotency_key_sha256,
             )
@@ -268,7 +475,11 @@ async def _reserve_version(
     ):
         raise IngestionError("P3_IDEMPOTENCY_KEY_CONFLICT", http_status=409)
     if title is not None and (
-        reservation.record_title != title or reservation.plant_id != plant_id
+        reservation.record_title != title
+        or reservation.plant_id != plant_id
+        or reservation.declared_material_kind != declared_material_kind
+        or reservation.knowledge_scope_kind != knowledge_scope_kind
+        or reservation.client_account_id != client_account_id
     ):
         raise IngestionError("P3_IDEMPOTENCY_KEY_CONFLICT", http_status=409)
     if record_id is not None and reservation.document_record_id != record_id:
@@ -282,6 +493,9 @@ async def _insert_version(
     record_id: uuid.UUID | None,
     title: str | None,
     plant_id: uuid.UUID | None,
+    declared_material_kind: str | None,
+    knowledge_scope_kind: str | None,
+    client_account_id: uuid.UUID | None,
     preflight: UploadPreflight,
     idempotency_key_sha256: str,
 ) -> VersionReservation:
@@ -297,20 +511,35 @@ async def _insert_version(
 
         if record_id is None:
             await _ensure_plant(session, tenant, plant_id)
+            scope = await _resolve_knowledge_scope(
+                session,
+                tenant,
+                kind=knowledge_scope_kind or "service_provider",
+                client_account_id=client_account_id,
+                actor_id=actor_id,
+            )
             record_id = uuid.uuid4()
             version_no = 1
             await session.execute(
                 text(
                     "INSERT INTO f1.document_record "
-                    "(id,enterprise_id,plant_id,title,status,latest_version_no,"
+                    "(id,enterprise_id,plant_id,title,declared_material_kind,"
+                    "knowledge_scope_id,scope_selection_source,"
+                    "scope_selected_by_user_id,scope_selected_at,"
+                    "status,latest_version_no,"
                     "created_by_user_id) VALUES "
-                    "(:id,:enterprise_id,:plant_id,:title,'active',1,:actor_id)"
+                    "(:id,:enterprise_id,:plant_id,:title,:declared_material_kind,"
+                    ":knowledge_scope_id,'upload_selection',:actor_id,"
+                    "statement_timestamp(),"
+                    "'active',1,:actor_id)"
                 ),
                 {
                     "id": record_id,
                     "enterprise_id": tenant.enterprise_id,
                     "plant_id": plant_id,
                     "title": title,
+                    "declared_material_kind": declared_material_kind,
+                    "knowledge_scope_id": scope["id"],
                     "actor_id": actor_id,
                 },
             )
@@ -324,7 +553,8 @@ async def _insert_version(
                         "WHERE id=:record_id AND enterprise_id=:enterprise_id "
                         "AND status='active' "
                         "AND latest_version_no < :max_versions "
-                        "RETURNING latest_version_no"
+                        "RETURNING latest_version_no,declared_material_kind,"
+                        "knowledge_scope_id"
                     ),
                     {
                         "record_id": record_id,
@@ -354,6 +584,17 @@ async def _insert_version(
                     raise IngestionError("P3_DOCUMENT_VERSION_LIMIT", http_status=409)
                 raise IngestionError("P3_DOCUMENT_NOT_FOUND", http_status=404)
             version_no = int(row[0])
+            declared_material_kind = str(row[1])
+            scope = (
+                await session.execute(
+                    text(
+                        "SELECT scope.id,scope.scope_kind,scope.client_account_id "
+                        "FROM f1.material_knowledge_scope AS scope "
+                        "WHERE scope.id=:scope_id"
+                    ),
+                    {"scope_id": row[2]},
+                )
+            ).mappings().one()
 
         # Equal bytes in distinct logical versions still receive independent
         # quarantine, preview, release and rejection state. Only an exact
@@ -367,13 +608,15 @@ async def _insert_version(
             await session.execute(
                 text(
                     "INSERT INTO f1.document "
-                    "(id,enterprise_id,object_key,filename,size,content_type,status) "
-                    "VALUES (:id,:enterprise_id,:object_key,:display_filename,"
-                    ":size,:content_type,'pending')"
+                    "(id,enterprise_id,knowledge_scope_id,object_key,filename,size,"
+                    "content_type,status) "
+                    "VALUES (:id,:enterprise_id,:knowledge_scope_id,:object_key,"
+                    ":display_filename,:size,:content_type,'pending')"
                 ),
                 {
                     "id": source_document_id,
                     "enterprise_id": tenant.enterprise_id,
+                    "knowledge_scope_id": scope["id"],
                     "object_key": object_key,
                     "display_filename": preflight.display_filename,
                     "size": preflight.size,
@@ -454,6 +697,10 @@ async def _insert_version(
         display_filename=preflight.display_filename,
         record_title=title,
         plant_id=plant_id,
+        declared_material_kind=str(declared_material_kind),
+        knowledge_scope_id=scope["id"],
+        knowledge_scope_kind=str(scope["scope_kind"]),
+        client_account_id=scope["client_account_id"],
         processing_stage="received",
         created_task=True,
     )
@@ -595,8 +842,9 @@ async def complete_upload(
         except IngestionError:
             await mark_quarantine_failed(tenant, reservation)
             raise
-    # Processing is an explicit manager action.  Upload never enters the
-    # legacy indexing queue and never starts scanning implicitly.
+    # Storage completion never enters the legacy indexing queue.  Product API
+    # callers may immediately invoke the controlled processor; retry remains
+    # available when that bounded request is interrupted or fail-closed.
     return True
 
 
@@ -609,7 +857,18 @@ def _scan_status(row: Mapping[str, Any]) -> str:
     reason = str(row.get("error_reason") or "")
     if reason in {
         "P3_SCANNER_UNAVAILABLE",
+        "P3_SCANNER_DNS_FAILED",
+        "P3_SCANNER_REFUSED",
         "P3_SCANNER_TIMEOUT",
+        "P3_SCANNER_CONNECT_REFUSED",
+        "P3_SCANNER_CONNECT_RESET",
+        "P3_SCANNER_CONNECT_PIPE",
+        "P3_SCANNER_VERSION_REFUSED",
+        "P3_SCANNER_VERSION_RESET",
+        "P3_SCANNER_VERSION_PIPE",
+        "P3_SCANNER_STREAM_REFUSED",
+        "P3_SCANNER_STREAM_RESET",
+        "P3_SCANNER_STREAM_PIPE",
         "P3_SCAN_ENGINE_ERROR",
         "P3_SCAN_PROTOCOL_ERROR",
     }:
@@ -719,6 +978,8 @@ async def list_documents(
     *,
     status: str | None = None,
     content_type: str | None = None,
+    scope_kind: str | None = None,
+    client_account_id: uuid.UUID | None = None,
     cursor: str | None = None,
     limit: int = 20,
 ) -> DocumentListOut:
@@ -732,6 +993,12 @@ async def list_documents(
         "image/jpeg",
     }:
         raise IngestionError("P3_FILTER_INVALID", http_status=400)
+    if scope_kind is not None and scope_kind not in {"service_provider", "client"}:
+        raise IngestionError("P3_FILTER_INVALID", http_status=400)
+    if scope_kind == "service_provider" and client_account_id is not None:
+        raise IngestionError("P3_FILTER_INVALID", http_status=400)
+    if client_account_id is not None and scope_kind not in {None, "client"}:
+        raise IngestionError("P3_FILTER_INVALID", http_status=400)
     if not 1 <= limit <= 100:
         raise IngestionError("P3_LIMIT_INVALID", http_status=400)
     cursor_updated_at, cursor_id = _decode_cursor(cursor)
@@ -742,6 +1009,19 @@ async def list_documents(
             await session.execute(
                 text(
                     "SELECT record.id AS record_id, record.title, "
+                    "record.declared_material_kind, "
+                    "scope.id AS knowledge_scope_id,"
+                    "scope.scope_kind AS knowledge_scope_kind,"
+                    "scope.client_account_id,"
+                    "account.display_name AS client_display_name,"
+                    "NOT EXISTS (SELECT 1 FROM f1.document_version AS scoped_version "
+                    "JOIN f1.upload_task AS scoped_task "
+                    "ON scoped_task.enterprise_id=scoped_version.enterprise_id "
+                    "AND scoped_task.id=scoped_version.upload_task_id "
+                    "WHERE scoped_version.enterprise_id=record.enterprise_id "
+                    "AND scoped_version.document_record_id=record.id "
+                    "AND scoped_task.quarantine_status='released') "
+                    "AS knowledge_scope_editable,"
                     "record.latest_version_no, record.created_at AS "
                     "record_created_at, record.updated_at AS record_updated_at, "
                     f"{_VERSION_COLUMNS} "
@@ -756,21 +1036,36 @@ async def list_documents(
                     "JOIN f1.upload_task AS task "
                     "ON task.enterprise_id=version.enterprise_id "
                     "AND task.id=version.upload_task_id "
+                    "JOIN f1.material_knowledge_scope AS scope "
+                    "ON scope.enterprise_id=record.enterprise_id "
+                    "AND scope.id=record.knowledge_scope_id "
+                    "LEFT JOIN f1.crm_account AS account "
+                    "ON account.enterprise_id=scope.enterprise_id "
+                    "AND account.id=scope.client_account_id "
                     "WHERE record.enterprise_id=:enterprise_id "
-                    "AND (:content_type IS NULL OR source.content_type=:content_type) "
-                    "AND (:status IS NULL OR CASE "
+                    "AND (CAST(:scope_kind AS text) IS NULL "
+                    "OR scope.scope_kind=CAST(:scope_kind AS text)) "
+                    "AND (CAST(:client_account_id AS uuid) IS NULL "
+                    "OR scope.client_account_id=CAST(:client_account_id AS uuid)) "
+                    "AND (CAST(:content_type AS text) IS NULL "
+                    "OR source.content_type=CAST(:content_type AS text)) "
+                    "AND (CAST(:status AS text) IS NULL OR CASE "
                     "WHEN task.processing_stage IN "
                     "('received','scanning','validating','previewing') THEN 'processing' "
                     "WHEN task.processing_stage='ready' THEN 'ready' "
                     "WHEN task.processing_stage IN ('retry_wait','rejected') THEN 'blocked' "
                     "ELSE 'failed' END=:status) "
-                    "AND (:cursor_updated_at IS NULL OR "
-                    "(record.updated_at,record.id)<(:cursor_updated_at,:cursor_id)) "
+                    "AND (CAST(:cursor_updated_at AS timestamptz) IS NULL OR "
+                    "(record.updated_at,record.id)<("
+                    "CAST(:cursor_updated_at AS timestamptz),"
+                    "CAST(:cursor_id AS uuid))) "
                     "ORDER BY record.updated_at DESC, record.id DESC LIMIT :row_limit"
                 ),
                 {
                     "enterprise_id": tenant.enterprise_id,
                     "content_type": content_type,
+                    "scope_kind": scope_kind,
+                    "client_account_id": client_account_id,
                     "status": status,
                     "cursor_updated_at": cursor_updated_at,
                     "cursor_id": cursor_id,
@@ -786,12 +1081,17 @@ async def list_documents(
             DocumentSummaryOut(
                 id=row["record_id"],
                 display_name=str(row["title"]),
+                declared_material_kind=str(row["declared_material_kind"]),
+                knowledge_scope=_knowledge_scope_out(row),
                 status=_document_status(latest),
                 version_count=int(row["latest_version_no"]),
                 latest_version=latest,
                 created_at=row["record_created_at"],
                 updated_at=row["record_updated_at"],
-                allowed_actions=document_allowed_actions(tenant.role),
+                allowed_actions=document_allowed_actions(
+                    tenant.role,
+                    knowledge_scope_editable=bool(row["knowledge_scope_editable"]),
+                ),
             )
         )
     next_cursor = None
@@ -813,9 +1113,28 @@ async def get_document(tenant: Tenant, record_id: uuid.UUID) -> DocumentDetailOu
         record = (
             await session.execute(
                 text(
-                    "SELECT id,title,latest_version_no,created_at,updated_at "
-                    "FROM f1.document_record WHERE id=:record_id "
-                    "AND enterprise_id=:enterprise_id"
+                    "SELECT record.id,record.title,record.declared_material_kind,"
+                    "record.latest_version_no,record.created_at,record.updated_at,"
+                    "scope.id AS knowledge_scope_id,"
+                    "scope.scope_kind AS knowledge_scope_kind,"
+                    "scope.client_account_id,account.display_name AS client_display_name,"
+                    "NOT EXISTS (SELECT 1 FROM f1.document_version AS scoped_version "
+                    "JOIN f1.upload_task AS scoped_task "
+                    "ON scoped_task.enterprise_id=scoped_version.enterprise_id "
+                    "AND scoped_task.id=scoped_version.upload_task_id "
+                    "WHERE scoped_version.enterprise_id=record.enterprise_id "
+                    "AND scoped_version.document_record_id=record.id "
+                    "AND scoped_task.quarantine_status='released') "
+                    "AS knowledge_scope_editable "
+                    "FROM f1.document_record AS record "
+                    "JOIN f1.material_knowledge_scope AS scope "
+                    "ON scope.enterprise_id=record.enterprise_id "
+                    "AND scope.id=record.knowledge_scope_id "
+                    "LEFT JOIN f1.crm_account AS account "
+                    "ON account.enterprise_id=scope.enterprise_id "
+                    "AND account.id=scope.client_account_id "
+                    "WHERE record.id=:record_id "
+                    "AND record.enterprise_id=:enterprise_id"
                 ),
                 {"record_id": record_id, "enterprise_id": tenant.enterprise_id},
             )
@@ -854,14 +1173,128 @@ async def get_document(tenant: Tenant, record_id: uuid.UUID) -> DocumentDetailOu
     return DocumentDetailOut(
         id=record["id"],
         display_name=str(record["title"]),
+        declared_material_kind=str(record["declared_material_kind"]),
+        knowledge_scope=_knowledge_scope_out(record),
         status=_document_status(latest),
         version_count=int(record["latest_version_no"]),
         latest_version=latest,
         versions=version_outputs,
         created_at=record["created_at"],
         updated_at=record["updated_at"],
-        allowed_actions=document_allowed_actions(tenant.role),
+        allowed_actions=document_allowed_actions(
+            tenant.role,
+            knowledge_scope_editable=bool(record["knowledge_scope_editable"]),
+        ),
     )
+
+
+async def set_document_knowledge_scope(
+    tenant: Tenant,
+    record_id: uuid.UUID,
+    *,
+    kind: str,
+    client_account_id: uuid.UUID | None,
+) -> DocumentDetailOut:
+    """Change a document's product scope before any version is released."""
+    require_manager(tenant)
+    async with session_scope(
+        role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
+    ) as session:
+        actor_id = await _current_user_id(session, tenant)
+        await session.execute(
+            text(
+                "SELECT task.id FROM f1.document_version AS version "
+                "JOIN f1.upload_task AS task "
+                "ON task.enterprise_id=version.enterprise_id "
+                "AND task.id=version.upload_task_id "
+                "WHERE version.enterprise_id=:enterprise_id "
+                "AND version.document_record_id=:record_id "
+                "ORDER BY task.id "
+                "FOR UPDATE OF task"
+            ),
+            {
+                "enterprise_id": tenant.enterprise_id,
+                "record_id": record_id,
+            },
+        )
+        record = (
+            await session.execute(
+                text(
+                    "SELECT id,knowledge_scope_id FROM f1.document_record "
+                    "WHERE enterprise_id=:enterprise_id AND id=:record_id "
+                    "FOR UPDATE"
+                ),
+                {
+                    "enterprise_id": tenant.enterprise_id,
+                    "record_id": record_id,
+                },
+            )
+        ).mappings().one_or_none()
+        if record is None:
+            raise IngestionError("P3_DOCUMENT_NOT_FOUND", http_status=404)
+        released = (
+            await session.execute(
+                text(
+                    "SELECT 1 FROM f1.document_version AS version "
+                    "JOIN f1.upload_task AS task "
+                    "ON task.enterprise_id=version.enterprise_id "
+                    "AND task.id=version.upload_task_id "
+                    "WHERE version.enterprise_id=:enterprise_id "
+                    "AND version.document_record_id=:record_id "
+                    "AND task.quarantine_status='released' LIMIT 1"
+                ),
+                {
+                    "enterprise_id": tenant.enterprise_id,
+                    "record_id": record_id,
+                },
+            )
+        ).first()
+        if released is not None:
+            raise IngestionError("P3_KNOWLEDGE_SCOPE_LOCKED", http_status=409)
+        scope = await _resolve_knowledge_scope(
+            session,
+            tenant,
+            kind=kind,
+            client_account_id=client_account_id,
+            actor_id=actor_id,
+        )
+        updated = (
+            await session.execute(
+                text(
+                    "UPDATE f1.document_record SET knowledge_scope_id=:scope_id,"
+                    "scope_selection_source='human_review',"
+                    "scope_selected_by_user_id=:actor_id,"
+                    "scope_selected_at=statement_timestamp(),"
+                    "updated_at=statement_timestamp() "
+                    "WHERE enterprise_id=:enterprise_id AND id=:record_id "
+                    "RETURNING id"
+                ),
+                {
+                    "scope_id": scope["id"],
+                    "actor_id": actor_id,
+                    "enterprise_id": tenant.enterprise_id,
+                    "record_id": record_id,
+                },
+            )
+        ).first()
+        if updated is None:
+            raise IngestionError("P3_KNOWLEDGE_SCOPE_CONFLICT", http_status=409)
+        await session.execute(
+            text(
+                "INSERT INTO f1.audit_log "
+                "(id,enterprise_id,user_sub,action,resource_type,resource_id,result) "
+                "VALUES (:id,:enterprise_id,:sub,'document.scope.updated',"
+                "'document_record',:resource_id,'updated')"
+            ),
+            {
+                "id": uuid.uuid4(),
+                "enterprise_id": tenant.enterprise_id,
+                "sub": tenant.sub,
+                "resource_id": str(record_id),
+            },
+        )
+        await session.commit()
+    return await get_document(tenant, record_id)
 
 
 async def get_version(tenant: Tenant, version_id: uuid.UUID) -> VersionOut:
@@ -1405,6 +1838,7 @@ __all__ = (
     "get_preview_manifest",
     "get_version",
     "list_documents",
+    "knowledge_namespace_key",
     "mark_quarantine_failed",
     "normalize_title",
     "read_preview_grid_unit",
@@ -1412,5 +1846,6 @@ __all__ = (
     "require_manager",
     "reserve_initial_version",
     "reserve_next_version",
+    "set_document_knowledge_scope",
     "write_quarantine_object",
 )

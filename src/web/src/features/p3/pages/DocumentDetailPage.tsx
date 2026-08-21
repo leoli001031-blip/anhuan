@@ -18,6 +18,7 @@ import { getSelectedEnterprise } from "../../../api";
 import { useAuth } from "../../../auth/OidcProvider";
 import DocumentUploadModal from "../components/DocumentUploadModal";
 import IngestionStatus from "../components/IngestionStatus";
+import MaterialAnalysisPanel from "../components/MaterialAnalysisPanel";
 import PreviewPanel from "../components/PreviewPanel";
 import ResourceLimitsCard from "../components/ResourceLimitsCard";
 import VersionTable from "../components/VersionTable";
@@ -252,6 +253,13 @@ export default function DocumentDetailPage() {
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
           <ResourceLimitsCard capabilities={capabilities} />
 
+          <Alert
+            type="info"
+            showIcon
+            message="解除隔离后才可索引"
+            description="仅扫描干净、安全预览完成并已解除隔离的版本会进入知识检索。问答页使用固定场景，不接受自由文本，也不会因检索开放任意正文外发。"
+          />
+
           <Card size="small">
             <Descriptions
               size="small"
@@ -265,6 +273,13 @@ export default function DocumentDetailPage() {
                   ),
                 },
                 { key: "versions", label: "版本数", children: document.version_count },
+                {
+                  key: "scope",
+                  label: "材料归属",
+                  children: document.knowledge_scope.kind === "client"
+                    ? `客户资料 · ${document.knowledge_scope.client_display_name ?? "客户档案"}`
+                    : "当前环保服务公司",
+                },
                 { key: "created", label: "创建时间", children: formatDateTime(document.created_at) },
                 { key: "updated", label: "更新时间", children: formatDateTime(document.updated_at) },
               ]}
@@ -379,6 +394,7 @@ export default function DocumentDetailPage() {
                 </Space>
               </Card>
               <PreviewPanel token={getAccessToken()} version={selectedVersion} />
+              <MaterialAnalysisPanel token={getAccessToken()} version={selectedVersion} />
             </>
           ) : (
             <Empty description="请选择一个版本查看状态与预览" />

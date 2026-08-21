@@ -186,6 +186,45 @@ async def create_source(
     return source_out(row, tenant)
 
 
+async def insert_source_in_session(
+    session: AsyncSession,
+    tenant: Tenant,
+    *,
+    actor_id: uuid.UUID,
+    title: str,
+    publisher: str,
+    source_type: str,
+    jurisdiction: str,
+    source_reference: str,
+) -> Mapping[str, Any]:
+    """Insert a source without committing, for one larger atomic workflow."""
+    if not is_manager(tenant.role):
+        raise HTTPException(status_code=403, detail="POLICY_MANAGER_REQUIRED")
+    source_id = uuid.uuid4()
+    return (
+        await session.execute(
+            text(
+                "INSERT INTO f1.policy_source ("
+                "id,enterprise_id,title,publisher,source_type,jurisdiction,"
+                "source_reference,status,created_by_user_id) VALUES ("
+                ":id,:enterprise_id,:title,:publisher,:source_type,"
+                ":jurisdiction,:source_reference,'active',:actor_id) "
+                f"RETURNING {SOURCE_COLUMNS}"
+            ),
+            {
+                "id": source_id,
+                "enterprise_id": tenant.enterprise_id,
+                "title": title,
+                "publisher": publisher,
+                "source_type": source_type,
+                "jurisdiction": jurisdiction,
+                "source_reference": source_reference,
+                "actor_id": actor_id,
+            },
+        )
+    ).mappings().one()
+
+
 async def update_source(
     tenant: Tenant, source_id: uuid.UUID, changes: dict[str, Any]
 ) -> dict[str, Any]:
@@ -245,10 +284,17 @@ async def _controlled_document(
         await session.execute(
             text(
                 "SELECT task.content_sha256 FROM f1.document_version AS version "
+                "JOIN f1.document_record AS record "
+                "ON record.enterprise_id = version.enterprise_id "
+                "AND record.id = version.document_record_id "
+                "JOIN f1.material_knowledge_scope AS scope "
+                "ON scope.enterprise_id = record.enterprise_id "
+                "AND scope.id = record.knowledge_scope_id "
                 "JOIN f1.upload_task AS task "
                 "ON task.enterprise_id = version.enterprise_id "
                 "AND task.id = version.upload_task_id "
                 "WHERE version.id = :document_version_id "
+                "AND scope.scope_kind = 'service_provider' "
                 "AND task.pipeline_kind = 'controlled_ingestion' "
                 "AND task.object_state = 'ready' "
                 "AND task.quarantine_status = 'released' "
@@ -350,6 +396,75 @@ async def create_version(
     return version_out(row, tenant, actor_id)
 
 
+async def insert_version_in_session(
+    session: AsyncSession,
+    tenant: Tenant,
+    *,
+    actor_id: uuid.UUID,
+    source_id: uuid.UUID,
+    title: str,
+    domain: str,
+    effect_status: str,
+    issued_on: date | None,
+    effective_from: date | None,
+    effective_to: date | None,
+    summary: str,
+    document_version_id: uuid.UUID,
+) -> Mapping[str, Any]:
+    """Insert a draft version without committing, for atomic confirmation."""
+    if not is_manager(tenant.role):
+        raise HTTPException(status_code=403, detail="POLICY_MANAGER_REQUIRED")
+    if effective_from and effective_to and effective_to < effective_from:
+        raise HTTPException(status_code=422, detail="POLICY_EFFECTIVE_RANGE_INVALID")
+    source = await source_row(session, source_id, lock=True)
+    if source["status"] != "active":
+        raise HTTPException(status_code=409, detail="POLICY_SOURCE_ARCHIVED")
+    document_sha256 = await _controlled_document(session, document_version_id)
+    version_number = int(
+        (
+            await session.execute(
+                text(
+                    "SELECT COALESCE(max(version_number),0) FROM f1.policy_version "
+                    "WHERE source_id=:source_id"
+                ),
+                {"source_id": source_id},
+            )
+        ).scalar_one()
+    ) + 1
+    version_id = uuid.uuid4()
+    return (
+        await session.execute(
+            text(
+                "INSERT INTO f1.policy_version ("
+                "id,enterprise_id,source_id,version_number,title,domain,"
+                "effect_status,issued_on,effective_from,effective_to,summary,"
+                "document_version_id,document_sha256,workflow_status,"
+                "created_by_user_id) VALUES ("
+                ":id,:enterprise_id,:source_id,:version_number,:title,:domain,"
+                ":effect_status,:issued_on,:effective_from,:effective_to,:summary,"
+                ":document_version_id,:document_sha256,'draft',:actor_id) "
+                f"RETURNING {VERSION_COLUMNS}"
+            ),
+            {
+                "id": version_id,
+                "enterprise_id": tenant.enterprise_id,
+                "source_id": source_id,
+                "version_number": version_number,
+                "title": title,
+                "domain": domain,
+                "effect_status": effect_status,
+                "issued_on": issued_on,
+                "effective_from": effective_from,
+                "effective_to": effective_to,
+                "summary": summary,
+                "document_version_id": document_version_id,
+                "document_sha256": document_sha256,
+                "actor_id": actor_id,
+            },
+        )
+    ).mappings().one()
+
+
 async def get_version(tenant: Tenant, version_id: uuid.UUID) -> dict[str, Any]:
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
@@ -379,6 +494,8 @@ __all__ = (
     "create_version",
     "get_source",
     "get_version",
+    "insert_source_in_session",
+    "insert_version_in_session",
     "list_sources",
     "source_out",
     "source_row",

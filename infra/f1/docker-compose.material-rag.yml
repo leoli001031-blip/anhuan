@@ -1,0 +1,617 @@
+x-material-rag-labels: &material-rag-labels
+  io.anhuan.scope: material-rag-verification
+  io.anhuan.project-id: ${LOCAL_MATERIAL_RAG_PROJECT_ID:?LOCAL_MATERIAL_RAG_PROJECT_ID_REQUIRED}
+  io.anhuan.parent-project-id: ${LOCAL_PARENT_PROJECT_ID:?LOCAL_PARENT_PROJECT_ID_REQUIRED}
+
+x-runtime-environment: &runtime-environment
+  F1_SECRETS_DIR: /run/secrets/f1
+  F1_PG_HOST: material-rag-postgres
+  F1_PG_PORT: "5432"
+  F1_PG_DATABASE: ${LOCAL_MATERIAL_RAG_DATABASE:?LOCAL_MATERIAL_RAG_DATABASE_REQUIRED}
+  F1_LOCAL_ENGINEERING: "1"
+  F1_EXTERNAL_PIPELINES_ENABLED: "true"
+  F1_EXTERNAL_OCR_ENABLED: "false"
+  F1_EXTERNAL_LLM_ENABLED: "false"
+  F1_KEYCLOAK_ISSUER_URL: http://material-rag.invalid/realms/anhuan
+  MINIO_ENDPOINT: material-rag-minio:9000
+  REDIS_URL: redis://material-rag-redis:6379/0
+  RAGFLOW_BASE_URL: http://material-rag-ragflow:80
+  F1_CLAMD_HOST: material-rag-clamd
+  OTEL_SDK_DISABLED: "true"
+  NO_PROXY: clamd,material-rag-postgres,material-rag-minio,material-rag-redis,material-rag-clamd,material-rag-ragflow
+  no_proxy: clamd,material-rag-postgres,material-rag-minio,material-rag-redis,material-rag-clamd,material-rag-ragflow
+
+x-material-rag-core-manifest-volume: &material-rag-core-manifest-volume
+  type: bind
+  source: ${LOCAL_MATERIAL_RAG_CORE_MANIFEST_FILE:?LOCAL_MATERIAL_RAG_CORE_MANIFEST_FILE_REQUIRED}
+  target: /run/material-rag-fixtures/core-manifest.sha256
+  read_only: true
+  bind: {create_host_path: false}
+
+x-material-rag-native-plan-volume: &material-rag-native-plan-volume
+  type: bind
+  source: ${LOCAL_MATERIAL_RAG_NATIVE_PLAN_FILE:?LOCAL_MATERIAL_RAG_NATIVE_PLAN_FILE_REQUIRED}
+  target: /run/material-rag-fixtures/full-plan.json
+  read_only: true
+  bind: {create_host_path: false}
+
+x-material-rag-demo-e64cb414-volume: &material-rag-demo-e64cb414-volume
+  type: bind
+  source: ${LOCAL_MATERIAL_RAG_DEMO_E64CB414_FILE:?LOCAL_MATERIAL_RAG_DEMO_E64CB414_FILE_REQUIRED}
+  target: /demo/e64cb41465eaf3fc550dbc881c06d687275a8d2b6850f34c703c111a4a3cfc46.pdf
+  read_only: true
+  bind: {create_host_path: false}
+
+x-material-rag-demo-ab242c22-volume: &material-rag-demo-ab242c22-volume
+  type: bind
+  source: ${LOCAL_MATERIAL_RAG_DEMO_AB242C22_FILE:?LOCAL_MATERIAL_RAG_DEMO_AB242C22_FILE_REQUIRED}
+  target: /demo/ab242c22f92e73d519c5e5485df7027ad33812e96324943b6591171d0e41fc07.pdf
+  read_only: true
+  bind: {create_host_path: false}
+
+x-material-rag-demo-12f20a5a-volume: &material-rag-demo-12f20a5a-volume
+  type: bind
+  source: ${LOCAL_MATERIAL_RAG_DEMO_12F20A5A_FILE:?LOCAL_MATERIAL_RAG_DEMO_12F20A5A_FILE_REQUIRED}
+  target: /demo/12f20a5a1edf14eb18a77553740b8ab18e49dd7b2c95dcfc3ce22954ea206860.pdf
+  read_only: true
+  bind: {create_host_path: false}
+
+x-material-rag-demo-973e6ac9-volume: &material-rag-demo-973e6ac9-volume
+  type: bind
+  source: ${LOCAL_MATERIAL_RAG_DEMO_973E6AC9_FILE:?LOCAL_MATERIAL_RAG_DEMO_973E6AC9_FILE_REQUIRED}
+  target: /demo/973e6ac91e95489a6b8311a9ca61a1a734b6f3ef08f3b3b6d4713d4b04c4dd0e.pdf
+  read_only: true
+  bind: {create_host_path: false}
+
+services:
+  material-rag-secret-init:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        umask 077;
+        mkdir -p /migrator /verifier /provider /postgres /minio /control /egress /authorization /ocr;
+        chown 0:0 /migrator /verifier /provider /control;
+        chown 999:999 /postgres;
+        chown 1000:1000 /minio;
+        chown 65532:65532 /egress;
+        chown 65532:65532 /authorization;
+        chown 65532:65532 /ocr;
+        chmod 0700 /migrator /verifier /provider /postgres /minio /control /egress /authorization /ocr;
+        cp /source/f0d_migration_dsn /migrator/f0d_migration_dsn;
+        cp /source/f1_bootstrap_dsn /migrator/f1_bootstrap_dsn;
+        cp /source/f1_migration_dsn /migrator/f1_migration_dsn;
+        cp /source/f1_api_password /migrator/f1_api_password;
+        cp /source/f1_worker_password /migrator/f1_worker_password;
+        for name in
+        f0d_migration_dsn f1_bootstrap_dsn f1_migration_dsn
+        f1_api_password f1_worker_password f1_qa_key f0i_key
+        f1_material_rag_key f1_material_rag_manifest_key
+        minio_root_user minio_root_password;
+        do cp "/source/$${name}" "/verifier/$${name}"; done;
+        cp /source/ragflow_bootstrap_password /provider/ragflow_bootstrap_password;
+        for name in f0d_bootstrap_password f0d_migration_password f0d_runtime_password f0d_worker_password;
+        do cp "/source/$${name}" "/postgres/$${name}"; done;
+        for name in minio_root_user minio_root_password;
+        do cp "/source/$${name}" "/minio/$${name}"; done;
+        chown 999:999 /postgres/*;
+        chown 1000:1000 /minio/*;
+        chmod 0600 /migrator/* /verifier/* /provider/* /postgres/* /minio/*
+    volumes:
+      - ${LOCAL_MATERIAL_RAG_SECRETS_DIR:?LOCAL_MATERIAL_RAG_SECRETS_DIR_REQUIRED}:/source:ro
+      - material_rag_migrator_secrets:/migrator
+      - material_rag_verifier_secrets:/verifier
+      - material_rag_provider_secrets:/provider
+      - material_rag_postgres_secrets:/postgres
+      - material_rag_minio_secrets:/minio
+      - material_rag_control:/control
+      - material_rag_egress_audit:/egress
+      - material_rag_authorization:/authorization
+      - material_rag_ocr_socket:/ocr
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    restart: "no"
+
+  material-rag-postgres:
+    image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
+    environment:
+      POSTGRES_USER: f0d_bootstrap
+      POSTGRES_DB: ${LOCAL_MATERIAL_RAG_DATABASE:?LOCAL_MATERIAL_RAG_DATABASE_REQUIRED}
+      POSTGRES_PASSWORD_FILE: /run/secrets/f1/f0d_bootstrap_password
+      PGDATA: /var/lib/postgresql/18/docker
+    volumes:
+      - material_rag_postgres_data:/var/lib/postgresql
+      - material_rag_postgres_secrets:/run/secrets/f1:ro
+      - ./local/00_roles.sql:/docker-entrypoint-initdb.d/00_roles.sql:ro
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U f0d_bootstrap -d '$${POSTGRES_DB}'"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+    restart: unless-stopped
+
+  material-rag-minio:
+    image: minio/minio:RELEASE.2024-07-29T22-14-52Z@sha256:29110b4abbcc7c2a71f19f5e375d50c2771c94272efba59c9a0532c88403672d
+    command: ["server", "--console-address", ":9001", "/data"]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/f1/minio_root_user
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/f1/minio_root_password
+    volumes:
+      - material_rag_minio_data:/data
+      - material_rag_minio_secrets:/run/secrets/f1:ro
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && exec 3<&-"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+    restart: unless-stopped
+
+  material-rag-redis:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [material_rag_redis_data:/data]
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+    restart: unless-stopped
+
+  material-rag-clamd:
+    image: clamav/clamav:1.4.6-debian13-slim@sha256:aaf6efb85740dc60872e2c13e5b7778c2d57b05b960f854a2461eaf729250d18
+    platform: linux/arm64
+    environment:
+      CLAMAV_NO_FRESHCLAMD: "true"
+      CLAMD_STARTUP_TIMEOUT: "300"
+      CLAMD_CONF_MaxFileSize: "52428800"
+      CLAMD_CONF_MaxScanSize: "52428800"
+      CLAMD_CONF_StreamMaxLength: "52428800"
+      CLAMD_CONF_TCPSocket: "3310"
+      CLAMD_CONF_TCPAddr: "0.0.0.0"
+    networks:
+      material_rag_internal:
+        aliases: [clamd]
+    labels: *material-rag-labels
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1073741824
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      [
+        "sed -i 's/^#*TCPAddr .*/TCPAddr 0.0.0.0/' /etc/clamav/clamd.conf && (grep -q '^TCPAddr 0.0.0.0$' /etc/clamav/clamd.conf || echo 'TCPAddr 0.0.0.0' >> /etc/clamav/clamd.conf) && sed -i 's/^#*TCPSocket .*/TCPSocket 3310/' /etc/clamav/clamd.conf && sed -i 's|exec tail -f \"/dev/null\"|wait|' /init && exec /init",
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "echo PING | nc -w 2 127.0.0.1 3310 | grep -qx PONG && grep -qE ' 00000000:0CEE 00000000:0000 0A ' /proc/net/tcp",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 60
+      start_period: 180s
+    restart: unless-stopped
+
+  material-rag-mysql:
+    image: mysql:8.0.39@sha256:ccb8f749bb5e59f9f8f03bf7282c7ef27a93a1814a24f0a8a926fb4e19b7fb97
+    environment:
+      MYSQL_ROOT_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+    command:
+      - --max_connections=1000
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-authentication-plugin=mysql_native_password
+      - --init-file=/data/application/init.sql
+      - --binlog_expire_logs_seconds=604800
+    volumes:
+      - material_rag_mysql_data:/var/lib/mysql
+      - ./ragflow/init.sql:/data/application/init.sql:ro
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 10s
+      retries: 120
+    restart: unless-stopped
+
+  material-rag-es:
+    image: elasticsearch:8.11.3@sha256:58a3a280935d830215802322e9a0373faaacdfd646477aa7e718939c2f29292a
+    environment:
+      node.name: material-rag-es
+      ELASTIC_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+      bootstrap.memory_lock: "false"
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.http.ssl.enabled: "false"
+      xpack.security.transport.ssl.enabled: "false"
+      cluster.routing.allocation.disk.watermark.low: 5gb
+      cluster.routing.allocation.disk.watermark.high: 3gb
+      cluster.routing.allocation.disk.watermark.flood_stage: 2gb
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    volumes: [material_rag_es_data:/usr/share/elasticsearch/data]
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    mem_limit: 1073741824
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf -u elastic:$${ELASTIC_PASSWORD} http://127.0.0.1:9200 >/dev/null"]
+      interval: 5s
+      timeout: 10s
+      retries: 120
+    restart: unless-stopped
+
+  material-rag-objectstore:
+    image: pgsty/minio:RELEASE.2026-03-25T00-00-00Z@sha256:a72bf37c235a83a73890d2a46c5b36801fed61c335175e0396070bf84a8bbb98
+    command: ["server", "--console-address", ":9001", "/data"]
+    environment:
+      MINIO_ROOT_USER: material_rag
+      MINIO_ROOT_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+    volumes: [material_rag_objectstore_data:/data]
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 10s
+      retries: 120
+    restart: unless-stopped
+
+  material-rag-cache:
+    image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        exec redis-server --requirepass "$${RAGFLOW_CACHE_PASSWORD}"
+        --maxmemory 128mb --maxmemory-policy allkeys-lru
+    environment:
+      RAGFLOW_CACHE_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+    volumes: [material_rag_cache_data:/data]
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${RAGFLOW_CACHE_PASSWORD}\" ping 2>/dev/null | grep -qx PONG"]
+      interval: 5s
+      timeout: 10s
+      retries: 120
+    restart: unless-stopped
+
+  material-rag-egress-proxy:
+    image: ${LOCAL_MATERIAL_RAG_RUNTIME_IMAGE:?LOCAL_MATERIAL_RAG_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "/app/infra/f1/material-rag/ark_connect_proxy.py"]
+    user: "65532:65532"
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16777216,mode=0700"]
+    volumes:
+      - material_rag_egress_audit:/run/material-rag-egress
+      - material_rag_authorization:/run/material-rag-authorization:ro
+    networks: [material_rag_proxy, material_rag_egress]
+    labels: *material-rag-labels
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import pathlib;raise SystemExit(0 if pathlib.Path('/run/material-rag-egress/audit.json').is_file() else 1)\""]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    restart: unless-stopped
+
+  material-rag-ocr:
+    image: sha256:02e6300f52463818de7ceaf447bfb0765e5f8466251177006131dec4e55a27f5
+    pull_policy: never
+    platform: linux/arm64
+    entrypoint:
+      ["/usr/local/bin/python3", "-I", "-B", "/opt/material-rag/ocr_server.py"]
+    network_mode: none
+    ipc: none
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=../f0h/seccomp.json
+    pids_limit: 64
+    mem_limit: 1073741824
+    memswap_limit: 1073741824
+    cpus: 1.0
+    shm_size: 67108864
+    ulimits:
+      core: 0
+      nofile: {soft: 64, hard: 64}
+      nproc: {soft: 64, hard: 64}
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m,uid=65532,gid=65532,mode=0700
+      - /work:rw,nosuid,nodev,noexec,size=256m,uid=65532,gid=65532,mode=0700
+    volumes:
+      - ./material-rag/ocr_server.py:/opt/material-rag/ocr_server.py:ro
+      - material_rag_ocr_socket:/run/material-rag-ocr
+    labels: *material-rag-labels
+    stop_grace_period: 1s
+    logging: {driver: none}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/python3",
+          "-I",
+          "-B",
+          "-c",
+          "import os,stat;paths=('/run/material-rag-ocr/request.fifo','/run/material-rag-ocr/response.fifo');ready='/run/material-rag-ocr/ready';raise SystemExit(0 if all(stat.S_ISFIFO(os.stat(p).st_mode) for p in paths) and stat.S_ISREG(os.stat(ready).st_mode) and stat.S_IMODE(os.stat(ready).st_mode)==384 else 1)",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    restart: unless-stopped
+
+  material-rag-ragflow:
+    image: infiniflow/ragflow@sha256:36c22d70e32494395c0cd5fa8fd65b6ff4aa1302a82ebca1d38d9f3d52d000b8
+    platform: linux/arm64
+    command: ["--disable-datasync"]
+    environment:
+      DOC_ENGINE: elasticsearch
+      DEVICE: cpu
+      STACK_VERSION: 8.11.3
+      ES_HOST: material-rag-es
+      ES_PORT: "9200"
+      ELASTIC_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+      MYSQL_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+      MYSQL_HOST: material-rag-mysql
+      MYSQL_DBNAME: rag_flow
+      MYSQL_PORT: "3306"
+      MINIO_HOST: material-rag-objectstore
+      MINIO_CONSOLE_PORT: "9001"
+      MINIO_PORT: "9000"
+      MINIO_USER: material_rag
+      MINIO_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+      REDIS_HOST: material-rag-cache
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+      SVR_WEB_HTTP_PORT: "80"
+      SVR_WEB_HTTPS_PORT: "443"
+      SVR_HTTP_PORT: "9380"
+      ADMIN_SVR_HTTP_PORT: "9381"
+      API_PROXY_SCHEME: python
+      ALLOW_ANY_HOST: "0"
+      TZ: Asia/Shanghai
+      REGISTER_ENABLED: ${LOCAL_MATERIAL_RAG_REGISTER_ENABLED:-0}
+      DISABLE_PASSWORD_LOGIN: ${LOCAL_MATERIAL_RAG_DISABLE_PASSWORD_LOGIN:-true}
+      USE_DOCLING: "false"
+      DOTNET_SYSTEM_GLOBALIZATION_INVARIANT: "1"
+      HTTPS_PROXY: ""
+      https_proxy: ""
+      HTTP_PROXY: ""
+      http_proxy: ""
+      ALL_PROXY: ""
+      all_proxy: ""
+      NO_PROXY: material-rag-mysql,material-rag-es,material-rag-objectstore,material-rag-cache,material-rag-egress-proxy,127.0.0.1,localhost
+      no_proxy: material-rag-mysql,material-rag-es,material-rag-objectstore,material-rag-cache,material-rag-egress-proxy,127.0.0.1,localhost
+    tmpfs: ["/ragflow/logs:rw,noexec,nosuid,nodev,size=268435456,mode=0700"]
+    networks: [material_rag_internal, material_rag_proxy]
+    labels: *material-rag-labels
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"
+    depends_on:
+      material-rag-mysql: {condition: service_healthy}
+      material-rag-es: {condition: service_healthy}
+      material-rag-objectstore: {condition: service_healthy}
+      material-rag-cache: {condition: service_healthy}
+      material-rag-egress-proxy: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:80/api/v1/system/config >/dev/null"]
+      interval: 10s
+      timeout: 20s
+      retries: 60
+      start_period: 90s
+    restart: unless-stopped
+
+  material-rag-migrator:
+    build:
+      context: ../..
+      dockerfile: infra/f1/local.Dockerfile
+      labels: *material-rag-labels
+    image: ${LOCAL_MATERIAL_RAG_RUNTIME_IMAGE:?LOCAL_MATERIAL_RAG_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "/app/infra/f1/material-rag/migrate.py"]
+    environment: *runtime-environment
+    volumes: [material_rag_migrator_secrets:/run/secrets/f1:ro]
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    depends_on:
+      material-rag-postgres: {condition: service_healthy}
+    restart: "no"
+
+  material-rag-authorizer:
+    image: ${LOCAL_MATERIAL_RAG_RUNTIME_IMAGE:?LOCAL_MATERIAL_RAG_RUNTIME_IMAGE_REQUIRED}
+    user: "65532:65532"
+    command:
+      - python
+      - -B
+      - /app/infra/f1/local_material_rag_verify.py
+      - --write-authorization
+    environment:
+      F1_EXTERNAL_PIPELINES_ENABLED: "true"
+      F1_EXTERNAL_OCR_ENABLED: "false"
+      F1_EXTERNAL_LLM_ENABLED: "false"
+      F1_MATERIAL_RAG_DEMO_ROOT: /demo
+      F1_MATERIAL_RAG_CORE_MANIFEST_FILE: /run/material-rag-fixtures/core-manifest.sha256
+      F1_MATERIAL_RAG_NATIVE_PLAN_FILE: /run/material-rag-fixtures/full-plan.json
+      F1_MATERIAL_RAG_ARK_AUTHORIZATION_FILE: /run/material-rag-authorization/body-sha256.json
+      F1_MATERIAL_RAG_OCR_REQUEST_FIFO: /run/material-rag-ocr/request.fifo
+      F1_MATERIAL_RAG_OCR_RESPONSE_FIFO: /run/material-rag-ocr/response.fifo
+      F1_MATERIAL_RAG_OCR_READY_FILE: /run/material-rag-ocr/ready
+    network_mode: none
+    read_only: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16777216,mode=0700"]
+    volumes:
+      - material_rag_authorization:/run/material-rag-authorization
+      - material_rag_ocr_socket:/run/material-rag-ocr
+      - *material-rag-core-manifest-volume
+      - *material-rag-native-plan-volume
+      - *material-rag-demo-e64cb414-volume
+      - *material-rag-demo-ab242c22-volume
+      - *material-rag-demo-12f20a5a-volume
+      - *material-rag-demo-973e6ac9-volume
+    labels: *material-rag-labels
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      material-rag-ocr: {condition: service_healthy}
+    restart: "no"
+
+  material-rag-provider-provisioner:
+    image: infiniflow/ragflow@sha256:36c22d70e32494395c0cd5fa8fd65b6ff4aa1302a82ebca1d38d9f3d52d000b8
+    platform: linux/arm64
+    user: "0:0"
+    entrypoint: ["python3", "-I", "-B", "/opt/material-rag/provider_provision.py"]
+    environment:
+      DB_TYPE: mysql
+      DOC_ENGINE: elasticsearch
+      STACK_VERSION: 8.11.3
+      ES_HOST: material-rag-es
+      ES_PORT: "9200"
+      ELASTIC_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+      MYSQL_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+      MYSQL_HOST: material-rag-mysql
+      MYSQL_USER: root
+      MYSQL_DBNAME: rag_flow
+      MYSQL_PORT: "3306"
+      MINIO_HOST: material-rag-objectstore
+      MINIO_CONSOLE_PORT: "9001"
+      MINIO_PORT: "9000"
+      MINIO_USER: material_rag
+      MINIO_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+      REDIS_HOST: material-rag-cache
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD:?LOCAL_MATERIAL_RAG_INTERNAL_PASSWORD_REQUIRED}
+      TZ: Asia/Shanghai
+      RAGFLOW_BASE_URL: http://127.0.0.1:80
+      F1_ARK_API_KEY_FILE: /run/secrets/provider/ark_api_key
+      F1_RAGFLOW_API_KEY_FILE: /run/material-rag-control/ragflow_api_key
+      F1_MATERIAL_RAG_PROVIDER_ATTESTATION_FILE: /run/material-rag-control/provider-attestation.json
+      F1_MATERIAL_RAG_CONTROL_DIR: /run/material-rag-control
+      F1_MATERIAL_RAG_BOOTSTRAP_EMAIL: material-rag-verifier@invalid.local
+      F1_MATERIAL_RAG_BOOTSTRAP_PASSWORD_FILE: /run/secrets/bootstrap/ragflow_bootstrap_password
+      HTTPS_PROXY: ""
+      https_proxy: ""
+      HTTP_PROXY: ""
+      http_proxy: ""
+      ALL_PROXY: ""
+      all_proxy: ""
+      NO_PROXY: material-rag-ragflow,material-rag-mysql,material-rag-es,material-rag-objectstore,material-rag-cache,127.0.0.1,localhost
+      no_proxy: material-rag-ragflow,material-rag-mysql,material-rag-es,material-rag-objectstore,material-rag-cache,127.0.0.1,localhost
+    volumes:
+      - ./material-rag/provider_provision.py:/opt/material-rag/provider_provision.py:ro
+      - ${LOCAL_MATERIAL_RAG_ARK_KEY_FILE:?LOCAL_MATERIAL_RAG_ARK_KEY_FILE_REQUIRED}:/run/secrets/provider/ark_api_key:ro
+      - material_rag_provider_secrets:/run/secrets/bootstrap:ro
+      - material_rag_control:/run/material-rag-control
+    network_mode: "service:material-rag-ragflow"
+    labels: *material-rag-labels
+    # This one-shot container atomically replaces then restores RAGFlow's
+    # pinned service_conf.yaml so the official v0.26.4 Peewee models can share
+    # the dedicated MySQL configuration.  Its overlay is removed with the
+    # exact project and is never shared with the long-running service.
+    read_only: false
+    tmpfs: ["/tmp:rw,noexec,nosuid,nodev,size=16777216,mode=0700"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    depends_on:
+      material-rag-ragflow: {condition: service_healthy}
+    restart: "no"
+
+  material-rag-unit:
+    image: ${LOCAL_MATERIAL_RAG_RUNTIME_IMAGE:?LOCAL_MATERIAL_RAG_RUNTIME_IMAGE_REQUIRED}
+    user: "0:0"
+    command: ["python", "-B", "-m", "unittest", "tests.test_material_rag"]
+    environment:
+      <<: *runtime-environment
+    volumes:
+      - ../../tests:/app/tests:ro
+    network_mode: none
+    labels: *material-rag-labels
+    restart: "no"
+
+  material-rag-verifier:
+    image: ${LOCAL_MATERIAL_RAG_RUNTIME_IMAGE:?LOCAL_MATERIAL_RAG_RUNTIME_IMAGE_REQUIRED}
+    user: "0:0"
+    command: ["python", "-B", "/app/infra/f1/local_material_rag_verify.py"]
+    environment:
+      <<: *runtime-environment
+      F1_API_PASSWORD_FILE: /run/secrets/f1/f1_api_password
+      F1_WORKER_PASSWORD_FILE: /run/secrets/f1/f1_worker_password
+      F1_QA_KEY_FILE: /run/secrets/f1/f1_qa_key
+      F1_F0I_KEY_FILE: /run/secrets/f1/f0i_key
+      F1_MATERIAL_RAG_KEY_FILE: /run/secrets/f1/f1_material_rag_key
+      F1_MATERIAL_RAG_MANIFEST_KEY_FILE: /run/secrets/f1/f1_material_rag_manifest_key
+      F1_MINIO_ROOT_USER_FILE: /run/secrets/f1/minio_root_user
+      F1_MINIO_ROOT_PASSWORD_FILE: /run/secrets/f1/minio_root_password
+      F1_RAGFLOW_API_KEY_FILE: /run/material-rag-control/ragflow_api_key
+      F1_MATERIAL_RAG_PROVIDER_ATTESTATION_FILE: /run/material-rag-control/provider-attestation.json
+      F1_MATERIAL_RAG_DEMO_ROOT: /demo
+      F1_MATERIAL_RAG_CORE_MANIFEST_FILE: /run/material-rag-fixtures/core-manifest.sha256
+      F1_MATERIAL_RAG_NATIVE_PLAN_FILE: /run/material-rag-fixtures/full-plan.json
+      F1_MATERIAL_RAG_EGRESS_AUDIT_FILE: /run/material-rag-egress/audit.json
+      F1_MATERIAL_RAG_ARK_AUTHORIZATION_FILE: /run/material-rag-authorization/body-sha256.json
+      F1_MATERIAL_RAG_OCR_REQUEST_FIFO: /run/material-rag-ocr/request.fifo
+      F1_MATERIAL_RAG_OCR_RESPONSE_FIFO: /run/material-rag-ocr/response.fifo
+      F1_MATERIAL_RAG_OCR_READY_FILE: /run/material-rag-ocr/ready
+    volumes:
+      - material_rag_verifier_secrets:/run/secrets/f1:ro
+      - material_rag_control:/run/material-rag-control:ro
+      - material_rag_egress_audit:/run/material-rag-egress:ro
+      - material_rag_authorization:/run/material-rag-authorization:ro
+      - material_rag_ocr_socket:/run/material-rag-ocr
+      - ../../tests:/app/tests:ro
+      - *material-rag-core-manifest-volume
+      - *material-rag-native-plan-volume
+      - *material-rag-demo-e64cb414-volume
+      - *material-rag-demo-ab242c22-volume
+      - *material-rag-demo-12f20a5a-volume
+      - *material-rag-demo-973e6ac9-volume
+    networks: [material_rag_internal]
+    labels: *material-rag-labels
+    depends_on:
+      material-rag-postgres: {condition: service_healthy}
+      material-rag-minio: {condition: service_healthy}
+      material-rag-redis: {condition: service_healthy}
+      material-rag-clamd: {condition: service_healthy}
+      material-rag-ragflow: {condition: service_healthy}
+      material-rag-ocr: {condition: service_healthy}
+    restart: "no"
+
+networks:
+  material_rag_internal:
+    internal: true
+    labels: *material-rag-labels
+  material_rag_proxy:
+    internal: true
+    labels: *material-rag-labels
+  material_rag_egress:
+    internal: false
+    labels: *material-rag-labels
+
+volumes:
+  material_rag_migrator_secrets: {labels: &material-rag-volume-labels {io.anhuan.scope: material-rag-verification, io.anhuan.project-id: "${LOCAL_MATERIAL_RAG_PROJECT_ID:?LOCAL_MATERIAL_RAG_PROJECT_ID_REQUIRED}", io.anhuan.parent-project-id: "${LOCAL_PARENT_PROJECT_ID:?LOCAL_PARENT_PROJECT_ID_REQUIRED}"}}
+  material_rag_verifier_secrets: {labels: *material-rag-volume-labels}
+  material_rag_provider_secrets: {labels: *material-rag-volume-labels}
+  material_rag_postgres_secrets: {labels: *material-rag-volume-labels}
+  material_rag_minio_secrets: {labels: *material-rag-volume-labels}
+  material_rag_control: {labels: *material-rag-volume-labels}
+  material_rag_egress_audit: {labels: *material-rag-volume-labels}
+  material_rag_authorization: {labels: *material-rag-volume-labels}
+  material_rag_ocr_socket: {labels: *material-rag-volume-labels}
+  material_rag_postgres_data: {labels: *material-rag-volume-labels}
+  material_rag_minio_data: {labels: *material-rag-volume-labels}
+  material_rag_redis_data: {labels: *material-rag-volume-labels}
+  material_rag_mysql_data: {labels: *material-rag-volume-labels}
+  material_rag_es_data: {labels: *material-rag-volume-labels}
+  material_rag_objectstore_data: {labels: *material-rag-volume-labels}
+  material_rag_cache_data: {labels: *material-rag-volume-labels}

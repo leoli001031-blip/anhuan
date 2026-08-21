@@ -3,13 +3,18 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Header, Query
 from pydantic import BaseModel, Field
 
 from ...auth import Tenant, tenant_from_header
 from ...features.p5 import catalog, impacts, search, workflow
+from ...features.material_intake.contracts import (
+    ConfirmPolicyDraftIn,
+    MaterialAnalysisOut,
+)
+from ...features.material_intake.policy_draft import confirm_policy_draft
 
 
 router = APIRouter()
@@ -113,6 +118,12 @@ class PolicyVersionDetailOut(PolicyVersionOut):
 class PolicySourceDetailOut(PolicySourceOut):
     versions: list[PolicyVersionOut]
     boundaries: list[str]
+
+
+class ConfirmPolicyDraftOut(BaseModel):
+    analysis: MaterialAnalysisOut
+    source: PolicySourceOut
+    version: PolicyVersionOut
 
 
 class PolicySourceListOut(BaseModel):
@@ -271,6 +282,27 @@ async def get_policy_version(
     tenant: Tenant = Depends(tenant_from_header),
 ) -> dict[str, Any]:
     return await catalog.get_version(tenant, version_id)
+
+
+@router.post(
+    "/material-analyses/{analysis_id}/confirm",
+    response_model=ConfirmPolicyDraftOut,
+    status_code=201,
+)
+async def confirm_material_policy_draft(
+    analysis_id: uuid.UUID,
+    body: ConfirmPolicyDraftIn,
+    idempotency_key: Annotated[
+        str | None, Header(alias="Idempotency-Key")
+    ] = None,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> dict[str, Any]:
+    return await confirm_policy_draft(
+        tenant,
+        analysis_id,
+        body=body,
+        idempotency_key=idempotency_key,
+    )
 
 
 @router.post("/versions/{version_id}/submit", response_model=PolicyVersionDetailOut)

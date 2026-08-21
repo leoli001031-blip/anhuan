@@ -13,6 +13,13 @@ const REASON_COPY: Record<string, string> = {
   NETWORK_ERROR: "网络请求失败，请稍后重试",
   INVALID_RESPONSE: "服务返回了无法识别的数据",
   INVALID_P5_PATH: "页面请求地址不受支持",
+  MATERIAL_IDEMPOTENCY_KEY_REQUIRED: "本次确认缺少请求标识，请刷新后重试",
+  MATERIAL_IDEMPOTENCY_KEY_INVALID: "本次确认请求标识无效，请刷新后重试",
+  MATERIAL_CONFIRMATION_CONFLICT: "该材料已由另一项确认结果占用，请刷新核对",
+  MATERIAL_SOURCE_IDENTITY_MISMATCH: "材料原件已变化，不能沿用当前候选",
+  MATERIAL_ANALYSIS_NOT_CONFIRMABLE: "当前材料分析不能再次确认",
+  MATERIAL_DOCUMENT_NOT_RELEASED: "材料尚未解除隔离或安全状态已变化",
+  MATERIAL_ANALYSIS_NOT_FOUND: "材料分析不存在或当前企业无权访问",
 };
 
 const SOURCE_TYPE_COPY: Record<string, string> = {

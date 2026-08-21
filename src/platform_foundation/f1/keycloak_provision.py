@@ -31,6 +31,8 @@ class Identity:
     username: str
     email: str
     password_file: str
+    first_name: str
+    last_name: str
 
 
 IDENTITIES = (
@@ -39,42 +41,72 @@ IDENTITIES = (
         "admin@anhuan.local",
         "admin@fixture.invalid",
         "oidc_admin_anhuan_local",
+        "Local",
+        "Administrator",
     ),
     Identity(
         "f1f70ce5-465f-489c-a89d-974a63216ab4",
         "tester",
         "tester@fixture.invalid",
         "oidc_tester",
+        "Local",
+        "Partner",
     ),
     Identity(
         "db906685-6906-4bc4-9d3a-9011975fd132",
         "tenant-a",
         "tenant-a@fixture.invalid",
         "oidc_tenant_a",
+        "Local",
+        "Enterprise",
     ),
     Identity(
         "ddc4e27e-ccde-4c89-958f-798fc8f30175",
         "tenant-b",
         "tenant-b@fixture.invalid",
         "oidc_tenant_b",
+        "Local",
+        "Enterprise",
     ),
     Identity(
         "6f735662-672f-4aeb-9234-9a3390392f33",
         "invitee",
         "invitee@fixture.invalid",
         "oidc_invitee",
+        "Local",
+        "Invitee",
     ),
     Identity(
         "7e9978c7-106f-4221-a6d7-79e8104a659b",
         "auditor",
         "auditor@fixture.invalid",
         "oidc_auditor",
+        "Local",
+        "Auditor",
     ),
+)
+
+LOCAL_ENGINEERING_IDENTITY = Identity(
+    "3247dddb-69bc-4ad1-841c-8fc338b603ce",
+    "employee",
+    "employee@fixture.invalid",
+    "oidc_employee",
+    "Local",
+    "Employee",
 )
 
 _SECRET_NAME = re.compile(r"[a-z0-9_]{1,64}\Z")
 _USER_ID = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
 _WEB_CLIENT_ID = "anhuan-web"
+
+
+def _configured_identities() -> tuple[Identity, ...]:
+    mode = os.environ.get("F1_LOCAL_ENGINEERING", "").strip()
+    if mode == "1":
+        return (*IDENTITIES, LOCAL_ENGINEERING_IDENTITY)
+    if mode:
+        raise ProvisionError("LOCAL_ENGINEERING_MODE_INVALID")
+    return IDENTITIES
 
 
 class _Response(Protocol):
@@ -222,6 +254,7 @@ def _verify_and_set_password(
     token: str,
     *,
     opener: Open,
+    ensure_profile: bool = False,
 ) -> None:
     if not _USER_ID.fullmatch(identity.user_id):
         raise ProvisionError("IDP_IDENTITY_CONFIG_INVALID")
@@ -253,6 +286,23 @@ def _verify_and_set_password(
         )
     ):
         raise ProvisionError("IDP_USER_MISMATCH")
+    if ensure_profile and (
+        user.get("firstName") != identity.first_name
+        or user.get("lastName") != identity.last_name
+    ):
+        update = dict(user)
+        update["firstName"] = identity.first_name
+        update["lastName"] = identity.last_name
+        _call(
+            opener,
+            user_url,
+            method="PUT",
+            body=json.dumps(
+                update, separators=(",", ":"), sort_keys=True
+            ).encode("utf-8"),
+            headers={**auth, "Content-Type": "application/json"},
+            expected=frozenset({204}),
+        )
     credential = json.dumps(
         {"type": "password", "value": password, "temporary": False},
         separators=(",", ":"),
@@ -334,9 +384,10 @@ def provision(*, opener: Open = urllib.request.urlopen) -> None:
         raise ProvisionError("SECRET_DIRECTORY_REQUIRED")
     directory = Path(raw_directory)
     admin_password = _read_secret(directory, "keycloak_admin_password")
+    identities = _configured_identities()
     passwords = {
         identity.user_id: _read_secret(directory, identity.password_file)
-        for identity in IDENTITIES
+        for identity in identities
     }
     if (
         any(len(password) < 24 for password in passwords.values())
@@ -371,7 +422,8 @@ def provision(*, opener: Open = urllib.request.urlopen) -> None:
         opener=opener,
     )
 
-    for identity in IDENTITIES:
+    ensure_profiles = identities != IDENTITIES
+    for identity in identities:
         _verify_and_set_password(
             base_url,
             realm,
@@ -379,6 +431,7 @@ def provision(*, opener: Open = urllib.request.urlopen) -> None:
             passwords[identity.user_id],
             token,
             opener=opener,
+            ensure_profile=ensure_profiles,
         )
 
 

@@ -1,15 +1,17 @@
-"""Explicit, fail-closed P3 quarantine processor.
+"""Fail-closed P3 quarantine processor.
 
-The product API invokes this pipeline only after a manager presses Process.
-It never creates an outbox event and never calls the legacy upload/indexing
-worker.  The source stays quarantined until local scanning and bounded preview
-generation both succeed; even then it remains held until a separate release.
+The product API invokes this pipeline after a successful upload and also keeps
+the explicit process/retry recovery seams.  It never creates an outbox event
+or calls the legacy upload/indexing worker.  The source stays quarantined until
+local scanning and bounded preview generation both succeed; even then it
+remains held until a separate release.
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
+import os
 import time
 import uuid
 from contextlib import closing
@@ -19,6 +21,8 @@ from sqlalchemy import text
 
 from ...auth import Tenant
 from ...database import session_scope
+from ..material_intake.analyzer import MaterialAnalysisFailure, analyze_pdf
+from ..material_intake.service import persist_material_analysis
 from .contracts import (
     ALLOWED_FORMATS,
     IngestionError,
@@ -35,7 +39,18 @@ _CONTENT_KIND = {item.content_type: item.kind for item in ALLOWED_FORMATS.values
 _SCANNER_UNAVAILABLE = frozenset(
     {
         "P3_SCANNER_UNAVAILABLE",
+        "P3_SCANNER_DNS_FAILED",
+        "P3_SCANNER_REFUSED",
         "P3_SCANNER_TIMEOUT",
+        "P3_SCANNER_CONNECT_REFUSED",
+        "P3_SCANNER_CONNECT_RESET",
+        "P3_SCANNER_CONNECT_PIPE",
+        "P3_SCANNER_VERSION_REFUSED",
+        "P3_SCANNER_VERSION_RESET",
+        "P3_SCANNER_VERSION_PIPE",
+        "P3_SCANNER_STREAM_REFUSED",
+        "P3_SCANNER_STREAM_RESET",
+        "P3_SCANNER_STREAM_PIPE",
         "P3_SCAN_ENGINE_ERROR",
         "P3_SCAN_PROTOCOL_ERROR",
     }
@@ -449,11 +464,22 @@ async def _finish_failure(
 
 
 async def process_controlled_ingestion(
-    tenant: Tenant, version_id: uuid.UUID
+    tenant: Tenant,
+    version_id: uuid.UUID,
+    *,
+    scanner_host: str = "clamd",
+    scanner_port: int = 3310,
 ) -> None:
     """Process one held version; failures become durable, body-free states."""
+    if scanner_host == "clamd":
+        configured = os.environ.get("F1_CLAMD_HOST")
+        if configured:
+            scanner_host = configured
     claim = await _claim_process(tenant, version_id)
     phase = "source"
+    material_result = None
+    material_reason: str | None = None
+    material_page_count: int | None = None
     try:
         source = await asyncio.to_thread(_open_source, claim)
         with closing(source) as source_file:
@@ -463,6 +489,8 @@ async def process_controlled_ingestion(
                 source_file,
                 expected_size=claim.source_size,
                 expected_sha256=claim.content_sha256,
+                host=scanner_host,
+                port=scanner_port,
             )
             if scan_result.verdict == "infected":
                 raise _ProcessOutcome(
@@ -486,8 +514,35 @@ async def process_controlled_ingestion(
             if time.monotonic() - started_at > PREVIEW_TIMEOUT_SECONDS:
                 raise PreviewFailure("P3_PREVIEW_TIMEOUT", retryable=True)
             await asyncio.to_thread(_store_preview, claim, preview)
+            if claim.kind == "pdf":
+                try:
+                    material_result = await asyncio.to_thread(
+                        analyze_pdf,
+                        source_file,
+                        expected_sha256=claim.content_sha256,
+                    )
+                    material_page_count = len(material_result.pages)
+                except MaterialAnalysisFailure as error:
+                    material_reason = error.code
+                    material_page_count = error.page_count
+                except Exception:
+                    material_reason = "MATERIAL_ANALYSIS_FAILED"
         phase = "publish"
         await _publish_ready(tenant, claim, preview)
+        if claim.kind == "pdf" and material_page_count is not None:
+            try:
+                await persist_material_analysis(
+                    tenant,
+                    document_version_id=claim.version_id,
+                    source_sha256=claim.content_sha256,
+                    page_count=material_page_count,
+                    result=material_result,
+                    reason_code=material_reason,
+                )
+            except Exception:
+                # Material candidates are a best-effort adjunct.  Persistence
+                # failure cannot roll an already-safe P3 object back to failed.
+                pass
     except ScanFailure as error:
         await _finish_failure(
             tenant,
