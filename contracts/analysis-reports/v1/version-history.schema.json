@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "anhuan-analysis-report-version-history-v1",
+  "title": "VersionHistoryV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "versions"],
+  "properties": {
+    "schema": { "const": "anhuan-analysis-report-version-history-v1" },
+    "versions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["version_id", "version_number", "status", "created_at"],
+        "properties": {
+          "version_id": { "type": "string", "format": "uuid" },
+          "version_number": { "type": "integer", "minimum": 1 },
+          "status": {
+            "enum": [
+              "queued",
+              "generating",
+              "draft",
+              "review_pending",
+              "changes_requested",
+              "approved",
+              "published",
+              "superseded",
+              "withdrawn",
+              "failed"
+            ]
+          },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      }
+    }
+  }
+}

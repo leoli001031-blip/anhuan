@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "anhuan-analysis-report-citation-v1",
+  "title": "CitationV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["citation_id", "document_version_id", "document_name", "version_number", "page_number", "excerpt"],
+  "properties": {
+    "citation_id": { "type": "string", "format": "uuid" },
+    "document_version_id": { "type": "string", "format": "uuid" },
+    "document_name": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "version_number": { "type": "integer", "minimum": 1 },
+    "page_number": { "type": "integer", "minimum": 1 },
+    "excerpt": { "type": "string", "minLength": 1, "maxLength": 320 }
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "anhuan-analysis-report-provider-summary-v1",
+  "title": "ProviderReportSummaryV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["report_id", "current_version_id", "current_status", "version_number", "title", "updated_at"],
+  "properties": {
+    "report_id": { "type": "string", "format": "uuid" },
+    "current_version_id": { "type": ["string", "null"], "format": "uuid" },
+    "current_status": {
+      "enum": [
+        "empty",
+        "queued",
+        "generating",
+        "draft",
+        "review_pending",
+        "changes_requested",
+        "approved",
+        "published",
+        "superseded",
+        "withdrawn",
+        "failed"
+      ]
+    },
+    "version_number": { "type": "integer", "minimum": 0 },
+    "title": { "const": "企业安环资料分析报告" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  }
+}

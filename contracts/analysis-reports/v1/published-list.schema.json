@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "anhuan-analysis-report-published-list-v1",
+  "title": "PublishedReportListV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "reports"],
+  "properties": {
+    "schema": { "const": "anhuan-analysis-report-published-list-v1" },
+    "reports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["report_id", "version_id", "version_number", "title", "published_at", "artifact_ready"],
+        "properties": {
+          "report_id": { "type": "string", "format": "uuid" },
+          "version_id": { "type": "string", "format": "uuid" },
+          "version_number": { "type": "integer", "minimum": 1 },
+          "title": { "const": "企业安环资料分析报告" },
+          "published_at": { "type": "string", "format": "date-time" },
+          "artifact_ready": { "const": true }
+        }
+      }
+    }
+  }
+}

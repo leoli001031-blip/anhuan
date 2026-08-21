@@ -1,111 +1,130 @@
+/* A-Eco 环保企业版 · 全局样式。颜色只允许引用 CSS 变量，变量与 src/theme.ts 保持同步。 */
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
-
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
-
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
-  color: var(--text);
-  background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
+  --eco-primary: #0F766E;
+  --eco-primary-hover: #115E59;
+  --eco-primary-soft: #ECFDF5;
+  --eco-page-bg: #F7F9F6;
+  --eco-content-bg: #FFFFFF;
+  --eco-text: #1F2937;
+  --eco-text-secondary: #66736C;
+  --eco-border: #DDE5DF;
+  --eco-success: #2E7D32;
+  --eco-warning: #B26A00;
+  --eco-danger: #B42318;
+  --eco-serif: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
-  }
-}
-
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-}
-
+html,
 body {
   margin: 0;
+  padding: 0;
+  background: var(--eco-page-bg);
+  color: var(--eco-text);
 }
 
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
+/* 客户端阅读栏：方向 A 的 680px 居中栏 */
+.reading-column {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 40px 24px 96px;
 }
 
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
+/* 报告与回答的文档正文：衬线 + 宽行距 */
+.doc-body {
+  font-family: var(--eco-serif);
+  font-size: 16px;
+  line-height: 1.9;
+  color: var(--eco-text);
+}
+
+.doc-body p {
+  margin: 0 0 1em;
+}
+
+/* 回答逐段淡入（方向 A 动效 1） */
+@keyframes eco-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
+
+.eco-fade-up {
+  animation: eco-fade-up 200ms ease-out both;
+}
+
+/* 引用编号 */
+.citation-ref {
+  color: var(--eco-primary);
+  font-size: 13px;
+  cursor: default;
+  white-space: nowrap;
+}
+
+/* 状态小圆点（管理端唯一状态图形，禁大色块） */
+.status-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+.status-dot--success {
+  background: var(--eco-success);
+}
+.status-dot--warning {
+  background: var(--eco-warning);
+}
+.status-dot--danger {
+  background: var(--eco-danger);
+}
+.status-dot--processing {
+  background: var(--eco-primary);
+  animation: eco-dot-breathe 1.2s ease-in-out infinite;
+}
+.status-dot--neutral {
+  background: var(--eco-text-secondary);
+}
+
+@keyframes eco-dot-breathe {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
   }
 }
-p {
-  margin: 0;
+
+/* 章节分隔：1px 线 + 大留白，无卡片 */
+.doc-section {
+  padding: 24px 0 8px;
+  border-top: 1px solid var(--eco-border);
 }
 
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
+.doc-section:first-of-type {
+  border-top: none;
 }
 
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
+/* 报告详情左侧锚点目录 */
+.section-nav {
+  position: sticky;
+  top: 88px;
+  font-size: 13px;
+  line-height: 2.2;
+}
+
+.section-nav a {
+  color: var(--eco-text-secondary);
+  text-decoration: none;
+}
+
+.section-nav a:hover {
+  color: var(--eco-primary);
 }

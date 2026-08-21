@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "anhuan-analysis-report-generation-accepted-v1",
+  "title": "GenerationAcceptedV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "job_id", "version_id", "status"],
+  "properties": {
+    "schema": { "const": "anhuan-analysis-report-generation-v1" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "version_id": { "type": "string", "format": "uuid" },
+    "status": { "enum": ["queued", "generating", "draft", "failed"] }
+  }
+}

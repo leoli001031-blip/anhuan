@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "anhuan-analysis-report-section-v1",
+  "title": "SectionV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["key", "title", "body"],
+  "properties": {
+    "key": {
+      "enum": [
+        "source_scope",
+        "status_summary",
+        "key_findings",
+        "risks_and_gaps",
+        "remediation",
+        "citations",
+        "usage_boundary"
+      ]
+    },
+    "title": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "body": { "type": "string", "minLength": 1, "maxLength": 8000 }
+  }
+}

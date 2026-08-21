@@ -8,6 +8,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from ..observability import init_telemetry
 from ..health import readiness
 from .routers import (
+    analysis_reports,
     audit,
     documents,
     enterprises,
@@ -39,6 +40,16 @@ app.include_router(plants.router, prefix="/api/v1/plants", tags=["plants"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
 app.include_router(qa.router, prefix="/api/v1/qa", tags=["qa"])
+app.include_router(
+    analysis_reports.session_router,
+    prefix="/api/v1",
+    tags=["session"],
+)
+app.include_router(
+    analysis_reports.router,
+    prefix="/api/v1/analysis-reports",
+    tags=["analysis-reports"],
+)
 app.include_router(
     material_qa.router,
     prefix="/api/v1/material-qa",
