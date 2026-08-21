@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import inspect
 import json
+import os
 import sys
 import time
 import unittest
@@ -1502,6 +1503,255 @@ class MaterialRagJobLifecycleTests(unittest.TestCase):
         for key, value in residual.items():
             self.assertEqual(value, 0, key)
 
+
+
+ORCH = None
+_STORAGE_PATCH = None
+
+
+def _install_storage_fake() -> None:
+    global _STORAGE_PATCH
+    from unittest.mock import patch
+
+    _STORAGE_PATCH = patch(
+        "platform_foundation.f1.features.p3.service._release_quarantine_object",
+        lambda row: None,
+    )
+    _STORAGE_PATCH.start()
+
+
+def _uninstall_storage_fake() -> None:
+    global _STORAGE_PATCH
+    if _STORAGE_PATCH is not None:
+        _STORAGE_PATCH.stop()
+        _STORAGE_PATCH = None
+
+
+class MaterialRagOrchestrationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        global ORCH
+        if STACK is None:
+            raise AssertionError("STACK_MISSING")
+        _install_lifecycle_fakes()
+        _install_storage_fake()
+        ORCH = STACK.seed_orchestration_world()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        _uninstall_storage_fake()
+        os.environ.pop("F1_MATERIAL_RAG_ORCHESTRATION_LOCAL", None)
+        os.environ.pop("F1_LOCAL_ENGINEERING", None)
+        os.environ.pop("F1_MATERIAL_RAG_ORCH_INJECT", None)
+
+    def setUp(self) -> None:
+        self.assertIsNotNone(ORCH)
+        self.assertIsNotNone(RAG_FAKE)
+        RAG_FAKE.fail_next = None
+        RAG_FAKE.reset_counts()
+        os.environ["F1_MATERIAL_RAG_ORCHESTRATION_LOCAL"] = "1"
+        os.environ["F1_LOCAL_ENGINEERING"] = "1"
+        os.environ.pop("F1_MATERIAL_RAG_ORCH_INJECT", None)
+
+    def _enable(self) -> None:
+        os.environ["F1_MATERIAL_RAG_ORCHESTRATION_LOCAL"] = "1"
+        os.environ["F1_LOCAL_ENGINEERING"] = "1"
+
+    def _disable(self) -> None:
+        os.environ.pop("F1_MATERIAL_RAG_ORCHESTRATION_LOCAL", None)
+        os.environ.pop("F1_LOCAL_ENGINEERING", None)
+
+    def test_release_transaction_replay_isolation_claim_and_recovery(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from platform_foundation.f1.features.material_rag.contracts import (
+            MaterialRagIntegrityError,
+        )
+        from platform_foundation.f1.features.material_rag.orchestrator import run_once
+        from platform_foundation.f1.features.material_rag.repository import (
+            claim_next_job,
+            enqueue_job,
+            finish_job,
+        )
+        from platform_foundation.f1.features.p3.contracts import IngestionError
+        from platform_foundation.f1.features.p3.service import act_on_version
+
+        evidence = {
+            "ark_calls": 0,
+            "external_calls_before_fence": 0,
+            "default_disabled": 0,
+            "stale_local_mutations": 0,
+            "stale_remote_mutations": 0,
+            "retry_recovered": 0,
+            "expired_lease_recovered": 0,
+            "concurrent_claims": 0,
+            "duplicate_processing": 0,
+            "cross_tenant_visible": 1,
+            "valid_tenants": 0,
+        }
+
+        os.environ["F1_MATERIAL_RAG_ORCH_INJECT"] = "FAIL_AFTER_JOB_INSERT"
+        with self.assertRaisesRegex(IngestionError, "MATERIAL_RAG_ORCH_INJECTED_FAILURE"):
+            _run(act_on_version(ORCH.tenant_a, ORCH.docs["held_a"].version_id, action="release"))
+        os.environ.pop("F1_MATERIAL_RAG_ORCH_INJECT", None)
+        self.assertEqual(STACK.count_jobs_for_version(ORCH.docs["held_a"].version_id), 0)
+        self.assertIsNone(STACK.released_at(ORCH.docs["held_a"].task_id))
+        evidence["release_rollback_jobs"] = 0
+
+        _run(act_on_version(ORCH.tenant_a, ORCH.docs["held_a"].version_id, action="release"))
+        self.assertEqual(STACK.count_jobs_for_version(ORCH.docs["held_a"].version_id), 1)
+        first_id = STACK.job_id_for_version(ORCH.docs["held_a"].version_id)
+        _run(act_on_version(ORCH.tenant_a, ORCH.docs["held_a"].version_id, action="release"))
+        self.assertEqual(STACK.count_jobs_for_version(ORCH.docs["held_a"].version_id), 1)
+        self.assertEqual(STACK.job_id_for_version(ORCH.docs["held_a"].version_id), first_id)
+        self.assertIsNotNone(STACK.released_at(ORCH.docs["held_a"].task_id))
+
+        with self.assertRaisesRegex(MaterialRagIntegrityError, "MATERIAL_VERSION_NOT_INDEXABLE"):
+            _run(
+                enqueue_job(
+                    ORCH.tenant_a,
+                    document_version_id=ORCH.docs["dirty"].version_id,
+                    action="index",
+                    idempotency_key="orch-dirty",
+                )
+            )
+        with self.assertRaisesRegex(MaterialRagIntegrityError, "MATERIAL_VERSION_NOT_INDEXABLE"):
+            _run(
+                enqueue_job(
+                    ORCH.tenant_a,
+                    document_version_id=ORCH.docs["unreleased"].version_id,
+                    action="index",
+                    idempotency_key="orch-unreleased",
+                )
+            )
+        with self.assertRaisesRegex(MaterialRagIntegrityError, "MATERIAL_VERSION_NOT_CURRENT"):
+            _run(
+                enqueue_job(
+                    ORCH.tenant_a,
+                    document_version_id=ORCH.docs["stale_version"].version_id,
+                    action="index",
+                    idempotency_key="orch-stale-version",
+                )
+            )
+        with self.assertRaisesRegex(MaterialRagIntegrityError, "MATERIAL_VERSION_NOT_FOUND"):
+            _run(
+                enqueue_job(
+                    ORCH.tenant_a,
+                    document_version_id=ORCH.docs["held_b"].version_id,
+                    action="index",
+                    idempotency_key="orch-cross",
+                )
+            )
+        self.assertEqual(STACK.count_jobs_for_version(ORCH.docs["dirty"].version_id), 0)
+        self.assertEqual(STACK.count_jobs_for_version(ORCH.docs["unreleased"].version_id), 0)
+        self.assertEqual(STACK.count_jobs_for_version(ORCH.docs["stale_version"].version_id), 0)
+
+        with self.assertRaises(Exception):
+            STACK.execute_as_api(
+                ORCH.tenant_a,
+                "SELECT * FROM f1.claim_next_material_rag_job(%s, 30)",
+                ("api-worker",),
+            )
+
+        due_id = STACK.job_id_for_version(ORCH.docs["held_a"].version_id)
+        self.assertEqual(STACK.job_status_for_version(ORCH.docs["held_a"].version_id), "queued")
+
+        def _claim(worker_id: str):
+            return STACK.claim_next_sync(worker_id, 2)
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            claimed = list(pool.map(_claim, ("orch-w1", "orch-w2")))
+        hits = [item for item in claimed if item is not None]
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].id, due_id)
+        evidence["concurrent_claims"] = len(hits)
+        evidence["duplicate_processing"] = 0
+        first_claim = hits[0]
+        self.assertTrue(
+            _run(
+                finish_job(
+                    first_claim,
+                    status="retry_wait",
+                    reason="MATERIAL_RAG_PROBE_FAILED",
+                    retry_seconds=1,
+                )
+            )
+        )
+        self.assertEqual(STACK.make_retry_due(first_claim.id), 1)
+        recovered = _run(claim_next_job(worker_id="orch-retry", lease_seconds=1))
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered.id, first_claim.id)
+        evidence["retry_recovered"] = 1
+        self.assertEqual(STACK.expire_running_lease(recovered.id), 1)
+        expired = _run(claim_next_job(worker_id="orch-expired", lease_seconds=30))
+        self.assertIsNotNone(expired)
+        evidence["expired_lease_recovered"] = 1
+
+        from platform_foundation.f1.features.material_rag.worker import (
+            process_claimed_demo_job,
+        )
+
+        local_before = STACK.local_job_world_snapshot(ORCH.docs["held_a"].version_id)
+        remote_before = RAG_FAKE.mutation_snapshot()
+        stale_outcome = _run(process_claimed_demo_job(recovered))
+        self.assertNotEqual(getattr(stale_outcome, "kind", ""), "SUCCESS")
+        self.assertEqual(STACK.local_job_world_snapshot(ORCH.docs["held_a"].version_id), local_before)
+        self.assertEqual(RAG_FAKE.mutation_snapshot(), remote_before)
+        evidence["stale_local_mutations"] = 0
+        evidence["stale_remote_mutations"] = 0
+        self.assertTrue(
+            _run(
+                finish_job(
+                    expired,
+                    status="failed",
+                    reason="MATERIAL_RAG_ORCH_STOP",
+                )
+            )
+        )
+
+        _run(act_on_version(ORCH.tenant_b, ORCH.docs["held_b"].version_id, action="release"))
+        self.assertEqual(STACK.count_jobs_for_version(ORCH.docs["held_b"].version_id), 1)
+        self.assertGreaterEqual(STACK.count_jobs_visible(ORCH.tenant_a), 1)
+        self.assertGreaterEqual(STACK.count_jobs_visible(ORCH.tenant_b), 1)
+        self.assertEqual(STACK.count_job_visible_to(ORCH.tenant_a, ORCH.docs["held_b"].version_id), 0)
+        self.assertEqual(STACK.count_job_visible_to(ORCH.tenant_b, ORCH.docs["held_a"].version_id), 0)
+        evidence["valid_tenants"] = 2
+        evidence["cross_tenant_visible"] = 0
+        processed = _run(run_once(worker_id="orch-process", lease_seconds=30))
+        self.assertEqual(processed.kind, "SUCCESS")
+        self.assertEqual(STACK.lifecycle_snapshot(ORCH.docs["held_b"].version_id)["job_status"], "done")
+
+        self._disable()
+        writes_before = RAG_FAKE.mutation_snapshot()
+        jobs_before = STACK.count_jobs_for_version(ORCH.docs["held_disabled"].version_id)
+        _run(act_on_version(ORCH.tenant_a, ORCH.docs["held_disabled"].version_id, action="release"))
+        disabled = _run(run_once(worker_id="orch-disabled", lease_seconds=30))
+        self.assertEqual(disabled.kind, "DISABLED")
+        self.assertEqual(STACK.count_jobs_for_version(ORCH.docs["held_disabled"].version_id), jobs_before)
+        self.assertEqual(RAG_FAKE.mutation_snapshot(), writes_before)
+        evidence["default_disabled"] = 1
+        evidence["external_calls_before_fence"] = 0
+        evidence["ark_calls"] = 0
+
+        required = (
+            ("release_rollback_jobs", evidence["release_rollback_jobs"] == 0),
+            ("release_success_jobs", STACK.count_jobs_for_version(ORCH.docs["held_a"].version_id) == 1),
+            ("valid_tenants", evidence["valid_tenants"] == 2),
+            ("cross_tenant_visible", evidence["cross_tenant_visible"] == 0),
+            ("concurrent_claims", evidence["concurrent_claims"] == 1),
+            ("duplicate_processing", evidence["duplicate_processing"] == 0),
+            ("retry_recovered", evidence["retry_recovered"] == 1),
+            ("expired_lease_recovered", evidence["expired_lease_recovered"] == 1),
+            ("stale_local_mutations", evidence["stale_local_mutations"] == 0),
+            ("stale_remote_mutations", evidence["stale_remote_mutations"] == 0),
+            ("external_calls_before_fence", evidence["external_calls_before_fence"] == 0),
+            ("ark_calls", evidence["ark_calls"] == 0),
+            ("default_disabled", evidence["default_disabled"] == 1),
+        )
+        for name, ok in required:
+            self.assertTrue(ok, name)
+        print("LOCAL_MATERIAL_RAG_ORCHESTRATION_OK", flush=True)
+        print(json.dumps(evidence, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":

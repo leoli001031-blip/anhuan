@@ -650,18 +650,33 @@ class PostgresIntegrationStack:
             raise HarnessError(f"MIGRATE_FAILED:{token}")
 
     def _seed_identities(self) -> None:
-        seeded = _run(
-            [PYTHON, "-B", "infra/f1/material-rag/seed.py"],
-            environment=self.runtime_env(),
-            timeout=60,
-        )
-        if (
-            seeded.returncode != 0
-            or seeded.stdout.decode("ascii", "replace").strip()
-            != "LOCAL_MATERIAL_RAG_SEED_OK"
-        ):
-            self.stop()
-            raise HarnessError("SEED_FAILED")
+        from infra.f1 import local_seed
+        from infra.f1.migrate_f1 import _bootstrap_dsn
+
+        with psycopg.connect(_bootstrap_dsn(), autocommit=False) as connection:
+            head = connection.execute(
+                "SELECT string_agg(version_num, ',' ORDER BY version_num) "
+                "FROM f1.alembic_version"
+            ).fetchone()
+            if head is None or head[0] != "f1_0016":
+                self.stop()
+                raise HarnessError("SEED_HEAD_MISMATCH")
+            local_seed._ensure_enterprise(
+                connection,
+                local_seed.ENTERPRISE_A,
+                "Local Enterprise A",
+                "LOCAL-A",
+            )
+            local_seed._ensure_enterprise(
+                connection,
+                local_seed.ENTERPRISE_B,
+                "Local Enterprise B",
+                "LOCAL-B",
+            )
+            for binding in local_seed.BINDINGS:
+                local_seed._ensure_binding(connection, binding)
+            local_seed._ensure_durability_canary(connection)
+            connection.commit()
 
     def seed_world(self) -> IntegrationWorld:
         from infra.f1 import local_seed
@@ -1100,6 +1115,399 @@ class PostgresIntegrationStack:
             docs=docs,
             bodies=bodies,
         )
+
+    def seed_orchestration_world(self) -> LifecycleWorld:
+        import asyncio
+
+        from infra.f1 import local_seed
+        from platform_foundation.f1.auth import Tenant
+        from platform_foundation.f1.database import session_scope
+        from platform_foundation.f1.features.material_rag.security import (
+            CLIENT_B_ISOLATION_CANARY_TEXT,
+            PROVIDER_POLICY_CANARY_TEXT,
+        )
+        from platform_foundation.f1.features.p3.service import (
+            _current_user_id,
+            _resolve_knowledge_scope,
+        )
+        from sqlalchemy import text as sql_text
+
+        tenant_a = Tenant(
+            enterprise_id=local_seed.ENTERPRISE_A,
+            sub="db906685-6906-4bc4-9d3a-9011975fd132",
+            roles=("enterprise_admin",),
+            role="enterprise_admin",
+        )
+        tenant_b = Tenant(
+            enterprise_id=local_seed.ENTERPRISE_B,
+            sub="ddc4e27e-ccde-4c89-958f-798fc8f30175",
+            roles=("enterprise_admin",),
+            role="enterprise_admin",
+        )
+        actor_a = local_seed._stable_id("profile", tenant_a.sub)
+        actor_b = local_seed._stable_id("profile", tenant_b.sub)
+        client_a_id = uuid.uuid5(FIXTURE_NS, "orch-client-a")
+        client_a2_id = uuid.uuid5(FIXTURE_NS, "orch-client-a2")
+        client_b_id = uuid.uuid5(FIXTURE_NS, "orch-client-b")
+        provider_sha = hashlib.sha256(
+            PROVIDER_POLICY_CANARY_TEXT.encode("utf-8")
+        ).hexdigest()
+        client_sha = hashlib.sha256(
+            CLIENT_B_ISOLATION_CANARY_TEXT.encode("utf-8")
+        ).hexdigest()
+        dirty_sha = hashlib.sha256(b"orch-dirty-source").hexdigest()
+        unreleased_sha = hashlib.sha256(b"orch-unreleased-source").hexdigest()
+        with self._bootstrap() as connection:
+            replica = connection.execute("SHOW session_replication_role").fetchone()
+            if replica is None or replica[0] != "origin":
+                raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+            connection.execute(
+                "INSERT INTO f1.crm_account "
+                "(id,enterprise_id,display_name,stage,created_by_user_id) "
+                "VALUES (%s,%s,%s,'active',%s),(%s,%s,%s,'active',%s),"
+                "(%s,%s,%s,'active',%s)",
+                (
+                    client_a_id,
+                    local_seed.ENTERPRISE_A,
+                    "Orch Client A",
+                    actor_a,
+                    client_a2_id,
+                    local_seed.ENTERPRISE_A,
+                    "Orch Client A2",
+                    actor_a,
+                    client_b_id,
+                    local_seed.ENTERPRISE_B,
+                    "Orch Client B",
+                    actor_b,
+                ),
+            )
+            connection.commit()
+
+        async def _seed() -> dict[str, LifecycleDoc]:
+            docs: dict[str, LifecycleDoc] = {}
+            async with session_scope(
+                role="f1_api",
+                enterprise_id=tenant_a.enterprise_id,
+                sub=tenant_a.sub,
+            ) as session:
+                actor_id = await _current_user_id(session, tenant_a)
+                scope = await _resolve_knowledge_scope(
+                    session,
+                    tenant_a,
+                    kind="client",
+                    client_account_id=client_a_id,
+                    actor_id=actor_id,
+                )
+                scope2 = await _resolve_knowledge_scope(
+                    session,
+                    tenant_a,
+                    kind="client",
+                    client_account_id=client_a2_id,
+                    actor_id=actor_id,
+                )
+                docs["held_a"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_a,
+                    actor_id=actor_id,
+                    scope_id=scope["id"],
+                    label="orch-held-a",
+                    source_sha=provider_sha,
+                    body=PROVIDER_POLICY_CANARY_TEXT,
+                    released=False,
+                    material_kind="policy",
+                )
+                docs["held_disabled"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_a,
+                    actor_id=actor_id,
+                    scope_id=scope["id"],
+                    label="orch-held-disabled",
+                    source_sha=provider_sha,
+                    body=PROVIDER_POLICY_CANARY_TEXT,
+                    released=False,
+                    material_kind="policy",
+                )
+                docs["dirty"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_a,
+                    actor_id=actor_id,
+                    scope_id=scope["id"],
+                    label="orch-dirty",
+                    source_sha=dirty_sha,
+                    body="脏扫描不得入队。",
+                    released=False,
+                    material_kind="report",
+                )
+                docs["unreleased"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_a,
+                    actor_id=actor_id,
+                    scope_id=scope["id"],
+                    label="orch-unreleased",
+                    source_sha=unreleased_sha,
+                    body="未释放不得入队。",
+                    released=False,
+                    material_kind="report",
+                )
+                current = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_a,
+                    actor_id=actor_id,
+                    scope_id=scope2["id"],
+                    label="orch-stale-current",
+                    source_sha=provider_sha,
+                    body=PROVIDER_POLICY_CANARY_TEXT,
+                    released=True,
+                    material_kind="policy",
+                )
+                docs["stale_current"] = current
+                docs["_stale_scope"] = scope2["id"]  # type: ignore[assignment]
+                await session.commit()
+            async with session_scope(
+                role="f1_api",
+                enterprise_id=tenant_b.enterprise_id,
+                sub=tenant_b.sub,
+            ) as session:
+                actor_id = await _current_user_id(session, tenant_b)
+                scope_b = await _resolve_knowledge_scope(
+                    session,
+                    tenant_b,
+                    kind="client",
+                    client_account_id=client_b_id,
+                    actor_id=actor_id,
+                )
+                docs["held_b"] = await _insert_lifecycle_document(
+                    session,
+                    tenant=tenant_b,
+                    actor_id=actor_id,
+                    scope_id=scope_b["id"],
+                    label="orch-held-b",
+                    source_sha=client_sha,
+                    body=CLIENT_B_ISOLATION_CANARY_TEXT,
+                    released=False,
+                    material_kind="report",
+                )
+                await session.commit()
+            return docs
+
+        docs = asyncio.run(_seed())
+        current = docs.pop("stale_current")
+        stale_scope = docs.pop("_stale_scope")
+        stale_version_id = uuid.uuid5(
+            FIXTURE_NS, f"life-version:orch-stale-old:{stale_scope}"
+        )
+        stale_task_id = uuid.uuid5(FIXTURE_NS, f"life-task:orch-stale-old:{stale_scope}")
+        stale_document_id = uuid.uuid5(
+            FIXTURE_NS, f"life-doc:orch-stale-old:{stale_scope}"
+        )
+        with self._bootstrap() as connection:
+            replica = connection.execute("SHOW session_replication_role").fetchone()
+            if replica is None or replica[0] != "origin":
+                raise HarnessError("REPLICA_ROLE_FORBIDDEN")
+            connection.execute(
+                "UPDATE f1.upload_task SET scan_verdict='infected',"
+                "object_state='quarantined',processing_stage='scanning' WHERE id=%s",
+                (docs["dirty"].task_id,),
+            )
+            connection.execute(
+                "UPDATE f1.document_version SET version_no=2 "
+                "WHERE id=%s AND enterprise_id=%s",
+                (current.version_id, tenant_a.enterprise_id),
+            )
+            connection.execute(
+                "UPDATE f1.document_record SET latest_version_no=2 "
+                "WHERE id=%s AND enterprise_id=%s",
+                (current.record_id, tenant_a.enterprise_id),
+            )
+            connection.execute(
+                "INSERT INTO f1.document (id,enterprise_id,knowledge_scope_id,"
+                "object_key,filename,size,content_type,status) VALUES "
+                "(%s,%s,%s,%s,'ORCH_STALE.pdf',%s,'application/pdf','done')",
+                (
+                    stale_document_id,
+                    tenant_a.enterprise_id,
+                    stale_scope,
+                    f"{stale_task_id.hex}.pdf",
+                    len(PROVIDER_POLICY_CANARY_TEXT.encode("utf-8")),
+                ),
+            )
+            connection.execute(
+                "INSERT INTO f1.upload_task (id,enterprise_id,document_id,object_key,"
+                "content_sha256,status,object_state,source_size,pipeline_kind,"
+                "processing_stage,quarantine_status,scan_verdict,preview_kind,"
+                "preview_status,preview_sha256,preview_unit_count,"
+                "resource_policy_version,released_at) VALUES "
+                "(%s,%s,%s,%s,%s,'done','ready',%s,'controlled_ingestion','ready',"
+                "'released','clean','page_text','ready',%s,1,'p3-v1',"
+                "statement_timestamp())",
+                (
+                    stale_task_id,
+                    tenant_a.enterprise_id,
+                    stale_document_id,
+                    f"{stale_task_id.hex}.pdf",
+                    provider_sha,
+                    len(PROVIDER_POLICY_CANARY_TEXT.encode("utf-8")),
+                    provider_sha,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO f1.document_version (id,enterprise_id,document_record_id,"
+                "version_no,source_document_id,upload_task_id,display_filename,"
+                "idempotency_key_sha256,created_by_user_id) VALUES "
+                "(%s,%s,%s,1,%s,%s,'ORCH_STALE.pdf',%s,%s)",
+                (
+                    stale_version_id,
+                    tenant_a.enterprise_id,
+                    current.record_id,
+                    stale_document_id,
+                    stale_task_id,
+                    hashlib.sha256(b"orch-stale-old").hexdigest(),
+                    actor_a,
+                ),
+            )
+            connection.commit()
+        docs["stale_version"] = LifecycleDoc(
+            version_id=stale_version_id,
+            record_id=current.record_id,
+            task_id=stale_task_id,
+            source_sha256=provider_sha,
+            scope_id=stale_scope,
+        )
+        return LifecycleWorld(
+            tenant_a=tenant_a,
+            tenant_b=tenant_b,
+            docs=docs,
+            bodies={
+                provider_sha: PROVIDER_POLICY_CANARY_TEXT,
+                client_sha: CLIENT_B_ISOLATION_CANARY_TEXT,
+            },
+        )
+
+    def count_jobs_for_version(self, version_id: uuid.UUID) -> int:
+        with self._bootstrap() as connection:
+            row = connection.execute(
+                "SELECT count(*) FROM f1.material_rag_job "
+                "WHERE document_version_id=%s",
+                (version_id,),
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def job_status_for_version(self, version_id: uuid.UUID) -> str | None:
+        with self._bootstrap() as connection:
+            row = connection.execute(
+                "SELECT status FROM f1.material_rag_job "
+                "WHERE document_version_id=%s ORDER BY created_at, id LIMIT 1",
+                (version_id,),
+            ).fetchone()
+        return None if row is None else str(row[0])
+
+    def claim_next_sync(self, worker_id: str, lease_seconds: int = 2):
+        from platform_foundation.f1.features.material_rag.contracts import (
+            MaterialRagJobClaim,
+        )
+
+        with psycopg.connect(
+            host="127.0.0.1",
+            port=self.host_port,
+            dbname=self.database,
+            user="f1_worker",
+            password=self.passwords["f1_worker"],
+        ) as connection:
+            connection.execute("SET search_path = pg_catalog, f1")
+            row = connection.execute(
+                "SELECT job_id, enterprise_id, knowledge_scope_id,"
+                "document_record_id, document_version_id, upload_task_id,"
+                "source_sha256, action, lease_token, attempt "
+                "FROM f1.claim_next_material_rag_job(%s, %s)",
+                (worker_id, lease_seconds),
+            ).fetchone()
+            connection.commit()
+        if row is None:
+            return None
+        return MaterialRagJobClaim(
+            id=row[0],
+            enterprise_id=row[1],
+            knowledge_scope_id=row[2],
+            document_record_id=row[3],
+            document_version_id=row[4],
+            upload_task_id=row[5],
+            source_sha256=str(row[6]),
+            action=str(row[7]),  # type: ignore[arg-type]
+            lease_token=row[8],
+            attempt=int(row[9]),
+        )
+
+    def job_id_for_version(self, version_id: uuid.UUID) -> uuid.UUID:
+        with self._bootstrap() as connection:
+            row = connection.execute(
+                "SELECT id FROM f1.material_rag_job "
+                "WHERE document_version_id=%s ORDER BY created_at, id LIMIT 1",
+                (version_id,),
+            ).fetchone()
+        if row is None:
+            raise HarnessError("JOB_ROW_MISSING")
+        return row[0]
+
+    def released_at(self, task_id: uuid.UUID):
+        with self._bootstrap() as connection:
+            row = connection.execute(
+                "SELECT released_at FROM f1.upload_task WHERE id=%s",
+                (task_id,),
+            ).fetchone()
+        if row is None:
+            raise HarnessError("TASK_ROW_MISSING")
+        return row[0]
+
+    def count_jobs_visible(self, tenant) -> int:
+        import asyncio
+
+        from platform_foundation.f1.database import session_scope
+        from sqlalchemy import text as sql_text
+
+        async def _count() -> int:
+            async with session_scope(
+                role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
+            ) as session:
+                row = await session.execute(sql_text("SELECT count(*) FROM f1.material_rag_job"))
+                return int(row.scalar_one())
+
+        return asyncio.run(_count())
+
+    def count_job_visible_to(self, tenant, version_id: uuid.UUID) -> int:
+        import asyncio
+
+        from platform_foundation.f1.database import session_scope
+        from sqlalchemy import text as sql_text
+
+        async def _count() -> int:
+            async with session_scope(
+                role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
+            ) as session:
+                row = await session.execute(
+                    sql_text(
+                        "SELECT count(*) FROM f1.material_rag_job "
+                        "WHERE document_version_id=:version_id"
+                    ),
+                    {"version_id": version_id},
+                )
+                return int(row.scalar_one())
+
+        return asyncio.run(_count())
+
+    def execute_as_api(self, tenant, statement: str, params: tuple[object, ...]):
+        with psycopg.connect(
+            host="127.0.0.1",
+            port=self.host_port,
+            dbname=self.database,
+            user="f1_api",
+            password=self.passwords["f1_api"],
+        ) as connection:
+            connection.execute(
+                "SELECT set_config('f1.enterprise_id', %s, false),"
+                "set_config('f1.sub', %s, false)",
+                (str(tenant.enterprise_id), tenant.sub),
+            )
+            return connection.execute(statement, params).fetchall()
 
     def lifecycle_snapshot(self, version_id: uuid.UUID) -> dict[str, object]:
         with self._bootstrap() as connection:
@@ -1807,11 +2215,15 @@ def _disqualify(connection: psycopg.Connection, units: dict[str, UnitSpec]) -> N
 
 
 def _write_cycle_evidence(stack: PostgresIntegrationStack) -> None:
-    EVIDENCE_ROOT.mkdir(mode=0o700, exist_ok=True)
-    info = EVIDENCE_ROOT.lstat()
+    raw_dir = os.environ.get("MATERIAL_RAG_PGINT_EVIDENCE_DIR", "").strip()
+    if not raw_dir:
+        return
+    root = Path(raw_dir)
+    root.mkdir(mode=0o700, exist_ok=True)
+    info = root.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise HarnessError("EVIDENCE_DIR_INVALID")
-    os.chmod(EVIDENCE_ROOT, 0o700)
+    os.chmod(root, 0o700)
     cycle = os.environ.get("MATERIAL_RAG_PGINT_CYCLE", "integration")
     payload = {
         "phase": "CLEANUP",
@@ -1825,7 +2237,7 @@ def _write_cycle_evidence(stack: PostgresIntegrationStack) -> None:
         "control_dir_present": int(stack.control_dir.exists()),
         "status_code": 0 if stack.cleanup_status == "CLEAN" else 2,
     }
-    path = EVIDENCE_ROOT / f"cycle-{cycle}.json"
+    path = root / f"cycle-{cycle}.json"
     if path.exists():
         raise HarnessError("CYCLE_EVIDENCE_EXISTS")
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

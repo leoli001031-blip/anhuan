@@ -1,5 +1,11 @@
 # MATERIAL RAG 任务书
 
+2026-08-21 migration closeout contract 收口：默认工程仍 `f1_0014`；闭集 `{f1_0014,f1_0015,f1_0016}`；专属 `material-rag/migrate.py` 才到 `f1_0016`。现役 `BACKEND_DURABLE_ORCHESTRATION_LOCAL_PASSED / MIGRATION_CLOSEOUT_CONTRACT_PASSED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / NOT_PRODUCTION`。不 commit/push。未写 `PRODUCTION_WORKER_PASSED` / `UAT_PASSED` / `RELEASE_VERIFIED`。
+
+2026-08-21 durable orchestration gate 收口：本地编排脊柱已证明。现役 `BACKEND_DURABLE_ORCHESTRATION_LOCAL_PASSED / BACKEND_DUE_QUEUE_LEASE_FENCE_PASSED / EXTERNAL_PROCESSING_DISABLED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。默认工程仍 `f1_0014/35`；专属门 `f1_0016/38`。不 commit/push。未写 `PRODUCTION_WORKER_PASSED` / `UAT_PASSED` / `RELEASE_VERIFIED`。
+
+2026-08-21 durable orchestration gate 开工：从 clean checkpoint `71bb6dd` 证明 P3 release 同事务唯一 job → PostgreSQL due queue → `claim_next` 单次领取 → 既有 lease/source/scope fence → terminal/retry/recovery。仅 exact 本地双开关。fake 只限 RAGFlow/embedding/对象存储/扫描。默认工程仍 `f1_0014/35`；专属门 `f1_0016/38`。不 commit/push。现役先保持 backup/crash 检查点标签。未写 `PRODUCTION_WORKER_PASSED` / `UAT_PASSED` / `RELEASE_VERIFIED`。
+
 2026-08-21 multi-stage SIGKILL matrix checkpoint：把已验收的三阶段 `VOLUMES_REPLACED / DB_RESTORED / MINIO_REPLAYED` SIGKILL 矩阵封为可恢复 checkpoint 并更新 draft PR #2。不重跑合同/Docker。提交与远端身份以 Git 与 PR head 为准。现役 `MATERIAL_RAG_BACKUP_RESTORE_RUNTIME_PASSED / MATERIAL_RAG_PARTIAL_FAILURE_CLEANUP_PASSED / CRASH_RECOVERY_DB_RESTORED_SIGKILL_PASSED / CRASH_RECOVERY_POWER_LOSS_NOT_TESTED / BACKEND_CHECKPOINT_READY / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。不开放用户 restore。未写 `UAT_PASSED` / `CRASH_RECOVERY_RUNTIME_PASSED`。
 
 2026-08-20 SIGKILL checkpoint + 三阶段矩阵收口：阶段A 将 DB_RESTORED SIGKILL 门提交 PR #2（`6dbb326`，仍 draft）。阶段B 本地三阶段 `VOLUMES_REPLACED/DB_RESTORED/MINIO_REPLAYED` SIGKILL 矩阵与旧单阶段门全绿。合同 `Ran 60 / OK` skipped=0。矩阵 delta 未提交。当时现役含历史 `NOT_PUSHED`（仅指当时矩阵 delta）。不开放用户 restore。未写 `UAT_PASSED` / `CRASH_RECOVERY_RUNTIME_PASSED`。

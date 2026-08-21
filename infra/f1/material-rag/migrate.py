@@ -39,7 +39,7 @@ def _verify_catalog(connection: object) -> None:
             "(SELECT min(version_num) FROM f1.alembic_version)"
         )
     ).one()
-    if tuple(heads) != (1, "f0d_0006", 1, "f1_0015"):
+    if tuple(heads) != (1, "f0d_0006", 1, "f1_0016"):
         raise RuntimeError("LOCAL_MATERIAL_RAG_MIGRATION_HEAD_MISMATCH")
 
     observed = connection.execute(
@@ -88,7 +88,7 @@ def _verify_catalog(connection: object) -> None:
 
 
 def migrate() -> None:
-    """Upgrade the dedicated database through ``f1_0015`` atomically."""
+    """Upgrade the dedicated database through ``f1_0016`` atomically."""
     local_migrate._root_migration_url()
     migrate_f1._migration_dsn()
     bootstrap_url = make_url(migrate_f1._bootstrap_dsn()).set(

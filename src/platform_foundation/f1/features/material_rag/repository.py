@@ -645,7 +645,8 @@ async def load_units_for_version(
     return tuple(units)
 
 
-async def enqueue_job(
+async def enqueue_job_in_session(
+    session,
     tenant: Tenant,
     *,
     document_version_id: uuid.UUID,
@@ -656,107 +657,162 @@ async def enqueue_job(
         raise ValueError("MATERIAL_RAG_JOB_ACTION_INVALID")
     if not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 200:
         raise ValueError("MATERIAL_RAG_IDEMPOTENCY_KEY_INVALID")
+    source = (
+        await session.execute(
+            text(
+                "SELECT record.id AS document_record_id,"
+                "version.upload_task_id,version.version_no,"
+                "record.latest_version_no,"
+                "(version.version_no = record.latest_version_no) AS is_current,"
+                "record.knowledge_scope_id,task.content_sha256,"
+                "task.object_state,task.scan_verdict,task.preview_status,"
+                "task.processing_stage,task.quarantine_status,task.released_at "
+                "FROM f1.document_version AS version "
+                "JOIN f1.document_record AS record ON "
+                "record.enterprise_id=version.enterprise_id "
+                "AND record.id=version.document_record_id "
+                "JOIN f1.upload_task AS task ON "
+                "task.enterprise_id=version.enterprise_id "
+                "AND task.id=version.upload_task_id "
+                "WHERE version.enterprise_id=:enterprise_id "
+                "AND version.id=:version_id "
+                "AND task.pipeline_kind='controlled_ingestion'"
+            ),
+            {
+                "enterprise_id": tenant.enterprise_id,
+                "version_id": document_version_id,
+            },
+        )
+    ).mappings().one_or_none()
+    if source is None:
+        raise MaterialRagIntegrityError("MATERIAL_VERSION_NOT_FOUND")
+    if not bool(source["is_current"]):
+        raise MaterialRagIntegrityError("MATERIAL_VERSION_NOT_CURRENT")
+    if action != "delete" and not (
+        source["object_state"] == "ready"
+        and source["scan_verdict"] == "clean"
+        and source["preview_status"] == "ready"
+        and source["processing_stage"] == "ready"
+        and source["quarantine_status"] == "released"
+        and source["released_at"] is not None
+    ):
+        raise MaterialRagIntegrityError("MATERIAL_VERSION_NOT_INDEXABLE")
+    digest = hashlib.sha256(
+        (
+            "material-rag-job-v1\x00"
+            f"{tenant.enterprise_id}\x00{source['knowledge_scope_id']}\x00"
+            f"{document_version_id}\x00{action}\x00{idempotency_key}"
+        ).encode("utf-8")
+    ).hexdigest()
+    job_id = uuid.uuid4()
+    row = (
+        await session.execute(
+            text(
+                "INSERT INTO f1.material_rag_job ("
+                "id,enterprise_id,knowledge_scope_id,document_version_id,"
+                "document_record_id,upload_task_id,source_sha256,action,status,"
+                "idempotency_sha256) VALUES ("
+                ":id,:enterprise_id,:scope_id,:version_id,:record_id,:upload_task_id,:source_sha,"
+                ":action,'queued',:digest) "
+                "ON CONFLICT (enterprise_id,idempotency_sha256) DO NOTHING "
+                "RETURNING id"
+            ),
+            {
+                "id": job_id,
+                "enterprise_id": tenant.enterprise_id,
+                "scope_id": source["knowledge_scope_id"],
+                "version_id": document_version_id,
+                "record_id": source["document_record_id"],
+                "upload_task_id": source["upload_task_id"],
+                "source_sha": source["content_sha256"],
+                "action": action,
+                "digest": digest,
+            },
+        )
+    ).one_or_none()
+    if row is None:
+        existing = (
+            await session.execute(
+                text(
+                    "SELECT id,knowledge_scope_id,document_record_id,"
+                    "document_version_id,upload_task_id,source_sha256,action "
+                    "FROM f1.material_rag_job WHERE enterprise_id=:enterprise_id "
+                    "AND idempotency_sha256=:digest"
+                ),
+                {"enterprise_id": tenant.enterprise_id, "digest": digest},
+            )
+        ).mappings().one_or_none()
+        expected = {
+            "knowledge_scope_id": source["knowledge_scope_id"],
+            "document_record_id": source["document_record_id"],
+            "document_version_id": document_version_id,
+            "upload_task_id": source["upload_task_id"],
+            "source_sha256": source["content_sha256"],
+            "action": action,
+        }
+        if existing is None or any(
+            existing[key] != value for key, value in expected.items()
+        ):
+            raise MaterialRagIntegrityError("MATERIAL_RAG_IDEMPOTENCY_CONFLICT")
+        return existing["id"]
+    return row[0]
+
+
+async def enqueue_job(
+    tenant: Tenant,
+    *,
+    document_version_id: uuid.UUID,
+    action: JobAction,
+    idempotency_key: str,
+) -> uuid.UUID:
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
     ) as session:
-        source = (
-            await session.execute(
-                text(
-                    "SELECT record.id AS document_record_id,"
-                    "version.upload_task_id,"
-                    "record.knowledge_scope_id,task.content_sha256,"
-                    "task.object_state,task.scan_verdict,task.preview_status,"
-                    "task.processing_stage,task.quarantine_status,task.released_at "
-                    "FROM f1.document_version AS version "
-                    "JOIN f1.document_record AS record ON "
-                    "record.enterprise_id=version.enterprise_id "
-                    "AND record.id=version.document_record_id "
-                    "JOIN f1.upload_task AS task ON "
-                    "task.enterprise_id=version.enterprise_id "
-                    "AND task.id=version.upload_task_id "
-                    "WHERE version.enterprise_id=:enterprise_id "
-                    "AND version.id=:version_id "
-                    "AND task.pipeline_kind='controlled_ingestion'"
-                ),
-                {
-                    "enterprise_id": tenant.enterprise_id,
-                    "version_id": document_version_id,
-                },
-            )
-        ).mappings().one_or_none()
-        if source is None:
-            raise MaterialRagIntegrityError("MATERIAL_VERSION_NOT_FOUND")
-        if action != "delete" and not (
-            source["object_state"] == "ready"
-            and source["scan_verdict"] == "clean"
-            and source["preview_status"] == "ready"
-            and source["processing_stage"] == "ready"
-            and source["quarantine_status"] == "released"
-            and source["released_at"] is not None
-        ):
-            raise MaterialRagIntegrityError("MATERIAL_VERSION_NOT_INDEXABLE")
-        digest = hashlib.sha256(
-            (
-                "material-rag-job-v1\x00"
-                f"{tenant.enterprise_id}\x00{source['knowledge_scope_id']}\x00"
-                f"{document_version_id}\x00{action}\x00{idempotency_key}"
-            ).encode("utf-8")
-        ).hexdigest()
-        job_id = uuid.uuid4()
+        result_id = await enqueue_job_in_session(
+            session,
+            tenant,
+            document_version_id=document_version_id,
+            action=action,
+            idempotency_key=idempotency_key,
+        )
+        await session.commit()
+        return result_id
+
+
+async def claim_next_job(
+    *, worker_id: str, lease_seconds: int = 300
+) -> MaterialRagJobClaim | None:
+    if not isinstance(worker_id, str) or not 1 <= len(worker_id) <= 120:
+        raise ValueError("MATERIAL_RAG_WORKER_ID_INVALID")
+    if not 1 <= lease_seconds <= 900:
+        raise ValueError("MATERIAL_RAG_LEASE_INVALID")
+    async with session_scope(role="f1_worker") as session:
         row = (
             await session.execute(
                 text(
-                    "INSERT INTO f1.material_rag_job ("
-                    "id,enterprise_id,knowledge_scope_id,document_version_id,"
-                    "document_record_id,upload_task_id,source_sha256,action,status,"
-                    "idempotency_sha256) VALUES ("
-                    ":id,:enterprise_id,:scope_id,:version_id,:record_id,:upload_task_id,:source_sha,"
-                    ":action,'queued',:digest) "
-                    "ON CONFLICT (enterprise_id,idempotency_sha256) DO NOTHING "
-                    "RETURNING id"
+                    "SELECT job_id,enterprise_id,knowledge_scope_id,"
+                    "document_record_id,document_version_id,upload_task_id,source_sha256,"
+                    "action,lease_token,attempt "
+                    "FROM f1.claim_next_material_rag_job(:worker_id,:lease_seconds)"
                 ),
-                {
-                    "id": job_id,
-                    "enterprise_id": tenant.enterprise_id,
-                    "scope_id": source["knowledge_scope_id"],
-                    "version_id": document_version_id,
-                    "record_id": source["document_record_id"],
-                    "upload_task_id": source["upload_task_id"],
-                    "source_sha": source["content_sha256"],
-                    "action": action,
-                    "digest": digest,
-                },
+                {"worker_id": worker_id, "lease_seconds": lease_seconds},
             )
-        ).one_or_none()
+        ).mappings().one_or_none()
         if row is None:
-            existing = (
-                await session.execute(
-                    text(
-                        "SELECT id,knowledge_scope_id,document_record_id,"
-                        "document_version_id,upload_task_id,source_sha256,action "
-                        "FROM f1.material_rag_job WHERE enterprise_id=:enterprise_id "
-                        "AND idempotency_sha256=:digest"
-                    ),
-                    {"enterprise_id": tenant.enterprise_id, "digest": digest},
-                )
-            ).mappings().one_or_none()
-            expected = {
-                "knowledge_scope_id": source["knowledge_scope_id"],
-                "document_record_id": source["document_record_id"],
-                "document_version_id": document_version_id,
-                "upload_task_id": source["upload_task_id"],
-                "source_sha256": source["content_sha256"],
-                "action": action,
-            }
-            if existing is None or any(
-                existing[key] != value for key, value in expected.items()
-            ):
-                raise MaterialRagIntegrityError("MATERIAL_RAG_IDEMPOTENCY_CONFLICT")
-            result_id = existing["id"]
-        else:
-            result_id = row[0]
+            return None
         await session.commit()
-        return result_id
+        return MaterialRagJobClaim(
+            id=row["job_id"],
+            enterprise_id=row["enterprise_id"],
+            knowledge_scope_id=row["knowledge_scope_id"],
+            document_record_id=row["document_record_id"],
+            document_version_id=row["document_version_id"],
+            upload_task_id=row["upload_task_id"],
+            source_sha256=str(row["source_sha256"]),
+            action=str(row["action"]),  # type: ignore[arg-type]
+            lease_token=row["lease_token"],
+            attempt=int(row["attempt"]),
+        )
 
 
 async def claim_job(
@@ -873,7 +929,9 @@ __all__ = (
     "DatasetBinding",
     "DatasetBindingState",
     "claim_job",
+    "claim_next_job",
     "enqueue_job",
+    "enqueue_job_in_session",
     "finish_job",
     "ensure_dataset_binding_intent",
     "finalize_empty_scope_dataset_delete",

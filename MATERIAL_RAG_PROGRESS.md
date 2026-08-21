@@ -1,5 +1,34 @@
 # MATERIAL RAG Progress
 
+## 2026-08-21｜migration closeout contract｜PASSED
+
+- 现役：`BACKEND_DURABLE_ORCHESTRATION_LOCAL_PASSED / MIGRATION_CLOSEOUT_CONTRACT_PASSED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / NOT_PRODUCTION`。未写 `PRODUCTION_WORKER_PASSED` / `UAT_PASSED` / `RELEASE_VERIFIED`。未 commit/push，未改 PR #2。HEAD 仍 `71bb6dd`。不开 Docker。
+- 目标模块一次：`PYTHONPATH=$PWD/src:$PWD F1_KEYCLOAK_ISSUER_URL=http://material-rag.invalid/realms/anhuan python -B -m unittest tests.test_engineering_closeout_migration` → stderr `Ran 11 tests in 0.349s` / `OK`，stdout 空，exit=0，wall=420ms，skipped=0。`git diff --check=0`。
+- 合同：闭集精确 `{f1_0014,f1_0015,f1_0016}`；默认仍 `f1_0014`；`_closed_f1_migrate_target` 接受三项；`head`/`f1_0013`/`f1_0017`/尾空格/空值/非字符串仍 `F1_MIGRATE_TARGET_INVALID`；默认 `main` 与 `local_migrate` 不传 `target=`；仅 `infra/f1/material-rag/migrate.py` 显式 `target=migrate_f1.F1_MATERIAL_RAG_MIGRATE_TARGET` 且该常量为 `f1_0016`；target 不来自 argv/env。
+- 编排 9 个代码文件相对开工 SHA 零漂移。本轮只动 closeout 测试与四份状态文档。证据包 `material-rag-migration-closeout-contract-20260821-v1`。建议：无。不 commit。
+
+## 2026-08-21｜migration closeout contract｜STARTED
+
+- 目标：修 `test_f1_migrate_target_is_closed_default_0014_not_head`，证明默认 `f1_0014`、闭集精确 `0014/0015/0016`、专属 `material-rag/migrate.py` 才请求 `f1_0016`、`0017`/`head`/argv/env 仍拒绝。不改编排实现。
+- 顺序：任务0 核基线 → 最小加强该一测 → 目标模块只跑一次 → 新证据包 → 现役段。不开 Docker，不重跑 69/编排门/Ark/UAT/verify。
+- 任务0 相符：branch=`codex/material-rag-postgres-integration` HEAD=`71bb6dd` staged=0 dirty 恰13；origin/PR #2 head 同 OID，OPEN+draft；`git diff --check=0`；11 个 `test_`；解释器可导入。证据根文件=`65807ffb…312e0e`（任务书少末位 `e`，按包内 DETACHED_ROOT 64 位核）。
+- 最大风险：误把 `f1_0016` 仍当非法、或放宽 `0017`/`head`/env。失败则一次签名后停。不 commit/push。建议：无。
+
+## 2026-08-21｜durable orchestration gate｜PASSED
+
+- 现役：`BACKEND_DURABLE_ORCHESTRATION_LOCAL_PASSED / BACKEND_DUE_QUEUE_LEASE_FENCE_PASSED / EXTERNAL_PROCESSING_DISABLED / BACKEND_CHECKPOINT_READY / NOT_PUSHED / HUMAN_UAT_SIGNOFF_PENDING / LIVE_RETRIEVAL_UAT_DEFERRED / NOT_PRODUCTION`。历史 backup/crash 检查点标签仍成立。未写 `PRODUCTION_WORKER_PASSED` / `UAT_PASSED` / `RELEASE_VERIFIED`。未 commit/push，未改 PR #2。HEAD 仍为 `71bb6dd717462ead48a80c71fb557d37c527460a`。
+- 合同：先红（缺 `f1_0016`/orchestrator/P3 enqueue）后绿 `tests.test_material_rag` `Ran 51 tests in 0.915s / OK` skipped=0（修改前 46）。本窗口复验同一离线门仍 51/OK。
+- Docker：targeted attempt3 `MaterialRagOrchestrationTests` `Ran 1 test in 10.152s / OK` exit=0，stdout 含 `LOCAL_MATERIAL_RAG_ORCHESTRATION_OK` 且机器判据 JSON：`release_rollback_jobs=0 concurrent_claims=1 duplicate_processing=0 valid_tenants=2 cross_tenant_visible=0 retry_recovered=1 expired_lease_recovered=1 stale_local_mutations=0 stale_remote_mutations=0 external_calls_before_fence=0 ark_calls=0 default_disabled=1`。合并门 attempt2 `Ran 69 tests in 149.595s / OK` wall=149800ms skipped=0。HEAD+patch clone `Ran 69 tests in 149.691s / OK` wall=149896ms skipped=0，stdout SHA 与合并门逐字节相同。`git diff --check=0`。
+- 前序 targeted attempt1 `SEED_FAILED`（`seed.py` 仍要求 `f1_0015`，已在 harness 内联 seed 且不改 `seed.py`）；attempt2 `InsufficientPrivilege`（f1_api 不能 bump `version_no`，改 bootstrap SQL）。merge-1 `DEDICATED_PREEXISTING`（targeted-3 后专属未停净）；按 compose project + `io.anhuan.scope` 精确收口后 C/V/N 两次间隔观测为 0。
+- 实现边界：新编排仅 `F1_MATERIAL_RAG_ORCHESTRATION_LOCAL=1` 且 `F1_LOCAL_ENGINEERING=1`。真实 PostgreSQL/`f1_0016`/RLS/`claim_next` FOR UPDATE SKIP LOCKED/repository/lease/finish；fake 仅 RAGFlow/embedding/对象存储/扫描。`claim_next` 另增 due UPDATE policy（非 `USING(true)`），否则 SKIP LOCKED 因既有 `job_target` 在 GUC 未设置时看不见 queued 行。默认工程仍 `f1_0014/35`。
+- 专属 C/V/N=0。共享 fingerprint=`f08864aa2b34d9ddc9f98f114590a0a8b58eeba0e7c5c7a989adf45881b0d065` 前后逐字节一致。证据包 `material-rag-durable-orchestration-20260821-v1`。建议：下一阶段单独授权再 commit；closeout 合同仍把 `f1_0016` 列为非法 migrate target，未改。
+
+## 2026-08-21｜durable orchestration gate｜STARTED
+
+- 任务0 相符：branch=`codex/material-rag-postgres-integration` HEAD=`71bb6dd717462ead48a80c71fb557d37c527460a` worktree/staged/untracked 空；`git ls-remote` 与 PR #2 head 均为该 OID，OPEN+draft，base=`codex/material-rag-scanner-protocol@c58ef92…`，mergedAt=null。专属 C/V/N=0。共享 fingerprint=`f08864aa…b0d065`。无生产 producer / due dispatcher / 长跑 worker。
+- 本轮：`MATERIAL_RAG_DURABLE_ORCHESTRATION_GATE`。只证明本地编排脊柱。外部处理关闭。不 commit/push/改 PR。不跑 155 / verify / Ark / headed UAT。建议：无。
+- 现役先保持上一检查点 backup/crash 标签；未写 `PRODUCTION_WORKER_PASSED` / `UAT_PASSED` / `RELEASE_VERIFIED`。
+
 ## 2026-08-21｜multi-stage SIGKILL matrix checkpoint｜STARTED
 
 - 任务0 相符：branch=`codex/material-rag-postgres-integration` HEAD=`6dbb3263acc3c32846c3536fb70af06f7e527964` 9 tracked M staged=0 `git diff --check=0`；ls-remote 与 PR #2 head 均为该 HEAD，OPEN+draft，base=`codex/material-rag-scanner-protocol@c58ef92…`，mergedAt=null。matrix 包 56 项根 `7b3f72de…4b65`；4 代码 SHA 与 `source/file-manifest` 一致。
