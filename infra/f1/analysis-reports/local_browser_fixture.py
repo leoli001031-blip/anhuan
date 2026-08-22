@@ -12,6 +12,7 @@ never deletes memberships or overwrites roles.
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -40,7 +41,14 @@ EMPLOYEE_EMAIL = "employee@fixture.invalid"
 FIXTURE_NS = uuid.UUID("7c2a9e11-4d08-4b3e-9f1a-6e5c0b8d2a14")
 CRM_ACCOUNT_ID = uuid.uuid5(FIXTURE_NS, "crm-account:provider-a:audience-b")
 BINDING_ID = uuid.uuid5(FIXTURE_NS, "audience-binding:provider-a:audience-b")
+CLIENT_SCOPE_ID = uuid.uuid5(FIXTURE_NS, "client-scope:provider-a:audience-b")
+PROVIDER_SCOPE_FALLBACK_ID = uuid.uuid5(
+    FIXTURE_NS, "provider-scope:enterprise-a"
+)
 CRM_DISPLAY_NAME = "Local analysis-report audience B"
+PARSER_VERSION = "arfix1"
+PROVIDER_MATERIAL_LABEL = "arfix-provider"
+CLIENT_MATERIAL_LABEL = "arfix-client"
 
 PROJECT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 PROJECT_NAME_RE = re.compile(r"^anhuan-ar-pgint-([0-9a-f]{12})$")
@@ -322,6 +330,212 @@ def _ensure_crm_and_binding(
         raise RuntimeError("LOCAL_REPORT_FIXTURE_BINDING_MISMATCH")
 
 
+def _stable_material_id(kind: str, label: str) -> uuid.UUID:
+    return uuid.uuid5(FIXTURE_NS, f"{kind}:{label}")
+
+
+def _provider_scope_id(connection: psycopg.Connection) -> uuid.UUID:
+    rows = connection.execute(
+        "SELECT id FROM f1.material_knowledge_scope "
+        "WHERE enterprise_id=%s AND scope_kind='service_provider' "
+        "AND client_account_id IS NULL ORDER BY id",
+        (local_seed.ENTERPRISE_A,),
+    ).fetchall()
+    if len(rows) > 1:
+        raise RuntimeError("LOCAL_REPORT_FIXTURE_PROVIDER_SCOPE_EXTRA")
+    if len(rows) == 1:
+        return rows[0][0]
+    connection.execute(
+        "INSERT INTO f1.material_knowledge_scope "
+        "(id,enterprise_id,scope_kind,client_account_id) "
+        "VALUES (%s,%s,'service_provider',NULL)",
+        (PROVIDER_SCOPE_FALLBACK_ID, local_seed.ENTERPRISE_A),
+    )
+    return PROVIDER_SCOPE_FALLBACK_ID
+
+
+def _ensure_client_scope(connection: psycopg.Connection) -> uuid.UUID:
+    connection.execute(
+        "INSERT INTO f1.material_knowledge_scope "
+        "(id,enterprise_id,scope_kind,client_account_id) "
+        "VALUES (%s,%s,'client',%s) ON CONFLICT (id) DO NOTHING",
+        (CLIENT_SCOPE_ID, local_seed.ENTERPRISE_A, CRM_ACCOUNT_ID),
+    )
+    row = connection.execute(
+        "SELECT id,enterprise_id,scope_kind,client_account_id "
+        "FROM f1.material_knowledge_scope WHERE id=%s",
+        (CLIENT_SCOPE_ID,),
+    ).fetchone()
+    if row is None or tuple(row) != (
+        CLIENT_SCOPE_ID,
+        local_seed.ENTERPRISE_A,
+        "client",
+        CRM_ACCOUNT_ID,
+    ):
+        raise RuntimeError("LOCAL_REPORT_FIXTURE_CLIENT_SCOPE_MISMATCH")
+    extras = connection.execute(
+        "SELECT count(*) FROM f1.material_knowledge_scope "
+        "WHERE enterprise_id=%s AND scope_kind='client' AND client_account_id=%s",
+        (local_seed.ENTERPRISE_A, CRM_ACCOUNT_ID),
+    ).fetchone()
+    if extras is None or int(extras[0]) != 1:
+        raise RuntimeError("LOCAL_REPORT_FIXTURE_CLIENT_SCOPE_EXTRA")
+    return CLIENT_SCOPE_ID
+
+
+def _insert_synthetic_unit(
+    connection: psycopg.Connection,
+    *,
+    label: str,
+    scope_id: uuid.UUID,
+    actor_id: uuid.UUID,
+) -> None:
+    document_id = _stable_material_id("document", label)
+    record_id = _stable_material_id("record", label)
+    task_id = _stable_material_id("task", label)
+    version_id = _stable_material_id("version", label)
+    unit_id = _stable_material_id("unit", label)
+    source_sha = hashlib.sha256(f"arfix|{label}|{local_seed.ENTERPRISE_A}".encode()).hexdigest()
+    object_key = f"arfix/{label}"
+    title = f"{label}-current"
+    body = f"{label} 合成材料用于分析报告本地夹具。"
+    body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    aad_sha = hashlib.sha256(f"arfix-aad|{label}".encode()).hexdigest()
+    ciphertext = b"ARFIX1" + bytes.fromhex(source_sha[:64])
+    connection.execute(
+        "INSERT INTO f1.document "
+        "(id,enterprise_id,object_key,filename,size,content_type,status,"
+        "knowledge_scope_id) VALUES (%s,%s,%s,%s,32,'application/pdf','done',%s) "
+        "ON CONFLICT (id) DO NOTHING",
+        (document_id, local_seed.ENTERPRISE_A, object_key, f"{label}.pdf", scope_id),
+    )
+    connection.execute(
+        "INSERT INTO f1.document_record "
+        "(id,enterprise_id,title,status,latest_version_no,created_by_user_id,"
+        "declared_material_kind,knowledge_scope_id,scope_selection_source,"
+        "scope_selected_by_user_id,scope_selected_at) "
+        "VALUES (%s,%s,%s,'active',1,%s,'unknown',%s,'upload_selection',%s,"
+        "statement_timestamp()) ON CONFLICT (id) DO NOTHING",
+        (record_id, local_seed.ENTERPRISE_A, title, actor_id, scope_id, actor_id),
+    )
+    connection.execute(
+        "INSERT INTO f1.upload_task "
+        "(id,enterprise_id,document_id,object_key,content_sha256,status,"
+        "object_state,pipeline_kind,processing_stage,quarantine_status,"
+        "scan_verdict,preview_status,preview_kind,released_at) "
+        "VALUES (%s,%s,%s,%s,%s,'done','ready','controlled_ingestion','ready',"
+        "'released','clean','ready','page_text',statement_timestamp()) "
+        "ON CONFLICT (id) DO NOTHING",
+        (task_id, local_seed.ENTERPRISE_A, document_id, object_key, source_sha),
+    )
+    connection.execute(
+        "INSERT INTO f1.document_version "
+        "(id,enterprise_id,document_record_id,version_no,source_document_id,"
+        "upload_task_id,display_filename,idempotency_key_sha256,"
+        "created_by_user_id) VALUES (%s,%s,%s,1,%s,%s,%s,%s,%s) "
+        "ON CONFLICT (id) DO NOTHING",
+        (
+            version_id,
+            local_seed.ENTERPRISE_A,
+            record_id,
+            document_id,
+            task_id,
+            f"{label}.pdf",
+            hashlib.sha256(f"idem|{label}".encode()).hexdigest(),
+            actor_id,
+        ),
+    )
+    connection.execute(
+        "INSERT INTO f1.material_rag_unit "
+        "(id,enterprise_id,knowledge_scope_id,document_record_id,"
+        "document_version_id,source_sha256,page_number,ordinal,parser_version,"
+        "body_ciphertext,body_sha256,body_aad_sha256) "
+        "VALUES (%s,%s,%s,%s,%s,%s,1,1,%s,%s,%s,%s) "
+        "ON CONFLICT (id) DO NOTHING",
+        (
+            unit_id,
+            local_seed.ENTERPRISE_A,
+            scope_id,
+            record_id,
+            version_id,
+            source_sha,
+            PARSER_VERSION,
+            ciphertext,
+            body_sha,
+            aad_sha,
+        ),
+    )
+
+
+def _verify_eligible_materials(connection: psycopg.Connection) -> None:
+    rows = connection.execute(
+        "SELECT scope.scope_kind, count(*) "
+        "FROM f1.document_version AS version "
+        "JOIN f1.document_record AS record "
+        "  ON record.enterprise_id = version.enterprise_id "
+        " AND record.id = version.document_record_id "
+        "JOIN f1.upload_task AS task "
+        "  ON task.enterprise_id = version.enterprise_id "
+        " AND task.id = version.upload_task_id "
+        "JOIN f1.material_knowledge_scope AS scope "
+        "  ON scope.enterprise_id = record.enterprise_id "
+        " AND scope.id = record.knowledge_scope_id "
+        "JOIN f1.material_rag_unit AS unit "
+        "  ON unit.enterprise_id = version.enterprise_id "
+        " AND unit.document_version_id = version.id "
+        " AND unit.document_record_id = record.id "
+        " AND unit.source_sha256 = task.content_sha256 "
+        "WHERE version.enterprise_id = %s "
+        "  AND record.status = 'active' "
+        "  AND version.version_no = record.latest_version_no "
+        "  AND task.pipeline_kind = 'controlled_ingestion' "
+        "  AND task.quarantine_status = 'released' "
+        "  AND task.released_at IS NOT NULL "
+        "  AND task.rejected_at IS NULL "
+        "  AND task.scan_verdict = 'clean' "
+        "  AND task.preview_status = 'ready' "
+        "  AND task.object_state = 'ready' "
+        "  AND task.status = 'done' "
+        "  AND ("
+        "    (scope.scope_kind = 'service_provider' AND scope.client_account_id IS NULL) "
+        "    OR (scope.scope_kind = 'client' AND scope.client_account_id = %s)"
+        "  ) "
+        "GROUP BY scope.scope_kind",
+        (local_seed.ENTERPRISE_A, CRM_ACCOUNT_ID),
+    ).fetchall()
+    counts = {str(kind): int(n) for kind, n in rows}
+    if counts.get("service_provider") != 1 or counts.get("client") != 1:
+        raise RuntimeError("LOCAL_REPORT_FIXTURE_MATERIAL_MISMATCH")
+
+
+def _ensure_synthetic_materials(
+    connection: psycopg.Connection, actor_id: uuid.UUID
+) -> None:
+    provider_scope = _provider_scope_id(connection)
+    client_scope = _ensure_client_scope(connection)
+    connection.execute(
+        "ALTER TABLE f1.material_rag_unit DISABLE TRIGGER material_rag_unit_guard"
+    )
+    try:
+        _insert_synthetic_unit(
+            connection,
+            label=PROVIDER_MATERIAL_LABEL,
+            scope_id=provider_scope,
+            actor_id=actor_id,
+        )
+        _insert_synthetic_unit(
+            connection,
+            label=CLIENT_MATERIAL_LABEL,
+            scope_id=client_scope,
+            actor_id=actor_id,
+        )
+    finally:
+        connection.execute(
+            "ALTER TABLE f1.material_rag_unit ENABLE TRIGGER material_rag_unit_guard"
+        )
+    _verify_eligible_materials(connection)
+
+
 def apply() -> None:
     _require_dual_local_flags()
     identity = _require_pgint_identity()
@@ -351,6 +565,7 @@ def apply() -> None:
             role="plant_admin",
         )
         _ensure_crm_and_binding(connection, provider_id)
+        _ensure_synthetic_materials(connection, provider_id)
         connection.commit()
 
 

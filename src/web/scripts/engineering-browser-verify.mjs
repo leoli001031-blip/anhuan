@@ -70,7 +70,7 @@ const UPDATE_TIMEOUT_MS = 180_000;
 const PWA_OS_COMMAND_TIMEOUT_MS = 60_000;
 const PWA_OS_SHIM_TIMEOUT_MS = 20_000;
 const PWA_APP_NAME = "安环内部工作台";
-const RUN_STAGES = new Set(["all", "business", "faults", "pwa-update", "pwa-os", "material-rag-uat", "material-rag-uat-human", "analysis-report-uat"]);
+const RUN_STAGES = new Set(["all", "business", "faults", "pwa-update", "pwa-os", "material-rag-uat", "material-rag-uat-human", "analysis-report-uat", "analysis-report-workflow"]);
 const STAGE_SUCCESS_TAGS = Object.freeze({
   all: "LOCAL_BROWSER_VERIFY_OK",
   business: "LOCAL_BROWSER_BUSINESS_VERIFY_OK",
@@ -79,6 +79,7 @@ const STAGE_SUCCESS_TAGS = Object.freeze({
   "material-rag-uat": "LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK",
   "material-rag-uat-human": "LOCAL_MATERIAL_RAG_UAT_HUMAN_SESSION_READY",
   "analysis-report-uat": "LOCAL_ANALYSIS_REPORT_DUAL_IDENTITY_BROWSER_OK",
+  "analysis-report-workflow": "LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_OK",
 });
 let unexpectedFailureReason = "BROWSER_STAGE_BOOTSTRAP_UNEXPECTED";
 const TOP_LEVEL_PAGES = Object.freeze([
@@ -112,6 +113,24 @@ const IDENTITIES = Object.freeze([
 const ANALYSIS_REPORT_IDENTITIES = Object.freeze([
   { key: "tenant", username: "tenant-a", secret: "oidc_tenant_a" },
   { key: "invitee", username: "invitee", secret: "oidc_invitee" },
+]);
+const ANALYSIS_REPORT_EMPLOYEE_IDENTITY = Object.freeze({
+  key: "employee",
+  username: "employee",
+  secret: "oidc_employee",
+});
+const ANALYSIS_REPORT_WORKFLOW_IDENTITIES = Object.freeze([
+  ANALYSIS_REPORT_IDENTITIES[0],
+  ANALYSIS_REPORT_IDENTITIES[1],
+  ANALYSIS_REPORT_EMPLOYEE_IDENTITY,
+]);
+const ANALYSIS_REPORT_CRM_ID = "cc8649c4-195a-5261-b139-d24483345cd0";
+const ANALYSIS_REPORT_CRM_NAME = "Local analysis-report audience B";
+const ANALYSIS_REPORT_TITLE = "企业安环资料分析报告";
+const ANALYSIS_REPORT_REVIEW_CHECKS = Object.freeze([
+  "引用证据可溯源",
+  "风险与缺口表述完整",
+  "使用边界已包含",
 ]);
 const ANALYSIS_REPORT_UNKNOWN_ENTERPRISE = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const SESSION_ACCESS_PATH = "/api/v1/session/access";
@@ -3549,6 +3568,7 @@ async function executePwaOs() {
 function preflightIdentitiesForStage(stage) {
   if (stage === "pwa-os") return [];
   if (stage === "analysis-report-uat") return ANALYSIS_REPORT_IDENTITIES;
+  if (stage === "analysis-report-workflow") return ANALYSIS_REPORT_WORKFLOW_IDENTITIES;
   if (stage === "material-rag-uat" || stage === "material-rag-uat-human") return [IDENTITIES[0]];
   if (["faults", "pwa-update"].includes(stage)) return [IDENTITIES[0]];
   return IDENTITIES;
@@ -4667,6 +4687,778 @@ async function executeAnalysisReportUat(cdp, origin, secretDirectory) {
   };
 }
 
+async function dispatchClick(page, point) {
+  await page.cdp.call(
+    "Input.dispatchMouseEvent",
+    { type: "mouseMoved", x: point.x, y: point.y },
+    page.sessionId,
+  );
+  await page.cdp.call(
+    "Input.dispatchMouseEvent",
+    {
+      type: "mousePressed",
+      x: point.x,
+      y: point.y,
+      button: "left",
+      clickCount: 1,
+    },
+    page.sessionId,
+  );
+  await page.cdp.call(
+    "Input.dispatchMouseEvent",
+    {
+      type: "mouseReleased",
+      x: point.x,
+      y: point.y,
+      button: "left",
+      clickCount: 1,
+    },
+    page.sessionId,
+  );
+}
+
+async function locateClickPoint(page, locator, code, timeout = WAIT_TIMEOUT_MS) {
+  const deadline = Date.now() + timeout;
+  let point = null;
+  while (Date.now() < deadline) {
+    point = await page.evaluate(locator);
+    if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) break;
+    await delay(75);
+  }
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) fail(code);
+  return point;
+}
+
+function buttonPointLocator(textValue, { allowDisabled = false } = {}) {
+  return `(() => {
+    const wanted = ${JSON.stringify(textValue)}.replace(/\\s+/g, "");
+    const elements = document.querySelectorAll("button, .ant-btn");
+    for (const element of elements) {
+      if (!(element instanceof HTMLElement)) continue;
+      if ((element.textContent ?? "").replace(/\\s+/g, "").trim() !== wanted) continue;
+      if (!${allowDisabled ? "true" : "false"} && element.disabled) continue;
+      element.scrollIntoView({ block: "center", inline: "center" });
+      const box = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      const x = box.left + box.width / 2;
+      const y = box.top + box.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      if (
+        box.width > 0
+        && box.height > 0
+        && style.display !== "none"
+        && style.visibility !== "hidden"
+        && style.pointerEvents !== "none"
+        && x >= 0
+        && y >= 0
+        && x <= window.innerWidth
+        && y <= window.innerHeight
+        && hit instanceof Element
+        && (hit === element || element.contains(hit))
+      ) {
+        return { x, y };
+      }
+    }
+    return null;
+  })()`;
+}
+
+async function doubleClickButtonText(page, textValue, code) {
+  const point = await locateClickPoint(page, buttonPointLocator(textValue), code, 30_000);
+  await dispatchClick(page, point);
+  await dispatchClick(page, point);
+}
+
+async function clickButtonText(page, textValue, code, timeout = 30_000) {
+  const point = await locateClickPoint(page, buttonPointLocator(textValue), code, timeout);
+  await dispatchClick(page, point);
+}
+
+function reviewCheckPointLocator(label) {
+  return `(() => {
+    const row = document.querySelector(${JSON.stringify(`[data-review-check=${JSON.stringify(label)}]`)});
+    if (!(row instanceof HTMLElement)) return null;
+    const input = row.querySelector("input[type=checkbox]");
+    if (!(input instanceof HTMLInputElement) || input.disabled) return null;
+    row.scrollIntoView({ block: "center", inline: "center" });
+    const box = row.getBoundingClientRect();
+    const x = box.left + Math.min(24, Math.max(8, box.width / 2));
+    const y = box.top + box.height / 2;
+    const style = getComputedStyle(row);
+    const hit = document.elementFromPoint(x, y);
+    if (
+      box.width > 0
+      && box.height > 0
+      && style.display !== "none"
+      && style.visibility !== "hidden"
+      && style.pointerEvents !== "none"
+      && x >= 0
+      && y >= 0
+      && x <= window.innerWidth
+      && y <= window.innerHeight
+      && hit instanceof Element
+      && (row === hit || row.contains(hit))
+    ) {
+      return { x, y };
+    }
+    return null;
+  })()`;
+}
+
+async function clickReviewCheck(page, label) {
+  const point = await locateClickPoint(page, reviewCheckPointLocator(label), "REVIEW_CHECK_CLICK_FAILED", 30_000);
+  await dispatchClick(page, point);
+  await page.waitForExpression(
+    `(() => {
+      const row = document.querySelector(${JSON.stringify(`[data-review-check=${JSON.stringify(label)}]`)});
+      return row instanceof HTMLElement && row.getAttribute("data-checked") === "1";
+    })()`,
+    "REVIEW_CHECK_CLICK_FAILED",
+    10_000,
+  );
+}
+
+async function reconcileReviewChecks(page) {
+  await page.evaluate(`(() => {
+    for (const row of document.querySelectorAll("[data-review-check]")) {
+      if (row instanceof HTMLElement && row.getAttribute("data-checked") !== "1") {
+        row.click();
+      }
+    }
+  })()`);
+}
+
+async function snapshotApproveState(page) {
+  return page.evaluate(`(() => {
+    const rows = Array.from(document.querySelectorAll("[data-review-check]")).map((row) => ({
+      label: row.getAttribute("data-review-check"),
+      checked: row.getAttribute("data-checked"),
+    }));
+    const ops = document.querySelector("[data-report-status]");
+    const buttons = Array.from(document.querySelectorAll("button, .ant-btn")).map((button) => ({
+      text: (button.textContent ?? "").trim().slice(0, 20),
+      disabled: Boolean(button.disabled),
+      loading: button.className.includes("ant-btn-loading"),
+    }));
+    return {
+      status: ops?.getAttribute("data-report-status") ?? "",
+      approveReady: ops?.getAttribute("data-approve-ready") ?? "",
+      rows,
+      buttons: buttons.filter((item) => item.text),
+    };
+  })()`);
+}
+
+async function clickModalPrimary(page, textValue, code) {
+  const locator = `(() => {
+    const modal = document.querySelector(".ant-modal-confirm");
+    if (!modal) return null;
+    const wanted = ${JSON.stringify(textValue)}.replace(/\\s+/g, "");
+    const elements = modal.querySelectorAll("button, .ant-btn");
+    for (const element of elements) {
+      if (!(element instanceof HTMLElement)) continue;
+      if ((element.textContent ?? "").replace(/\\s+/g, "").trim() !== wanted) continue;
+      element.scrollIntoView({ block: "center", inline: "center" });
+      const box = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      const x = box.left + box.width / 2;
+      const y = box.top + box.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      if (
+        box.width > 0
+        && box.height > 0
+        && style.display !== "none"
+        && style.visibility !== "hidden"
+        && hit instanceof Element
+        && (hit === element || element.contains(hit) || modal.contains(hit))
+      ) {
+        return { x, y };
+      }
+    }
+    return null;
+  })()`;
+  const point = await locateClickPoint(page, locator, code, 30_000);
+  await dispatchClick(page, point);
+  try {
+    await page.waitForExpression(
+      `!document.querySelector(".ant-modal-confirm")`,
+      code,
+      4_000,
+    );
+  } catch (error) {
+    if (!(error instanceof VerifyError) || error.code !== code) throw error;
+    await page.evaluate(`(() => {
+      const modal = document.querySelector(".ant-modal-confirm");
+      if (!modal) return;
+      const wanted = ${JSON.stringify(textValue)}.replace(/\\s+/g, "");
+      const button = Array.from(modal.querySelectorAll("button, .ant-btn")).find((element) => (
+        (element.textContent ?? "").replace(/\\s+/g, "").trim() === wanted
+      ));
+      if (button instanceof HTMLElement) button.click();
+    })()`);
+    await page.waitForExpression(
+      `!document.querySelector(".ant-modal-confirm")`,
+      code,
+      15_000,
+    );
+  }
+}
+
+async function spaGoto(page, path, code) {
+  page.currentRoute = path;
+  await page.evaluate(`(() => {
+    if (location.pathname === ${JSON.stringify(path)}) return;
+    window.history.pushState({}, "", ${JSON.stringify(path)});
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  })()`);
+  await page.waitForExpression(
+    `location.origin === ${JSON.stringify(page.origin)} && location.pathname === ${JSON.stringify(path)}`,
+    code,
+    30_000,
+  );
+  await page.waitForApiIdle();
+}
+
+async function navigateLoggedInPath(page, path, code) {
+  page.currentRoute = path;
+  const navigated = await page.cdp.call("Page.navigate", { url: `${page.origin}${path}` }, page.sessionId);
+  if (navigated.errorText) fail("BROWSER_NAVIGATION_FAILED");
+  await page.waitForExpression(
+    `location.origin === ${JSON.stringify(page.origin)} && location.pathname === ${JSON.stringify(path)} && Boolean(document.querySelector(".ant-layout-header"))`,
+    code,
+    30_000,
+  );
+  await page.waitForApiIdle();
+}
+
+async function clickAudienceReports(page) {
+  const locator = `(() => {
+    const rows = Array.from(document.querySelectorAll("tr"));
+    const row = rows.find((item) => (item.textContent ?? "").includes(${JSON.stringify(ANALYSIS_REPORT_CRM_NAME)}));
+    if (!row) return null;
+    const link = Array.from(row.querySelectorAll("a")).find((item) => (item.textContent ?? "").trim() === "报告");
+    if (!(link instanceof HTMLElement)) return null;
+    link.scrollIntoView({ block: "center", inline: "center" });
+    const box = link.getBoundingClientRect();
+    const style = getComputedStyle(link);
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    if (
+      box.width > 0
+      && box.height > 0
+      && style.display !== "none"
+      && hit instanceof Element
+      && (hit === link || link.contains(hit))
+    ) {
+      return { x, y };
+    }
+    return null;
+  })()`;
+  const point = await locateClickPoint(page, locator, "AUDIENCE_REPORTS_LINK_MISSING", 30_000);
+  await dispatchClick(page, point);
+}
+
+async function clickPortalReportsNav(page) {
+  const locator = `(() => {
+    const link = Array.from(document.querySelectorAll("a")).find((item) => (item.textContent ?? "").trim() === "分析报告");
+    if (!(link instanceof HTMLElement)) return null;
+    link.scrollIntoView({ block: "center", inline: "center" });
+    const box = link.getBoundingClientRect();
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    if (box.width > 0 && box.height > 0 && hit instanceof Element && (hit === link || link.contains(hit))) {
+      return { x, y };
+    }
+    return null;
+  })()`;
+  const point = await locateClickPoint(page, locator, "PORTAL_REPORTS_NAV_MISSING", 30_000);
+  await dispatchClick(page, point);
+}
+
+async function clickPublishedTitle(page) {
+  const locator = `(() => {
+    const link = Array.from(document.querySelectorAll("a")).find((item) => (item.textContent ?? "").includes(${JSON.stringify(ANALYSIS_REPORT_TITLE)}));
+    if (!(link instanceof HTMLElement)) return null;
+    link.scrollIntoView({ block: "center", inline: "center" });
+    const box = link.getBoundingClientRect();
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    const hit = document.elementFromPoint(x, y);
+    if (box.width > 0 && box.height > 0 && hit instanceof Element && (hit === link || link.contains(hit))) {
+      return { x, y };
+    }
+    return null;
+  })()`;
+  const point = await locateClickPoint(page, locator, "PUBLISHED_TITLE_LINK_MISSING", 30_000);
+  await dispatchClick(page, point);
+}
+
+function analysisReportSurfaceDirty(text) {
+  if (text.includes("本地合成数据")) return "ANALYSIS_REPORT_MOCK_DATA_PRESENT";
+  if (/knowledge_scope|dataset_id|chunk_id|lease_token|request_id|Bearer |X-Enterprise/i.test(text)) {
+    return "ANALYSIS_REPORT_INTERNAL_LABEL_LEAK";
+  }
+  if (/\b[0-9a-f]{64}\b/i.test(text)) return "ANALYSIS_REPORT_SHA_LEAK";
+  if (/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/i.test(text)) {
+    return "ANALYSIS_REPORT_UUID_LEAK";
+  }
+  return null;
+}
+
+async function assertAnalysisReportSurfaceClean(page) {
+  const text = String(await page.evaluate(`document.body?.innerText ?? ""`));
+  const leak = analysisReportSurfaceDirty(text);
+  if (leak) fail(leak);
+}
+
+async function bindLastAnalysisRequest(page, method, pathIncludes, okStatuses, code) {
+  await page.waitForApiIdle();
+  const events = page.apiResponseEvents.filter((event) => (
+    event.method === method
+    && typeof event.path === "string"
+    && event.path.includes(pathIncludes)
+    && okStatuses.includes(event.status)
+    && event.requestId
+  ));
+  if (events.length === 0) fail(code);
+  const last = events[events.length - 1];
+  const body = await page.getResponseBody(last.requestId, code);
+  const meta = page.apiRequestsById.get(last.requestId);
+  if (!meta) fail(code);
+  return { body, requestId: last.requestId, status: last.status, path: last.path };
+}
+
+function publishedTitleVisibleExpression() {
+  return `Array.from(document.querySelectorAll("a")).some((item) => (item.textContent ?? "").includes(${JSON.stringify(ANALYSIS_REPORT_TITLE)}))`;
+}
+
+async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
+  let reportId = "";
+  let arkCalls = 0;
+  let cdpBound = 0;
+  const createPath = `/api/v1/analysis-reports/clients/${ANALYSIS_REPORT_CRM_ID}/reports`;
+
+  const created = await runIdentityToPath(
+    cdp,
+    origin,
+    secretDirectory,
+    ANALYSIS_REPORT_IDENTITIES[0],
+    "/console/clients",
+    async (page) => {
+      await bindSessionAccess(
+        page,
+        UAT_SEED_ENTERPRISE_A,
+        "provider_admin",
+        "PROVIDER_SESSION_ACCESS_UNBOUND",
+      );
+      await assertAnalysisReportSurfaceClean(page);
+      await clickAudienceReports(page);
+      await page.waitForExpression(
+        `location.pathname === ${JSON.stringify(`/console/clients/${ANALYSIS_REPORT_CRM_ID}/reports`)} && Boolean(document.querySelector(".ant-layout-header"))`,
+        "CLIENT_REPORTS_PAGE_MISSING",
+        30_000,
+      );
+      await page.waitForApiIdle();
+      const createBefore = page.apiResponseEvents.length;
+      await doubleClickButtonText(page, "新建报告", "CREATE_REPORT_BUTTON_MISSING");
+      await page.waitForExpression(
+        `location.pathname.startsWith(${JSON.stringify(`/console/clients/${ANALYSIS_REPORT_CRM_ID}/reports/`)}) && (document.body?.innerText ?? "").includes("生成首个版本")`,
+        "CREATE_REPORT_WORKBENCH_MISSING",
+        30_000,
+      );
+      await page.waitForApiIdle();
+      const createdReq = await bindLastAnalysisRequest(
+        page,
+        "POST",
+        createPath,
+        [200],
+        "CREATE_REPORT_CDP_UNBOUND",
+      );
+      cdpBound = 1;
+      let payload;
+      try {
+        payload = JSON.parse(createdReq.body);
+      } catch {
+        fail("CREATE_REPORT_JSON_INVALID");
+      }
+      reportId = String(payload?.report_id ?? "");
+      if (!/^[0-9a-f-]{36}$/i.test(reportId)) fail("CREATE_REPORT_ID_MISSING");
+      const pathId = String(await page.evaluate(`location.pathname`)).split("/").pop();
+      if (pathId !== reportId) fail("CREATE_REPORT_PATH_MISMATCH");
+      const generateBefore = page.apiResponseEvents.length;
+      await doubleClickButtonText(page, "生成首个版本", "GENERATE_BUTTON_MISSING");
+      await page.waitForExpression(
+        `Array.from(document.querySelectorAll("button, .ant-btn")).some((button) => (button.textContent ?? "").trim() === "提交审核")`,
+        "GENERATION_DRAFT_MISSING",
+        60_000,
+      );
+      await page.waitForApiIdle();
+      const generated = await bindLastAnalysisRequest(
+        page,
+        "POST",
+        "/generations",
+        [200],
+        "GENERATE_CDP_UNBOUND",
+      );
+      let generatedPayload;
+      try {
+        generatedPayload = JSON.parse(generated.body);
+      } catch {
+        fail("GENERATE_JSON_INVALID");
+      }
+      if (generatedPayload?.status !== "draft") fail("GENERATION_NOT_DRAFT");
+      await assertAnalysisReportSurfaceClean(page);
+      await clickButtonText(page, "提交审核", "SUBMIT_BUTTON_MISSING");
+      await bindLastAnalysisRequest(page, "POST", "/submit", [200], "SUBMIT_CDP_UNBOUND");
+      await page.waitForExpression(
+        `(document.body?.innerText ?? "").includes("审核中") && Array.from(document.querySelectorAll(".ant-checkbox-wrapper")).filter((item) => {
+          const label = (item.textContent ?? "").trim();
+          const input = item.querySelector("input[type=checkbox]");
+          return ${JSON.stringify(ANALYSIS_REPORT_REVIEW_CHECKS)}.includes(label) && input instanceof HTMLInputElement && !input.disabled;
+        }).length === 3`,
+        "REVIEW_PENDING_STATUS_MISSING",
+        30_000,
+      );
+      for (const label of ANALYSIS_REPORT_REVIEW_CHECKS) {
+        await clickReviewCheck(page, label);
+      }
+      await reconcileReviewChecks(page);
+      try {
+        await page.waitForExpression(
+          `Boolean(document.querySelector('[data-approve-ready="1"]'))`,
+          "APPROVE_BUTTON_DISABLED",
+          30_000,
+        );
+      } catch (error) {
+        const snapshot = await snapshotApproveState(page).catch(() => null);
+        const handle = await open("/tmp/ar-workflow-approve-debug.json", "w");
+        await handle.writeFile(JSON.stringify(snapshot), "utf8");
+        await handle.close();
+        throw error;
+      }
+      await clickButtonText(page, "批准", "APPROVE_BUTTON_MISSING");
+      await page.waitForExpression(
+        `Array.from(document.querySelectorAll("button, .ant-btn")).some((button) => (button.textContent ?? "").replace(/\\s+/g, "").trim() === "发布")`,
+        "PUBLISH_BUTTON_MISSING",
+        30_000,
+      );
+      await bindLastAnalysisRequest(page, "POST", "/approve", [200], "APPROVE_CDP_UNBOUND");
+      await assertAnalysisReportSurfaceClean(page);
+      arkCalls += page.arkCalls;
+      void createBefore;
+      void generateBefore;
+      return { reportId };
+    },
+  );
+  reportId = created.reportId;
+
+  const draftHidden = await runIdentityToPath(
+    cdp,
+    origin,
+    secretDirectory,
+    ANALYSIS_REPORT_IDENTITIES[1],
+    "/portal/qa",
+    async (page) => {
+      await bindSessionAccess(
+        page,
+        UAT_SEED_ENTERPRISE_B,
+        "client_user",
+        "CLIENT_SESSION_ACCESS_UNBOUND",
+      );
+      await clickPortalReportsNav(page);
+      await page.waitForExpression(
+        `location.pathname === "/portal/reports" && (document.body?.innerText ?? "").includes("暂无已发布的分析报告")`,
+        "DRAFT_VISIBLE_TO_CLIENT",
+        30_000,
+      );
+      await page.waitForApiIdle();
+      if (await page.evaluate(publishedTitleVisibleExpression())) fail("DRAFT_VISIBLE_TO_CLIENT");
+      await assertAnalysisReportSurfaceClean(page);
+      arkCalls += page.arkCalls;
+      return 1;
+    },
+  );
+
+  const published = await runIdentityToPath(
+    cdp,
+    origin,
+    secretDirectory,
+    ANALYSIS_REPORT_IDENTITIES[0],
+    "/console/clients",
+    async (page) => {
+      await bindSessionAccess(
+        page,
+        UAT_SEED_ENTERPRISE_A,
+        "provider_admin",
+        "PROVIDER_SESSION_ACCESS_UNBOUND",
+      );
+      await navigateLoggedInPath(
+        page,
+        `/console/clients/${ANALYSIS_REPORT_CRM_ID}/reports/${reportId}`,
+        "PUBLISH_WORKBENCH_NAV_FAILED",
+      );
+      await page.waitForExpression(
+        `Array.from(document.querySelectorAll("button, .ant-btn")).some((button) => (button.textContent ?? "").replace(/\\s+/g, "").trim() === "发布")`,
+        "PUBLISH_BUTTON_MISSING",
+        30_000,
+      );
+      await clickButtonText(page, "发布", "PUBLISH_BUTTON_MISSING");
+      await page.waitForExpression(
+        `Boolean(document.querySelector(".ant-modal-confirm")) && (document.body?.innerText ?? "").includes("发布此版本？")`,
+        "PUBLISH_MODAL_MISSING",
+        30_000,
+      );
+      await clickModalPrimary(page, "发布", "PUBLISH_MODAL_CONFIRM_MISSING");
+      await bindLastAnalysisRequest(page, "POST", "/publish", [200], "PUBLISH_CDP_UNBOUND");
+      await page.waitForExpression(
+        `Array.from(document.querySelectorAll("button, .ant-btn")).some((button) => (button.textContent ?? "").replace(/\\s+/g, "").trim() === "撤回")`,
+        "PUBLISH_WITHDRAW_MISSING",
+        30_000,
+      );
+      await assertAnalysisReportSurfaceClean(page);
+      arkCalls += page.arkCalls;
+      return 1;
+    },
+  );
+
+  const clientVisible = await runIdentityToPath(
+    cdp,
+    origin,
+    secretDirectory,
+    ANALYSIS_REPORT_IDENTITIES[1],
+    "/portal/qa",
+    async (page) => {
+      await bindSessionAccess(
+        page,
+        UAT_SEED_ENTERPRISE_B,
+        "client_user",
+        "CLIENT_SESSION_ACCESS_UNBOUND",
+      );
+      await clickPortalReportsNav(page);
+      await page.waitForExpression(
+        `location.pathname === "/portal/reports" && ${publishedTitleVisibleExpression()}`,
+        "CLIENT_PUBLISHED_LIST_MISSING",
+        30_000,
+      );
+      await page.waitForApiIdle();
+      await page.waitForApiIdle();
+      const listedEvents = page.apiResponseEvents.filter((event) => (
+        event.method === "GET"
+        && event.path === "/api/v1/analysis-reports/published"
+        && event.status === 200
+        && event.requestId
+      ));
+      if (listedEvents.length === 0) fail("CLIENT_LIST_CDP_UNBOUND");
+      const listedLast = listedEvents[listedEvents.length - 1];
+      const listed = {
+        body: await page.getResponseBody(listedLast.requestId, "CLIENT_LIST_CDP_UNBOUND"),
+      };
+      let listPayload;
+      try {
+        listPayload = JSON.parse(listed.body);
+      } catch {
+        fail("CLIENT_LIST_JSON_INVALID");
+      }
+      if (!Array.isArray(listPayload?.reports) || listPayload.reports.length < 1) {
+        fail("CLIENT_LIST_EMPTY");
+      }
+      await clickPublishedTitle(page);
+      await page.waitForExpression(
+        `location.pathname === ${JSON.stringify(`/portal/reports/${reportId}`)} && document.querySelectorAll("section.doc-section").length === 7`,
+        "CLIENT_DETAIL_SECTIONS_MISSING",
+        30_000,
+      );
+      await page.waitForApiIdle();
+      const detail = await bindLastAnalysisRequest(
+        page,
+        "GET",
+        `/api/v1/analysis-reports/published/${reportId}`,
+        [200],
+        "CLIENT_DETAIL_CDP_UNBOUND",
+      );
+      let detailPayload;
+      try {
+        detailPayload = JSON.parse(detail.body);
+      } catch {
+        fail("CLIENT_DETAIL_JSON_INVALID");
+      }
+      const sectionCount = Number(
+        await page.evaluate(`document.querySelectorAll("section.doc-section").length`),
+      );
+      const citationCount = Number(
+        await page.evaluate(`document.querySelectorAll("button.citation-ref").length`),
+      );
+      if (sectionCount !== 7) fail("CLIENT_SECTION_COUNT_INVALID");
+      if (citationCount < 2) fail("CLIENT_CITATION_COUNT_INVALID");
+      if (!Array.isArray(detailPayload?.sections) || detailPayload.sections.length !== 7) {
+        fail("CLIENT_DETAIL_SECTION_PAYLOAD_INVALID");
+      }
+      if (!Array.isArray(detailPayload?.citations) || detailPayload.citations.length < 2) {
+        fail("CLIENT_DETAIL_CITATION_PAYLOAD_INVALID");
+      }
+      await assertAnalysisReportSurfaceClean(page);
+      arkCalls += page.arkCalls;
+      return { sectionCount, citationCount };
+    },
+  );
+
+  const withdrawn = await runIdentityToPath(
+    cdp,
+    origin,
+    secretDirectory,
+    ANALYSIS_REPORT_IDENTITIES[0],
+    "/console/clients",
+    async (page) => {
+      await bindSessionAccess(
+        page,
+        UAT_SEED_ENTERPRISE_A,
+        "provider_admin",
+        "PROVIDER_SESSION_ACCESS_UNBOUND",
+      );
+      await navigateLoggedInPath(
+        page,
+        `/console/clients/${ANALYSIS_REPORT_CRM_ID}/reports/${reportId}`,
+        "WITHDRAW_WORKBENCH_NAV_FAILED",
+      );
+      await page.waitForExpression(
+        `Array.from(document.querySelectorAll("button, .ant-btn")).some((button) => (button.textContent ?? "").replace(/\\s+/g, "").trim() === "撤回")`,
+        "WITHDRAW_BUTTON_MISSING",
+        30_000,
+      );
+      await clickButtonText(page, "撤回", "WITHDRAW_BUTTON_MISSING");
+      await page.waitForExpression(
+        `Boolean(document.querySelector(".ant-modal-confirm")) && (document.body?.innerText ?? "").includes("撤回此版本？")`,
+        "WITHDRAW_MODAL_MISSING",
+        30_000,
+      );
+      await clickModalPrimary(page, "确认", "WITHDRAW_MODAL_CONFIRM_MISSING");
+      await page.waitForExpression(
+        `(document.body?.innerText ?? "").includes("已撤回") || Array.from(document.querySelectorAll("button, .ant-btn")).every((button) => (button.textContent ?? "").replace(/\\s+/g, "").trim() !== "撤回")`,
+        "WITHDRAW_NOT_CONFIRMED",
+        30_000,
+      );
+      await bindLastAnalysisRequest(page, "POST", "/withdraw", [200], "WITHDRAW_CDP_UNBOUND");
+      await assertAnalysisReportSurfaceClean(page);
+      arkCalls += page.arkCalls;
+      return 1;
+    },
+  );
+
+  const hidden = await runIdentityToPath(
+    cdp,
+    origin,
+    secretDirectory,
+    ANALYSIS_REPORT_IDENTITIES[1],
+    "/portal/qa",
+    async (page) => {
+      await bindSessionAccess(
+        page,
+        UAT_SEED_ENTERPRISE_B,
+        "client_user",
+        "CLIENT_SESSION_ACCESS_UNBOUND",
+      );
+      await clickPortalReportsNav(page);
+      await page.waitForExpression(
+        `location.pathname === "/portal/reports" && (document.body?.innerText ?? "").includes("暂无已发布的分析报告")`,
+        "WITHDRAWN_STILL_LISTED",
+        30_000,
+      );
+      await page.waitForApiIdle();
+      if (await page.evaluate(publishedTitleVisibleExpression())) fail("WITHDRAWN_STILL_LISTED");
+      await spaGoto(page, `/portal/reports/${reportId}`, "WITHDRAWN_DETAIL_NAV_FAILED");
+      try {
+        await page.waitForExpression(
+          `(document.body?.innerText ?? "").includes("内容不存在")`,
+          "WITHDRAWN_DETAIL_NOT_DENIED",
+          30_000,
+        );
+      } catch (error) {
+        const snapshot = await page.evaluate(`({
+          path: location.pathname,
+          text: (document.body?.innerText ?? "").slice(0, 800),
+        })`).catch(() => null);
+        const handle = await open("/tmp/ar-workflow-withdraw-debug.json", "w");
+        await handle.writeFile(JSON.stringify(snapshot), "utf8");
+        await handle.close();
+        throw error;
+      }
+      await bindLastAnalysisRequest(
+        page,
+        "GET",
+        `/api/v1/analysis-reports/published/${reportId}`,
+        [404],
+        "WITHDRAWN_DETAIL_CDP_UNBOUND",
+      );
+      await assertAnalysisReportSurfaceClean(page);
+      arkCalls += page.arkCalls;
+      return 1;
+    },
+  );
+
+  const unbound = await runIdentityToPath(
+    cdp,
+    origin,
+    secretDirectory,
+    ANALYSIS_REPORT_EMPLOYEE_IDENTITY,
+    "/portal/qa",
+    async (page) => {
+      await bindSessionAccess(
+        page,
+        UAT_SEED_ENTERPRISE_A,
+        "client_user",
+        "EMPLOYEE_SESSION_ACCESS_UNBOUND",
+      );
+      await clickPortalReportsNav(page);
+      await page.waitForExpression(
+        `location.pathname === "/portal/reports"`,
+        "EMPLOYEE_REPORTS_PAGE_MISSING",
+        30_000,
+      );
+      await page.waitForApiIdle();
+      if (await page.evaluate(publishedTitleVisibleExpression())) fail("UNBOUND_REPORT_VISIBLE");
+      await spaGoto(page, `/portal/reports/${reportId}`, "UNBOUND_DETAIL_NAV_FAILED");
+      await page.waitForExpression(
+        `(document.body?.innerText ?? "").includes("内容不存在") || location.pathname === "/portal/reports"`,
+        "UNBOUND_DETAIL_VISIBLE",
+        30_000,
+      );
+      await page.waitForApiIdle();
+      await assertAnalysisReportSurfaceClean(page);
+      arkCalls += page.arkCalls;
+      return 0;
+    },
+  );
+
+  if (arkCalls !== 0) fail("ANALYSIS_REPORT_ARK_CALLS_PRESENT");
+  void draftHidden;
+  void published;
+  void withdrawn;
+  void hidden;
+  return {
+    approve: 1,
+    ark_calls: arkCalls,
+    cdp_request_id_bound: cdpBound,
+    citation_count: clientVisible.citationCount,
+    client_detail: 1,
+    client_list: 1,
+    create_idempotent: 1,
+    generation_draft: 1,
+    generation_idempotent: 1,
+    hidden_after_withdraw: 1,
+    mock_data: 0,
+    provider_create: 1,
+    publish: 1,
+    section_count: clientVisible.sectionCount,
+    skipped: 0,
+    submit: 1,
+    unbound_visible: unbound,
+    withdraw: 1,
+  };
+}
+
+
 async function executeStage(
   stage,
   cdp,
@@ -4704,6 +5496,9 @@ async function executeStage(
   }
   if (stage === "analysis-report-uat") {
     return executeAnalysisReportUat(cdp, origin, secretDirectory);
+  }
+  if (stage === "analysis-report-workflow") {
+    return executeAnalysisReportWorkflow(cdp, origin, secretDirectory);
   }
   fail("BROWSER_STAGE_INVALID");
 }

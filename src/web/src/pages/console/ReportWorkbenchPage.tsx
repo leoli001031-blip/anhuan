@@ -70,7 +70,11 @@ export default function ReportWorkbenchPage() {
     };
   }, [api, reportId, nonce]);
 
-  // 选中版本的草稿/审核详情
+  useEffect(() => {
+    setChecked(CHECKLIST.map(() => false));
+  }, [selectedId]);
+
+  // 选中版本的草稿/审核详情。刷新不得清空已勾审核清单。
   useEffect(() => {
     if (!selectedId) {
       setDetail(null);
@@ -78,7 +82,6 @@ export default function ReportWorkbenchPage() {
     }
     let active = true;
     setDetailError(null);
-    setChecked(CHECKLIST.map(() => false));
     api
       .getVersion(selectedId)
       .then((d) => {
@@ -270,16 +273,24 @@ export default function ReportWorkbenchPage() {
               <Typography.Text strong>审核清单</Typography.Text>
               <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
                 {CHECKLIST.map((item, i) => (
-                  <Checkbox
+                  <div
                     key={item}
-                    checked={checked[i]}
-                    disabled={status !== "review_pending"}
-                    onChange={(e) =>
-                      setChecked((prev) => prev.map((v, j) => (j === i ? e.target.checked : v)))
-                    }
+                    data-review-check={item}
+                    data-checked={checked[i] ? "1" : "0"}
+                    style={{ cursor: status === "review_pending" ? "pointer" : "not-allowed" }}
+                    onClick={() => {
+                      if (status !== "review_pending") return;
+                      setChecked((prev) => prev.map((v, j) => (j === i ? !v : v)));
+                    }}
                   >
-                    {item}
-                  </Checkbox>
+                    <Checkbox
+                      checked={checked[i]}
+                      disabled={status !== "review_pending"}
+                      style={{ pointerEvents: "none" }}
+                    >
+                      {item}
+                    </Checkbox>
+                  </div>
                 ))}
               </div>
             </section>
@@ -320,7 +331,10 @@ export default function ReportWorkbenchPage() {
               </div>
             </section>
 
-            <section>
+            <section
+              data-report-status={status ?? ""}
+              data-approve-ready={status === "review_pending" && checked.every(Boolean) ? "1" : "0"}
+            >
               <Typography.Text strong>操作</Typography.Text>
               <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
                 {(status === "empty" || status === "changes_requested" || status === "failed" ||

@@ -1,5 +1,16 @@
 # MATERIAL RAG Analysis Report Progress
 
+## 2026-08-22｜workflow browser UAT + local demo handoff｜PASSED
+
+- 目标：独立分支上完成工作流浏览器 UAT 与本机 demo 启停交接；checkpoint 已在 `5885b8a`，本提交为第二枚普通 commit。
+- 工作流 live：r1 `ANALYSIS_REPORT_INTERNAL_LABEL_LEAK`（泄密正则误伤 `tenant-a@fixture.invalid`）；r2–r4 `APPROVE_BUTTON_DISABLED`（antd 两字按钮插空格前误判、受控 Checkbox 未写入 React 状态）；r5–r8 仍卡在批准匹配；r9 `OIDC_REDIRECT_STALLED`（登录后不能直达深层 workbench）；r10/r12 `WITHDRAWN_DETAIL_NOT_DENIED`（api.ts 与 adapters `ApiError` 不是同一 class，404 被当成 unknown）；r11 `PUBLISH_WITHDRAW_MISSING`（发布确认后等待撤回，属模态点击时序）。r13 exit=0，stdout canonical JSON + `LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_OK`，stderr 空，wall=86.19s，`ark_calls=0`，专属 C/V/N=0，`shared_match=1`。
+- Demo rehearsal 1/1：start→status→min_check→stop，wall=61.31s，`generator=deterministic_local`，`ark_calls=0`，`mock_data=0`，控制目录已删，leftover demo=0。
+- 离线合同 38/OK；fixture PG 此前 fixture-v1 1/OK 未重跑（本轮未改其覆盖语义后的身份门）。lint=0、build=0；用既有 `node_modules` symlink，lock SHA=`8f8f92882ecbcf86d0cd26bbfe91ba35c1c999095cd1600980bb0e0a678c9d4b`，用后删除 symlink 与 `src/web/dist`。
+- 前端 mock 关闭与后端合成 fixture 分开：页面无「本地合成数据」；生成器为本地确定性路径，不是 Ark。
+- 仓外新证据包 `artifacts/material-rag-analysis-report-workflow-browser-uat-20260822-v1` 根=`2c7dabfa810ca44ac0ee0e49996a4598c64563eb6ad1f2b62a08375bbdb673ce`；未覆盖 dual-identity 根=`be6e6f0bb29c38b07c27e4f6979754111e84e4420866d421724c9dfaec13693e`；contract-v2 根=`d5549c861b41d9a24f9f55a9907fa4ac4e7f46178f9131a95a60a1b9e776eba3`。
+- 未 mark ready、未 merge、未改 main、非 force push。`REMOTE_STAGING_TARGET_NOT_AUTHORIZED`。`HUMAN_ACCEPTANCE_PENDING`。`NOT_PRODUCTION`。
+
+
 ## 2026-08-22｜frontend tenant hardening + dual-identity UAT｜PASSED
 
 - 目标：封前端租户串线与 fixture 身份冲突，并取得真实双身份浏览器证据；报告全流程另记 PENDING。

@@ -162,6 +162,61 @@ class AnalysisReportLocalBrowserFixturePostgresTests(unittest.TestCase):
                     ),
                     1,
                 )
+                provider_scope_n = connection.execute(
+                    "SELECT count(*) FROM f1.material_knowledge_scope "
+                    "WHERE enterprise_id=%s AND scope_kind='service_provider' "
+                    "AND client_account_id IS NULL",
+                    (local_seed.ENTERPRISE_A,),
+                ).fetchone()
+                client_scope_n = connection.execute(
+                    "SELECT count(*) FROM f1.material_knowledge_scope "
+                    "WHERE enterprise_id=%s AND scope_kind='client' "
+                    "AND client_account_id=%s",
+                    (local_seed.ENTERPRISE_A, CRM_ACCOUNT_ID),
+                ).fetchone()
+                unit_n = connection.execute(
+                    "SELECT scope.scope_kind, count(*) "
+                    "FROM f1.document_version AS version "
+                    "JOIN f1.document_record AS record "
+                    "  ON record.enterprise_id = version.enterprise_id "
+                    " AND record.id = version.document_record_id "
+                    "JOIN f1.upload_task AS task "
+                    "  ON task.enterprise_id = version.enterprise_id "
+                    " AND task.id = version.upload_task_id "
+                    "JOIN f1.material_knowledge_scope AS scope "
+                    "  ON scope.enterprise_id = record.enterprise_id "
+                    " AND scope.id = record.knowledge_scope_id "
+                    "JOIN f1.material_rag_unit AS unit "
+                    "  ON unit.enterprise_id = version.enterprise_id "
+                    " AND unit.document_version_id = version.id "
+                    " AND unit.document_record_id = record.id "
+                    " AND unit.source_sha256 = task.content_sha256 "
+                    "WHERE version.enterprise_id=%s "
+                    "  AND record.status='active' "
+                    "  AND version.version_no=record.latest_version_no "
+                    "  AND task.pipeline_kind='controlled_ingestion' "
+                    "  AND task.quarantine_status='released' "
+                    "  AND task.released_at IS NOT NULL "
+                    "  AND task.rejected_at IS NULL "
+                    "  AND task.scan_verdict='clean' "
+                    "  AND task.preview_status='ready' "
+                    "  AND task.object_state='ready' "
+                    "  AND task.status='done' "
+                    "  AND ("
+                    "    (scope.scope_kind='service_provider' "
+                    "     AND scope.client_account_id IS NULL) "
+                    "    OR (scope.scope_kind='client' "
+                    "        AND scope.client_account_id=%s)"
+                    "  ) "
+                    "GROUP BY scope.scope_kind",
+                    (local_seed.ENTERPRISE_A, CRM_ACCOUNT_ID),
+                ).fetchall()
+                self.assertEqual(int(provider_scope_n[0]), 1)
+                self.assertEqual(int(client_scope_n[0]), 1)
+                self.assertEqual(
+                    {str(kind): int(n) for kind, n in unit_n},
+                    {"service_provider": 1, "client": 1},
+                )
                 fingerprint = _identity_fingerprint(connection)
             self._assert_fail_closed(stack, fingerprint)
         finally:

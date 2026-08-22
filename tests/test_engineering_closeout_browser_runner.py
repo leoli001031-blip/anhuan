@@ -37,7 +37,7 @@ class EngineeringBrowserRunnerContractTests(unittest.TestCase):
         self.assertIn('inputs[index] === "--stage"', self.source)
         self.assertIn('inputs[index] === "--pwa-update-control"', self.source)
         self.assertIn('let stage = "all"', self.source)
-        self.assertIn('new Set(["all", "business", "faults", "pwa-update", "pwa-os", "material-rag-uat", "material-rag-uat-human", "analysis-report-uat"])', self.source)
+        self.assertIn('new Set(["all", "business", "faults", "pwa-update", "pwa-os", "material-rag-uat", "material-rag-uat-human", "analysis-report-uat", "analysis-report-workflow"])', self.source)
         self.assertIn("BROWSER_STAGE_INVALID", self.source)
         self.assertIn("BROWSER_STAGE_CONTROL_REQUIRED", self.source)
         self.assertIn("BROWSER_STAGE_OPTION_INVALID", self.source)
@@ -80,6 +80,7 @@ class EngineeringBrowserRunnerContractTests(unittest.TestCase):
             '"material-rag-uat": "LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK"',
             '"material-rag-uat-human": "LOCAL_MATERIAL_RAG_UAT_HUMAN_SESSION_READY"',
             '"analysis-report-uat": "LOCAL_ANALYSIS_REPORT_DUAL_IDENTITY_BROWSER_OK"',
+            '"analysis-report-workflow": "LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_OK"',
         ):
             self.assertIn(tag, self.source)
         self.assertNotIn('"pwa-os": "LOCAL_PWA_OS_VERIFY_OK"', self.source)
@@ -91,6 +92,7 @@ class EngineeringBrowserRunnerContractTests(unittest.TestCase):
             "async function executePwaOs",
             "async function executeMaterialRagUat",
             "async function executeAnalysisReportUat",
+            "async function executeAnalysisReportWorkflow",
             "async function executeStage",
             "function preflightIdentitiesForStage",
         ):
@@ -112,6 +114,7 @@ class EngineeringBrowserRunnerContractTests(unittest.TestCase):
             self.assertIn(token, all_stage)
         self.assertNotIn("executeMaterialRagUat", all_stage)
         self.assertNotIn("executeAnalysisReportUat", all_stage)
+        self.assertNotIn("executeAnalysisReportWorkflow", all_stage)
 
         business = self.source.split("async function executeBusiness", 1)[1].split(
             "async function executeFaults", 1
@@ -162,6 +165,7 @@ class EngineeringBrowserRunnerContractTests(unittest.TestCase):
         self.assertNotIn("runIdentity", pwa_os)
         self.assertIn('if (stage === "pwa-os") return []', self.source)
         self.assertIn('if (stage === "analysis-report-uat") return ANALYSIS_REPORT_IDENTITIES', self.source)
+        self.assertIn('if (stage === "analysis-report-workflow") return ANALYSIS_REPORT_WORKFLOW_IDENTITIES', self.source)
         self.assertIn('if (stage === "material-rag-uat" || stage === "material-rag-uat-human") return [IDENTITIES[0]]', self.source)
 
     def test_covers_real_oidc_pages_tenant_headers_and_non_2xx(self) -> None:

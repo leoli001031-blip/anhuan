@@ -9725,6 +9725,10 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("material-rag-uat-stop")
     subparsers.add_parser("material-rag-uat-open")
     subparsers.add_parser("analysis-report-uat-check")
+    subparsers.add_parser("analysis-report-workflow-uat-check")
+    subparsers.add_parser("analysis-report-demo-start")
+    subparsers.add_parser("analysis-report-demo-status")
+    subparsers.add_parser("analysis-report-demo-stop")
     subparsers.add_parser("verify")
     browser_verify = subparsers.add_parser("browser-verify")
     browser_verify.add_argument(
@@ -9764,6 +9768,75 @@ def main() -> int:
                 + "\n"
             )
             print(OK_TAG)
+            return 0
+        if arguments.command == "analysis-report-workflow-uat-check":
+            from infra.f1.analysis_report_uat import (
+                WORKFLOW_OK_TAG,
+                UatError,
+                run_workflow_check,
+            )
+
+            try:
+                payload = run_workflow_check()
+            except UatError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            sys.stdout.write(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            print(WORKFLOW_OK_TAG)
+            return 0
+        if arguments.command == "analysis-report-demo-start":
+            from infra.f1.analysis_report_demo import DemoError, run_start
+
+            try:
+                started = run_start()
+            except DemoError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            sys.stdout.write(
+                "url=%s\nprovider_username=%s\nclient_username=%s\n"
+                % (
+                    started["url"],
+                    started["provider_username"],
+                    started["client_username"],
+                )
+            )
+            return 0
+        if arguments.command == "analysis-report-demo-status":
+            from infra.f1.analysis_report_demo import DemoError, run_status
+
+            try:
+                payload = run_status()
+            except DemoError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            sys.stdout.write(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            return 0
+        if arguments.command == "analysis-report-demo-stop":
+            from infra.f1.analysis_report_demo import DemoError, run_stop
+
+            try:
+                run_stop()
+            except DemoError as error:
+                print(str(error), file=sys.stderr)
+                return 2
             return 0
         if arguments.command == "material-rag-backup-restore-check":
             from infra.f1.material_rag_backup_restore import (

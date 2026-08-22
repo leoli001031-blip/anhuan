@@ -25,28 +25,33 @@ export type ErrorKind =
   | "network" // 网络层失败
   | "unknown";
 
+function errorStatus(error: unknown): number | null {
+  if (typeof error !== "object" || error === null || !("status" in error)) return null;
+  const status = (error as { status: unknown }).status;
+  return typeof status === "number" ? status : null;
+}
+
 export function errorKind(error: unknown): ErrorKind {
-  if (error instanceof ApiError) {
-    switch (error.status) {
-      case 401:
-        return "unauthenticated";
-      case 403:
-        return "forbidden";
-      case 404:
-        return "notFound";
-      case 409:
-        return "conflict";
-      case 422:
-        return "invalid";
-      case 503:
-        return "unavailable";
-      case 0:
-        return "network";
-      default:
-        return error.status >= 500 ? "unavailable" : "unknown";
-    }
+  const status = errorStatus(error);
+  if (status === null) return "unknown";
+  switch (status) {
+    case 401:
+      return "unauthenticated";
+    case 403:
+      return "forbidden";
+    case 404:
+      return "notFound";
+    case 409:
+      return "conflict";
+    case 422:
+      return "invalid";
+    case 503:
+      return "unavailable";
+    case 0:
+      return "network";
+    default:
+      return status >= 500 ? "unavailable" : "unknown";
   }
-  return "unknown";
 }
 
 export const ERROR_COPY: Record<

@@ -609,3 +609,179 @@ def run_check() -> dict[str, object]:
             last = error
     assert last is not None
     raise last
+
+
+WORKFLOW_OK_TAG = "LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_OK"
+WORKFLOW_SUMMARY_KEYS = frozenset(
+    {
+        "approve",
+        "ark_calls",
+        "cdp_request_id_bound",
+        "citation_count",
+        "client_detail",
+        "client_list",
+        "create_idempotent",
+        "dedicated_c",
+        "dedicated_n",
+        "dedicated_v",
+        "generation_draft",
+        "generation_idempotent",
+        "hidden_after_withdraw",
+        "mock_data",
+        "provider_create",
+        "publish",
+        "section_count",
+        "shared_match",
+        "skipped",
+        "submit",
+        "unbound_visible",
+        "withdraw",
+    }
+)
+WORKFLOW_BROWSER_KEYS = WORKFLOW_SUMMARY_KEYS - {
+    "dedicated_c",
+    "dedicated_n",
+    "dedicated_v",
+    "shared_match",
+}
+
+
+def _workflow_browser(state: dict[str, object], paths: dict[str, Path]) -> dict[str, object]:
+    origin = f"http://127.0.0.1:{int(state['web_port'])}"
+    command = [
+        LC._node(),
+        str(LC.PWA_BROWSER_RUNNER),
+        origin,
+        str(paths["secrets"]),
+        "--stage",
+        "analysis-report-workflow",
+    ]
+    result = _run(command, paths=paths, timeout=900, check=False)
+    if result.returncode == 0 and result.stderr and result.stderr.strip():
+        raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_STDERR")
+    lines = result.stdout.splitlines() if result.stdout else []
+    if result.returncode != 0 or len(lines) < 2 or lines[-1] != WORKFLOW_OK_TAG:
+        detail = "NO_TAG"
+        for line in result.stderr.splitlines() if result.stderr else []:
+            if line.startswith("LOCAL_BROWSER_VERIFY_FAILED "):
+                detail = line
+        raise UatError(f"LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_FAILED {detail}")
+    try:
+        summary = json.loads(lines[-2])
+    except json.JSONDecodeError as error:
+        raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_JSON_INVALID") from error
+    if not isinstance(summary, dict) or set(summary) != WORKFLOW_BROWSER_KEYS:
+        raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_SUMMARY_INVALID")
+    return summary
+
+
+def _workflow_supervisor(
+    state: dict[str, object], paths: dict[str, Path], summary: dict[str, object]
+) -> None:
+    fixture = _load_fixture()
+    _rewrite_host_bootstrap_dsn(state, paths)
+    original = dict(os.environ)
+    try:
+        os.environ.update(_pg_env(state, paths))
+        import psycopg
+
+        from infra.f1.migrate_f1 import _bootstrap_dsn
+
+        with psycopg.connect(_bootstrap_dsn(), autocommit=True, connect_timeout=5) as connection:
+            reports = connection.execute(
+                "SELECT count(*) FROM f1.analysis_report WHERE client_account_id=%s",
+                (fixture.CRM_ACCOUNT_ID,),
+            ).fetchone()
+            versions = connection.execute(
+                "SELECT count(*) FROM f1.analysis_report_version AS version "
+                "JOIN f1.analysis_report AS report ON report.id = version.report_id "
+                "WHERE report.client_account_id=%s",
+                (fixture.CRM_ACCOUNT_ID,),
+            ).fetchone()
+        if reports is None or versions is None or int(reports[0]) != 1 or int(versions[0]) != 1:
+            raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_SUPERVISOR_COUNT")
+        summary["create_idempotent"] = 1
+        summary["generation_idempotent"] = 1
+    except UatError:
+        raise
+    except Exception as error:
+        raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_SUPERVISOR_FAILED") from error
+    finally:
+        os.environ.clear()
+        os.environ.update(original)
+
+
+def _workflow_expected(summary: dict[str, object]) -> None:
+    citation = summary.get("citation_count")
+    if not isinstance(citation, int) or citation < 2:
+        raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_SUMMARY_INVALID")
+    expected = {
+        "approve": 1,
+        "ark_calls": 0,
+        "cdp_request_id_bound": 1,
+        "client_detail": 1,
+        "client_list": 1,
+        "create_idempotent": 1,
+        "dedicated_c": 0,
+        "dedicated_n": 0,
+        "dedicated_v": 0,
+        "generation_draft": 1,
+        "generation_idempotent": 1,
+        "hidden_after_withdraw": 1,
+        "mock_data": 0,
+        "provider_create": 1,
+        "publish": 1,
+        "section_count": 7,
+        "shared_match": 1,
+        "skipped": 0,
+        "submit": 1,
+        "unbound_visible": 0,
+        "withdraw": 1,
+        "citation_count": citation,
+    }
+    if summary != expected:
+        raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_SUMMARY_INVALID")
+
+
+def _workflow_live_once() -> dict[str, object]:
+    shared = _shared_fingerprint()
+    state = None
+    paths = None
+    try:
+        state, paths = _initialize()
+        _start(state, paths)
+        _apply_fixture(state, paths)
+        summary = _workflow_browser(state, paths)
+        _workflow_supervisor(state, paths, summary)
+        _stop(state, paths)
+        paths = None
+        shared_match = 1 if _shared_fingerprint() == shared else 0
+        summary = {
+            **summary,
+            "dedicated_c": 0,
+            "dedicated_v": 0,
+            "dedicated_n": 0,
+            "shared_match": shared_match,
+        }
+        _workflow_expected(summary)
+        return summary
+    except Exception as error:
+        if state is not None and paths is not None:
+            try:
+                _stop(state, paths)
+            except Exception:
+                pass
+        if isinstance(error, LC.LocalError):
+            raise UatError(str(error) or "LOCAL_ANALYSIS_REPORT_WORKFLOW_LOCALCTL") from error
+        raise
+
+
+def run_workflow_check() -> dict[str, object]:
+    last: BaseException | None = None
+    for _ in (1, 2):
+        try:
+            return _workflow_live_once()
+        except UatError as error:
+            last = error
+    assert last is not None
+    raise last

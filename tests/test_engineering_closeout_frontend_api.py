@@ -131,6 +131,9 @@ class EngineeringCloseoutFrontendApiTests(unittest.TestCase):
         self.assertNotIn("DELETE FROM f1.enterprise_user", fixture_source)
         self.assertNotIn("SET role=", fixture_source)
         self.assertNotIn("UPDATE f1.enterprise_user", fixture_source)
+        self.assertNotIn("session_replication_role", fixture_source)
+        self.assertIn("_ensure_synthetic_materials", fixture_source)
+        self.assertIn("DISABLE TRIGGER material_rag_unit_guard", fixture_source)
         self.assertIn("INVITEE_SUB", fixture_source)
         self.assertIn('enterprise_id=local_seed.ENTERPRISE_B', fixture_source)
         self.assertIn("LOCAL_REPORT_FIXTURE_EMPLOYEE_MISMATCH", fixture_source)
@@ -145,6 +148,10 @@ class EngineeringCloseoutFrontendApiTests(unittest.TestCase):
         )
         self.assertNotIn("EMPLOYEE_SUB", apply_body)
         self.assertIn("INVITEE_SUB", apply_body)
+        self.assertLess(
+            apply_body.index("_ensure_crm_and_binding"),
+            apply_body.index("_ensure_synthetic_materials"),
+        )
         self.assertIn("def non_sensitive_identity_env", pgint_source)
         self.assertIn("identity.receipt", pgint_source)
         self.assertIn("LOCAL_ANALYSIS_REPORT_PGINT_PROJECT_NAME", pgint_source)
