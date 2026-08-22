@@ -1,6 +1,7 @@
 // Unified API client: relative /api, tenant header, bearer token.
 // The vite dev proxy forwards /api -> 8001 and /realms -> 8080, so the
 // frontend never hardcodes a host/port.
+// 唯一可赋值 X-Enterprise-Id 的中央 transport 是 tenantFetch。
 
 export const API = "/api";
 
@@ -23,6 +24,27 @@ export class ApiError extends Error {
     this.retryable = retryable;
   }
 }
+
+export {
+  ENTERPRISE_CHANGED_EVENT,
+  ENTERPRISE_KEY,
+  assertTenantBound,
+  bindTenantRequest,
+  commitTenantSnapshot,
+  getSelectedEnterprise,
+  getTenantGeneration,
+  getTenantSnapshot,
+  invalidateTenantContext,
+  setSelectedEnterprise,
+  type TenantBoundRequest,
+} from "./tenantState.ts";
+
+import {
+  assertTenantBound,
+  bindTenantRequest,
+  isTenantAbortError as isTransportAbort,
+  TenantTransportError,
+} from "./tenantState.ts";
 
 interface ErrorDetail {
   code?: unknown;
@@ -55,64 +77,137 @@ async function responseError(response: Response): Promise<ApiError> {
   return new ApiError(response.status, code, retryable);
 }
 
-const ENTERPRISE_KEY = "f1-selected-enterprise";
-export const ENTERPRISE_CHANGED_EVENT = "f1-enterprise-changed";
-let tenantRequestController = new AbortController();
-let tenantRequestGeneration = 0;
-
-interface MergedAbortSignal {
-  signal: AbortSignal;
-  dispose: () => void;
+export function isTenantAbortError(error: unknown): boolean {
+  return (
+    isTransportAbort(error) ||
+    (error instanceof ApiError &&
+      (error.code === "REQUEST_ABORTED" || error.code === "TENANT_SNAPSHOT_UNREADY"))
+  );
 }
 
-function mergeAbortSignals(...signals: Array<AbortSignal | undefined>): MergedAbortSignal {
-  const activeSignals = signals.filter((signal): signal is AbortSignal => Boolean(signal));
-  if (activeSignals.length === 1) {
-    return { signal: activeSignals[0], dispose: () => undefined };
+function asApiError(error: unknown): ApiError {
+  if (error instanceof ApiError) return error;
+  if (error instanceof TenantTransportError) {
+    return new ApiError(error.status, error.code, error.retryable);
   }
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  for (const signal of activeSignals) {
-    if (signal.aborted) {
-      controller.abort();
-      break;
+  if (isTenantAbortError(error)) {
+    return new ApiError(0, "REQUEST_ABORTED", false);
+  }
+  return new ApiError(0, "NETWORK_ERROR", true);
+}
+
+const MEMBERSHIP_PATH = "/v1/users/me/enterprises";
+
+export type TenantFetchParse = "json" | "response" | "void";
+
+export interface TenantFetchOptions {
+  method?: string;
+  token?: string | null;
+  body?: unknown;
+  form?: FormData;
+  rawBody?: BodyInit;
+  contentType?: string;
+  extraHeaders?: Record<string, string>;
+  signal?: AbortSignal;
+  membershipDiscovery?: boolean;
+  parse?: TenantFetchParse;
+}
+
+export interface TenantFetchResult<T> {
+  status: number;
+  payload: T;
+  enterpriseId: string | null;
+  response?: Response;
+}
+
+function forbidBypassHeaders(extraHeaders: Record<string, string> | undefined): void {
+  for (const key of Object.keys(extraHeaders ?? {})) {
+    if (key.toLowerCase() === "x-enterprise-id") {
+      throw new ApiError(0, "ENTERPRISE_HEADER_BYPASS_FORBIDDEN", false);
     }
-    signal.addEventListener("abort", abort, { once: true });
-  }
-  return {
-    signal: controller.signal,
-    dispose: () => {
-      for (const signal of activeSignals) signal.removeEventListener("abort", abort);
-    },
-  };
-}
-
-function assertTenantRequestCurrent(signal: AbortSignal, generation: number): void {
-  if (signal.aborted || generation !== tenantRequestGeneration) {
-    throw new ApiError(0, "REQUEST_ABORTED", false);
   }
 }
 
-export function getSelectedEnterprise(): string | null {
-  return localStorage.getItem(ENTERPRISE_KEY);
-}
-
-export function setSelectedEnterprise(id: string | null): void {
-  const current = getSelectedEnterprise();
-  if (current === id) return;
-  const previousController = tenantRequestController;
-  tenantRequestController = new AbortController();
-  tenantRequestGeneration += 1;
-  previousController.abort();
-  if (id) {
-    localStorage.setItem(ENTERPRISE_KEY, id);
-  } else {
-    localStorage.removeItem(ENTERPRISE_KEY);
+export async function tenantFetch<T = unknown>(
+  path: string,
+  options: TenantFetchOptions = {},
+): Promise<TenantFetchResult<T>> {
+  if (!path.startsWith("/v1/") && path !== "/v1") {
+    throw new ApiError(0, "INVALID_API_PATH", false);
   }
-  window.dispatchEvent(new Event(ENTERPRISE_CHANGED_EVENT));
+  forbidBypassHeaders(options.extraHeaders);
+  const membershipDiscovery = options.membershipDiscovery === true || path === MEMBERSHIP_PATH;
+  let bound;
+  try {
+    bound = bindTenantRequest(
+      membershipDiscovery
+        ? { enterpriseId: null, signal: options.signal }
+        : { signal: options.signal },
+    );
+  } catch (error) {
+    throw asApiError(error);
+  }
+  const headers: Record<string, string> = { ...(options.extraHeaders ?? {}) };
+  if (options.token) {
+    headers.Authorization = `Bearer ${options.token}`;
+  }
+  if (bound.enterpriseId) {
+    headers["X-Enterprise-Id"] = bound.enterpriseId;
+  }
+  if (options.body !== undefined && options.form === undefined && options.rawBody === undefined) {
+    headers["Content-Type"] = options.contentType ?? "application/json";
+  } else if (options.contentType) {
+    headers["Content-Type"] = options.contentType;
+  }
+  const parse = options.parse ?? "json";
+  try {
+    let resp: Response;
+    try {
+      resp = await fetch(`${API}${path}`, {
+        method: options.method ?? "GET",
+        headers,
+        body:
+          options.form ??
+          options.rawBody ??
+          (options.body !== undefined ? JSON.stringify(options.body) : undefined),
+        signal: bound.signal,
+      });
+    } catch (error) {
+      if (bound.signal.aborted || isTenantAbortError(error)) {
+        throw new ApiError(0, "REQUEST_ABORTED", false);
+      }
+      throw asApiError(error);
+    }
+    assertTenantBound(bound);
+    if (parse === "response") {
+      assertTenantBound(bound);
+      return {
+        status: resp.status,
+        payload: undefined as T,
+        enterpriseId: bound.enterpriseId,
+        response: resp,
+      };
+    }
+    if (!resp.ok) {
+      const failure = await responseError(resp);
+      assertTenantBound(bound);
+      throw failure;
+    }
+    if (resp.status === 204 || parse === "void") {
+      assertTenantBound(bound);
+      return { status: resp.status, payload: undefined as T, enterpriseId: bound.enterpriseId };
+    }
+    const payload = (await resp.json()) as T;
+    assertTenantBound(bound);
+    return { status: resp.status, payload, enterpriseId: bound.enterpriseId };
+  } catch (error) {
+    throw asApiError(error);
+  } finally {
+    bound.dispose();
+  }
 }
 
-export async function api<T = any>(
+export async function api<T = unknown>(
   path: string,
   options: {
     method?: string;
@@ -125,54 +220,13 @@ export async function api<T = any>(
     token: "",
   },
 ): Promise<T> {
-  if (!path.startsWith("/v1/") && path !== "/v1") {
-    throw new ApiError(0, "INVALID_API_PATH", false);
-  }
-  const headers: Record<string, string> = {};
-  if (options.token) {
-    headers.Authorization = `Bearer ${options.token}`;
-  }
-  const enterpriseId = options.enterpriseId !== undefined ? options.enterpriseId : getSelectedEnterprise();
-  if (enterpriseId) {
-    headers["X-Enterprise-Id"] = enterpriseId;
-  }
-  if (options.body !== undefined) {
-    headers["Content-Type"] = "application/json";
-  }
-  const requestGeneration = tenantRequestGeneration;
-  const mergedSignal = mergeAbortSignals(options.signal, tenantRequestController.signal);
-  try {
-    let resp: Response;
-    try {
-      resp = await fetch(`${API}${path}`, {
-        method: options.method ?? "GET",
-        headers,
-        body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-        signal: mergedSignal.signal,
-      });
-    } catch (error) {
-      if (
-        mergedSignal.signal.aborted ||
-        (error instanceof DOMException && error.name === "AbortError")
-      ) {
-        throw new ApiError(0, "REQUEST_ABORTED", false);
-      }
-      throw new ApiError(0, "NETWORK_ERROR", true);
-    }
-    assertTenantRequestCurrent(mergedSignal.signal, requestGeneration);
-    if (!resp.ok) {
-      const failure = await responseError(resp);
-      assertTenantRequestCurrent(mergedSignal.signal, requestGeneration);
-      throw failure;
-    }
-    if (resp.status === 204) {
-      assertTenantRequestCurrent(mergedSignal.signal, requestGeneration);
-      return undefined as T;
-    }
-    const payload = (await resp.json()) as T;
-    assertTenantRequestCurrent(mergedSignal.signal, requestGeneration);
-    return payload;
-  } finally {
-    mergedSignal.dispose();
-  }
+  const result = await tenantFetch<T>(path, {
+    method: options.method,
+    token: options.token,
+    body: options.body,
+    signal: options.signal,
+    membershipDiscovery: options.enterpriseId === null || path === MEMBERSHIP_PATH,
+    parse: "json",
+  });
+  return result.payload;
 }

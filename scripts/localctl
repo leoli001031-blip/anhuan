@@ -9724,6 +9724,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("material-rag-uat-check")
     subparsers.add_parser("material-rag-uat-stop")
     subparsers.add_parser("material-rag-uat-open")
+    subparsers.add_parser("analysis-report-uat-check")
     subparsers.add_parser("verify")
     browser_verify = subparsers.add_parser("browser-verify")
     browser_verify.add_argument(
@@ -9744,6 +9745,26 @@ def main() -> int:
             "material-rag-uat-open",
         }:
             return _material_rag_uat_command(arguments.command)
+        if arguments.command == "analysis-report-uat-check":
+            from infra.f1.analysis_report_uat import OK_TAG, UatError, run_check
+
+            try:
+                payload = run_check()
+            except UatError as error:
+                print(str(error), file=sys.stderr)
+                return 2
+            sys.stdout.write(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            )
+            print(OK_TAG)
+            return 0
         if arguments.command == "material-rag-backup-restore-check":
             from infra.f1.material_rag_backup_restore import (
                 BackupRestoreError,

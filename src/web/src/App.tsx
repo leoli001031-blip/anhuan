@@ -1,9 +1,9 @@
 // 路由结构：
 //   新双壳：客户门户 /portal/*、甲方运营台 /console/*（新导航只暴露这些入口）
-//   旧工程界面：原路径全部保留兼容（页面与 adapter 源码不删，新导航不展示其入口）
-//   根路径按会话角色分流；角色门只控制体验，权限以后端为准。
+//   旧工程界面：原路径全部保留兼容，由 LegacyProviderGate 包住（仅 provider_admin 进入 Layout）
+//   login/callback/portal/console 不受该门包裹；角色门只控制体验，权限以后端为准。
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom";
 import { Alert, ConfigProvider, Spin } from "antd";
 import zhCN from "antd/locale/zh_CN";
 import { antdTheme } from "./theme";
@@ -12,7 +12,7 @@ import { ApiProvider, useSessionAccess } from "./adapters";
 import { homePathFor } from "./adapters/SessionAccess";
 import ErrorState from "./components/ErrorState";
 import Login from "./pages/Login";
-import PortalLayout from "./shells/PortalLayout";
+import LegacyProviderGate from "./shells/LegacyProviderGate";
 import ConsoleLayout from "./shells/ConsoleLayout";
 import QaPage from "./pages/portal/QaPage";
 import PortalReportListPage from "./pages/portal/ReportListPage";
@@ -23,8 +23,7 @@ import ClientReportsPage from "./pages/console/ClientReportsPage";
 import ReportWorkbenchPage from "./pages/console/ReportWorkbenchPage";
 import ExceptionsPage from "./pages/console/ExceptionsPage";
 import SharedMaterialsPage from "./pages/console/SharedMaterialsPage";
-// —— 以下为旧工程界面（保留兼容，不进新导航） ——
-import Layout from "./pages/Layout";
+import PortalLayout from "./shells/PortalLayout";
 import EnterpriseList from "./pages/EnterpriseList";
 import LegacyQAPage from "./pages/QAPage";
 import AuditPage from "./pages/AuditPage";
@@ -96,10 +95,13 @@ function Protected({ children }: { children: ReactNode }) {
 
 // 根路径按会话角色分流：客户 → 门户，服务商 → 运营台。
 function RoleHome() {
+  const { isAuthenticated } = useAuth();
   const { session, loading, error, reload } = useSessionAccess();
   if (loading) return <Spin fullscreen tip="正在加载" />;
   if (error) return <ErrorState error={error} onRetry={reload} />;
-  if (!session) return <Navigate to="/login" replace />;
+  if (!session) {
+    return isAuthenticated ? <Spin fullscreen tip="正在加载" /> : <Navigate to="/login" replace />;
+  }
   return <Navigate to={homePathFor(session.product_role)} replace />;
 }
 
@@ -107,7 +109,7 @@ function AppRoutes() {
   const { isAuthenticated } = useAuth();
   return (
     <Routes>
-      <Route path="/login" element={<Login />} />
+      <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <Login />} />
       <Route path="/callback" element={<Callback />} />
       {/* 新 · 客户门户 */}
       <Route
@@ -148,11 +150,12 @@ function AppRoutes() {
         path="/"
         element={
           <Protected>
-            <Layout />
+            <Outlet />
           </Protected>
         }
       >
         <Route index element={<RoleHome />} />
+        <Route element={<LegacyProviderGate />}>
         <Route path="workbench" element={<WorkbenchPage />} />
         <Route path="calendar" element={<ServiceCalendarPage />} />
         <Route path="notifications" element={<NotificationsPage />} />
@@ -225,6 +228,7 @@ function AppRoutes() {
         <Route path="audit" element={<AuditPage />} />
         <Route path="invite" element={<InvitePage />} />
         <Route path="admin" element={<AdminPage />} />
+        </Route>
       </Route>
       <Route path="*" element={<Navigate to={isAuthenticated ? "/" : "/login"} replace />} />
     </Routes>

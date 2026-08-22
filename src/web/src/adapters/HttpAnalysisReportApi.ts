@@ -1,8 +1,9 @@
 // HttpAnalysisReportApi：默认实现，直连后端。
 // 报告域端点严格遵循冻结合同 v1；问答/客户/材料复用基线已有路由，不猜测任何新端点。
-// 身份：Authorization: Bearer + 旧平台 membership 规则选出的 X-Enterprise-Id。
+// 身份：Authorization: Bearer + 请求开始时冻结的企业快照（X-Enterprise-Id）。
+// localStorage 不是权威；企业切换会中止在途请求。session.enterprise_id 与请求头不一致则 fail-closed。
 // 不得从 URL/正文指定客户或租户身份；request_id 由调用方持有，本 adapter 不随机生成。
-import { getSelectedEnterprise } from "../api";
+import { tenantFetch } from "../api";
 import { ApiError } from "./errors";
 import type { AnalysisReportApi, TransitionAction } from "./AnalysisReportApi";
 import type {
@@ -33,8 +34,6 @@ import {
   parseVersionDetail,
   parseVersionHistory,
 } from "./wire";
-
-const API = "/api";
 
 interface RawCrmAccount {
   id: string;
@@ -79,57 +78,37 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
 
   private async request<T>(
     path: string,
-    options: { method?: string; body?: unknown; form?: FormData } = {},
-  ): Promise<{ status: number; payload: T }> {
-    const headers: Record<string, string> = {};
-    const token = this.getToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const enterpriseId = getSelectedEnterprise();
-    if (enterpriseId) headers["X-Enterprise-Id"] = enterpriseId;
-    if (options.body !== undefined) headers["Content-Type"] = "application/json";
-
-    let resp: Response;
-    try {
-      resp = await fetch(`${API}${path}`, {
-        method: options.method ?? "GET",
-        headers,
-        body:
-          options.form ??
-          (options.body !== undefined ? JSON.stringify(options.body) : undefined),
-      });
-    } catch {
-      throw new ApiError(0, "NETWORK_ERROR", true);
-    }
-
-    if (!resp.ok) {
-      let code = `HTTP_${resp.status}`;
-      let retryable = resp.status >= 500;
-      const contentType = resp.headers.get("content-type") ?? "";
-      if (contentType.includes("application/json")) {
-        try {
-          const detail = ((await resp.json()) as { detail?: unknown }).detail;
-          if (typeof detail === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(detail)) {
-            code = detail;
-          } else if (detail && typeof detail === "object") {
-            const structured = detail as { code?: unknown; retryable?: unknown };
-            if (typeof structured.code === "string") code = structured.code;
-            if (typeof structured.retryable === "boolean") retryable = structured.retryable;
-          }
-        } catch {
-          // 保持状态码兜底
-        }
-      }
-      throw new ApiError(resp.status, code, retryable);
-    }
-    if (resp.status === 204) return { status: resp.status, payload: undefined as T };
-    return { status: resp.status, payload: (await resp.json()) as T };
+    options: {
+      method?: string;
+      body?: unknown;
+      form?: FormData;
+      extraHeaders?: Record<string, string>;
+    } = {},
+  ): Promise<{ status: number; payload: T; enterpriseId: string | null }> {
+    const result = await tenantFetch<T>(path, {
+      method: options.method,
+      token: this.getToken(),
+      body: options.body,
+      form: options.form,
+      extraHeaders: options.extraHeaders,
+      parse: options.form || options.body !== undefined ? "json" : "json",
+    });
+    return {
+      status: result.status,
+      payload: result.payload,
+      enterpriseId: result.enterpriseId,
+    };
   }
 
   // —— 身份面 ——
 
   async getSessionAccess(): Promise<SessionAccessV1> {
-    const { payload } = await this.request<unknown>("/v1/session/access");
-    return parseSessionAccess(payload);
+    const { payload, enterpriseId } = await this.request<unknown>("/v1/session/access");
+    const session = parseSessionAccess(payload);
+    if (enterpriseId == null || session.enterprise_id !== enterpriseId) {
+      throw new ApiError(403, "SESSION_ENTERPRISE_MISMATCH", false);
+    }
+    return session;
   }
 
   // —— 客户端 · 智能问答（既有 POST /api/v1/material-qa） ——
@@ -215,26 +194,11 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
       form.set("client_account_id", input.clientId);
     }
     form.set("file", input.file, input.file.name);
-    const headers: Record<string, string> = {
-      "Idempotency-Key": crypto.randomUUID(),
-    };
-    const token = this.getToken();
-    if (token) headers.Authorization = `Bearer ${token}`;
-    const enterpriseId = getSelectedEnterprise();
-    if (enterpriseId) headers["X-Enterprise-Id"] = enterpriseId;
-    let resp: Response;
-    try {
-      resp = await fetch(`${API}/v1/ingestion/documents`, {
-        method: "POST",
-        headers,
-        body: form,
-      });
-    } catch {
-      throw new ApiError(0, "NETWORK_ERROR", true);
-    }
-    if (!resp.ok) {
-      throw new ApiError(resp.status, `HTTP_${resp.status}`, resp.status >= 500);
-    }
+    await this.request<unknown>("/v1/ingestion/documents", {
+      method: "POST",
+      form,
+      extraHeaders: { "Idempotency-Key": crypto.randomUUID() },
+    });
   }
 
   // —— 运营台 · 报告工作流（合同 §Provider） ——

@@ -294,6 +294,18 @@ class PostgresIntegrationStack:
         self.shared_match = 0
         self.dedicated_after = (-1, -1, -1)
 
+    def non_sensitive_identity_env(self) -> dict[str, str]:
+        return {
+            "LOCAL_ANALYSIS_REPORT_PGINT_PROJECT_ID": self.project_id,
+            "LOCAL_ANALYSIS_REPORT_PGINT_PROJECT_NAME": self.project_name,
+            "LOCAL_ANALYSIS_REPORT_PGINT_DATABASE": self.database,
+            "LOCAL_ANALYSIS_REPORT_PGINT_CONTROL_DIR": str(self.control_dir),
+            "F1_PG_HOST": "127.0.0.1",
+            "F1_PG_DATABASE": self.database,
+            "F1_MATERIAL_ANALYSIS_REPORT_LOCAL": "1",
+            "F1_LOCAL_ENGINEERING": "1",
+        }
+
     def _compose_docker_env(self) -> dict[str, str]:
         if self.secrets_dir is None:
             raise HarnessError("SECRETS_DIR_MISSING")
@@ -310,36 +322,30 @@ class PostgresIntegrationStack:
         if self.secrets_dir is None:
             raise HarnessError("SECRETS_DIR_MISSING")
         env = os.environ.copy()
+        env.update(self.non_sensitive_identity_env())
         env.update(
             {
-                "F1_PG_HOST": "127.0.0.1",
                 "F1_PG_PORT": str(self.host_port),
-                "F1_PG_DATABASE": self.database,
                 "F1_SECRETS_DIR": str(self.secrets_dir),
                 "F1_KEYCLOAK_REALM": "anhuan",
                 "KEYCLOAK_URL": "http://material-rag.invalid",
                 "F1_KEYCLOAK_ISSUER_URL": "http://material-rag.invalid/realms/anhuan",
                 "PYTHONPATH": str(ROOT / "src") + os.pathsep + str(ROOT),
                 "F1_PROVIDER_SECRETS_DIR": str(self.secrets_dir),
-                "F1_MATERIAL_ANALYSIS_REPORT_LOCAL": "1",
-                "F1_LOCAL_ENGINEERING": "1",
             }
         )
         return env
 
     def apply_env(self) -> None:
+        os.environ.update(self.non_sensitive_identity_env())
         os.environ.update(
             {
-                "F1_PG_HOST": "127.0.0.1",
                 "F1_PG_PORT": str(self.host_port),
-                "F1_PG_DATABASE": self.database,
                 "F1_SECRETS_DIR": str(self.secrets_dir or ""),
                 "F1_PROVIDER_SECRETS_DIR": str(self.secrets_dir or ""),
                 "F1_KEYCLOAK_REALM": "anhuan",
                 "KEYCLOAK_URL": "http://material-rag.invalid",
                 "F1_KEYCLOAK_ISSUER_URL": "http://material-rag.invalid/realms/anhuan",
-                "F1_MATERIAL_ANALYSIS_REPORT_LOCAL": "1",
-                "F1_LOCAL_ENGINEERING": "1",
             }
         )
 
@@ -360,6 +366,17 @@ class PostgresIntegrationStack:
         self.secrets_dir = self.control_dir / "secrets"
         for directory in (home, tmp, self.secrets_dir):
             directory.mkdir(mode=0o700)
+        _write_secret(
+            self.control_dir / "identity.receipt",
+            "\n".join(
+                (
+                    f"LOCAL_ANALYSIS_REPORT_PGINT_PROJECT_ID={self.project_id}",
+                    f"LOCAL_ANALYSIS_REPORT_PGINT_PROJECT_NAME={self.project_name}",
+                    f"LOCAL_ANALYSIS_REPORT_PGINT_DATABASE={self.database}",
+                )
+            )
+            + "\n",
+        )
         _write_secret(
             self.secrets_dir / "f0d_bootstrap_password", self.passwords["bootstrap"]
         )

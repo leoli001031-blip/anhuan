@@ -70,7 +70,7 @@ const UPDATE_TIMEOUT_MS = 180_000;
 const PWA_OS_COMMAND_TIMEOUT_MS = 60_000;
 const PWA_OS_SHIM_TIMEOUT_MS = 20_000;
 const PWA_APP_NAME = "安环内部工作台";
-const RUN_STAGES = new Set(["all", "business", "faults", "pwa-update", "pwa-os", "material-rag-uat", "material-rag-uat-human"]);
+const RUN_STAGES = new Set(["all", "business", "faults", "pwa-update", "pwa-os", "material-rag-uat", "material-rag-uat-human", "analysis-report-uat"]);
 const STAGE_SUCCESS_TAGS = Object.freeze({
   all: "LOCAL_BROWSER_VERIFY_OK",
   business: "LOCAL_BROWSER_BUSINESS_VERIFY_OK",
@@ -78,6 +78,7 @@ const STAGE_SUCCESS_TAGS = Object.freeze({
   "pwa-update": "LOCAL_PWA_UPDATE_VERIFY_OK",
   "material-rag-uat": "LOCAL_MATERIAL_RAG_UAT_LIVE_BROWSER_OK",
   "material-rag-uat-human": "LOCAL_MATERIAL_RAG_UAT_HUMAN_SESSION_READY",
+  "analysis-report-uat": "LOCAL_ANALYSIS_REPORT_DUAL_IDENTITY_BROWSER_OK",
 });
 let unexpectedFailureReason = "BROWSER_STAGE_BOOTSTRAP_UNEXPECTED";
 const TOP_LEVEL_PAGES = Object.freeze([
@@ -108,6 +109,12 @@ const IDENTITIES = Object.freeze([
   { key: "auditor", username: "auditor", secret: "oidc_auditor" },
   { key: "tenant", username: "tenant-a", secret: "oidc_tenant_a" },
 ]);
+const ANALYSIS_REPORT_IDENTITIES = Object.freeze([
+  { key: "tenant", username: "tenant-a", secret: "oidc_tenant_a" },
+  { key: "invitee", username: "invitee", secret: "oidc_invitee" },
+]);
+const ANALYSIS_REPORT_UNKNOWN_ENTERPRISE = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+const SESSION_ACCESS_PATH = "/api/v1/session/access";
 const ROLE_PAGE_CONTRACTS = Object.freeze({
   consultant: Object.freeze({
     identityKey: "auditor",
@@ -864,19 +871,26 @@ class BrowserPage {
     this.ingestionUploadRequests = [];
     this.offlineProbe = false;
     this.offlineDocumentFromServiceWorker = false;
+    this.arkCalls = 0;
     this.unsubscribe = [];
   }
 
   async initialize() {
     this.unsubscribe.push(
       this.cdp.on(this.sessionId, "Network.requestWillBeSent", (event) => {
+        const rawUrl = typeof event.request?.url === "string" ? event.request.url : "";
+        if (/ark\.|volces\.|volcengine\./i.test(rawUrl)) this.arkCalls += 1;
         if (!isApiUrl(event.request?.url, this.origin)) return;
         this.apiRequestIds.add(event.requestId);
         this.apiInflight.add(event.requestId);
         this.tenantRequests.push(tenantHeader(event.request?.headers));
         const requestPath = apiPath(event.request?.url, this.origin);
         const method = typeof event.request?.method === "string" ? event.request.method : "";
-        this.apiRequestsById.set(event.requestId, { path: requestPath, method });
+        this.apiRequestsById.set(event.requestId, {
+          path: requestPath,
+          method,
+          enterprise: tenantHeader(event.request?.headers),
+        });
         if (typeof requestPath === "string") {
           this.apiRequestEvents.push({
             path: requestPath,
@@ -973,6 +987,20 @@ class BrowserPage {
       await delay(75);
     }
     fail(code);
+  }
+
+  async getResponseBody(requestId, code) {
+    if (typeof requestId !== "string" || requestId.length === 0) fail(code);
+    const result = await this.cdp.call(
+      "Network.getResponseBody",
+      { requestId },
+      this.sessionId,
+    ).catch(() => fail(code));
+    if (typeof result?.body !== "string") fail(code);
+    if (result.base64Encoded) {
+      return Buffer.from(result.body, "base64").toString("utf8");
+    }
+    return result.body;
   }
 
   async waitForApiIdle() {
@@ -1323,6 +1351,174 @@ async function login(page, username, password) {
     fail("OIDC_REDIRECT_STALLED");
   }
   await page.waitForApiIdle();
+}
+
+async function loginToPath(page, username, password, expectedPath) {
+  page.currentRoute = "/login";
+  const navigated = await page.cdp.call("Page.navigate", { url: `${page.origin}/login` }, page.sessionId);
+  if (navigated.errorText) fail("BROWSER_NAVIGATION_FAILED");
+  try {
+    await page.waitForExpression(
+      `location.origin === ${JSON.stringify(page.origin)} && (
+        Array.from(document.querySelectorAll("button, .ant-btn")).some((button) => (button.textContent ?? "").includes("登录"))
+        || Boolean(document.querySelector("#username") && document.querySelector("#password") && document.querySelector("#kc-login"))
+        || ((document.body?.innerText ?? "").includes("企业安环资料分析与问答") && Boolean(document.querySelector(".ant-btn-primary, button.ant-btn")))
+      )`,
+      "OIDC_LOGIN_BUTTON_MISSING",
+      60_000,
+    );
+  } catch (error) {
+    if (!(error instanceof VerifyError) || error.code !== "OIDC_LOGIN_BUTTON_MISSING") throw error;
+    const snapshot = await page.evaluate(`({
+      path: location.pathname,
+      spin: Boolean(document.querySelector(".ant-spin")),
+      primary: Boolean(document.querySelector("button.ant-btn-primary, .ant-btn-primary")),
+      hasLoginCopy: (document.body?.innerText ?? "").includes("企业安环资料分析与问答"),
+      hasAssistant: (document.body?.innerText ?? "").includes("安环智能助手"),
+      hasConsole: (document.body?.innerText ?? "").includes("安环运营台"),
+      hasPortalAsk: (document.body?.innerText ?? "").includes("向你们的安环资料提问"),
+      hasCallback: (document.body?.innerText ?? "").includes("正在完成登录"),
+      hasAuthSpin: (document.body?.innerText ?? "").includes("正在检查登录状态"),
+      hasTenantSpin: (document.body?.innerText ?? "").includes("正在确认企业身份"),
+      hasLoadSpin: (document.body?.innerText ?? "").includes("正在加载"),
+    })`).catch(() => null);
+    if (snapshot?.hasCallback || snapshot?.path === "/callback") fail("OIDC_LOGIN_STUCK_CALLBACK");
+    if (snapshot?.hasAuthSpin) fail("OIDC_LOGIN_AUTH_SPIN");
+    if (snapshot?.hasTenantSpin) fail("OIDC_LOGIN_TENANT_SPIN");
+    if (snapshot?.hasLoadSpin) fail("OIDC_LOGIN_LOAD_SPIN");
+    if (snapshot?.hasConsole || snapshot?.path?.startsWith("/console")) fail("OIDC_LOGIN_LANDED_CONSOLE");
+    if (snapshot?.hasPortalAsk || snapshot?.path?.startsWith("/portal")) fail("OIDC_LOGIN_LANDED_PORTAL");
+    if (snapshot?.path === "/workbench") fail("OIDC_LOGIN_LANDED_WORKBENCH");
+    if (snapshot?.hasLoginCopy && snapshot?.primary) fail("OIDC_LOGIN_PRIMARY_NOT_MATCHED");
+    if (snapshot?.hasLoginCopy) fail("OIDC_LOGIN_COPY_WITHOUT_PRIMARY");
+    if (snapshot?.hasAssistant) fail("OIDC_LOGIN_ASSISTANT_WITHOUT_COPY");
+    if (snapshot?.spin) fail("OIDC_LOGIN_SPINNING");
+    if (snapshot?.path && snapshot.path !== "/login") fail("OIDC_LOGIN_UNEXPECTED_PATH");
+    fail("OIDC_LOGIN_SHELL_WITHOUT_BUTTON");
+  }
+  const onKeycloak = await page.evaluate(
+    `Boolean(document.querySelector("#username") && document.querySelector("#password") && document.querySelector("#kc-login"))`,
+  );
+  if (!onKeycloak) {
+    const clicked = await page.evaluate(`(() => {
+      const labeled = Array.from(document.querySelectorAll("button, .ant-btn")).find((button) => (button.textContent ?? "").includes("登录"));
+      const primary = document.querySelector("button.ant-btn-primary, .ant-btn-primary");
+      const target = labeled || primary;
+      if (!(target instanceof HTMLElement)) return false;
+      target.click();
+      return true;
+    })()`);
+    if (!clicked) fail("OIDC_LOGIN_BUTTON_MISSING");
+    await page.waitForExpression(
+      `Boolean(document.querySelector("#username") && document.querySelector("#password") && document.querySelector("#kc-login"))`,
+      "OIDC_FORM_MISSING",
+      60_000,
+    );
+  }
+  const formTargetValid = await page.evaluate(`(() => {
+    const form = document.querySelector("#kc-form-login");
+    if (!(form instanceof HTMLFormElement)) return false;
+    const action = new URL(form.action, location.href);
+    return action.origin === ${JSON.stringify(page.origin)} && action.pathname.startsWith("/realms/anhuan/login-actions/");
+  })()`);
+  if (!formTargetValid) fail("OIDC_FORM_TARGET_INVALID");
+  const credentials = `(${function fillAndSubmit(user, secret) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+    const usernameInput = document.querySelector("#username");
+    const passwordInput = document.querySelector("#password");
+    const submit = document.querySelector("#kc-login");
+    if (!setter || !(usernameInput instanceof HTMLInputElement) || !(passwordInput instanceof HTMLInputElement) || !(submit instanceof HTMLElement)) return false;
+    setter.call(usernameInput, user);
+    usernameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    setter.call(passwordInput, secret);
+    passwordInput.dispatchEvent(new Event("input", { bubbles: true }));
+    submit.click();
+    return true;
+  }.toString()})(${JSON.stringify(username)}, ${JSON.stringify(password)})`;
+  if (!(await page.evaluate(credentials))) fail("OIDC_FORM_SUBMIT_FAILED");
+  try {
+    await page.waitForExpression(
+      `location.origin === ${JSON.stringify(page.origin)} && location.pathname === ${JSON.stringify(expectedPath)} && Boolean(document.querySelector(".ant-layout-header"))`,
+      "OIDC_LOGIN_FAILED",
+      60_000,
+    );
+  } catch (error) {
+    if (!(error instanceof VerifyError) || error.code !== "OIDC_LOGIN_FAILED") throw error;
+    const state = await page.evaluate(`({
+      path: location.pathname,
+      hasLoginForm: Boolean(document.querySelector("#username") && document.querySelector("#password")),
+      hasCallbackFailure: document.body?.textContent?.includes("OIDC_CALLBACK_FAILED") ?? false,
+      hasCookieError: /cookie|session cookie|会话|登录超时/i.test(document.body?.textContent ?? ""),
+      hasClientError: /client|客户端/i.test(document.body?.textContent ?? ""),
+      hasRedirectError: /redirect|重定向/i.test(document.body?.textContent ?? ""),
+      hasCredentialError: /invalid (?:username|user name)|invalid credentials|username or password|用户名|密码错误/i.test(document.body?.textContent ?? ""),
+      hasInternalError: /internal server error|unexpected error|内部服务器|意外错误/i.test(document.body?.textContent ?? ""),
+    })`).catch(() => null);
+    if (state?.path?.startsWith("/realms/anhuan/") && state.hasLoginForm) {
+      fail("OIDC_CREDENTIALS_REJECTED");
+    }
+    if (state?.path === "/callback" || state?.hasCallbackFailure) {
+      fail("OIDC_CALLBACK_FAILED");
+    }
+    const postLogin = await page.evaluate(`({
+      path: location.pathname,
+      hasTenantSpin: (document.body?.innerText ?? "").includes("正在确认企业身份"),
+      hasAccessSpin: (document.body?.innerText ?? "").includes("正在确认访问权限"),
+      hasLoadSpin: (document.body?.innerText ?? "").includes("正在加载"),
+      hasCallback: (document.body?.innerText ?? "").includes("正在完成登录"),
+    })`).catch(() => null);
+    if (postLogin?.hasCallback || postLogin?.path === "/callback") fail("OIDC_LOGIN_STUCK_CALLBACK");
+    if (postLogin?.hasTenantSpin) fail("OIDC_LOGIN_TENANT_SPIN");
+    if (postLogin?.hasAccessSpin) fail("OIDC_LOGIN_ACCESS_SPIN");
+    if (postLogin?.hasLoadSpin) fail("OIDC_LOGIN_LOAD_SPIN");
+    if (state?.path === "/login") fail("OIDC_LOGIN_LOOP");
+    if (state?.path?.startsWith("/realms/anhuan/")) {
+      if (state.hasCookieError) fail("OIDC_KEYCLOAK_COOKIE_ERROR");
+      if (state.hasRedirectError) fail("OIDC_KEYCLOAK_REDIRECT_ERROR");
+      if (state.hasClientError) fail("OIDC_KEYCLOAK_CLIENT_ERROR");
+      if (state.hasCredentialError) fail("OIDC_CREDENTIALS_REJECTED");
+      if (state.hasInternalError) fail("OIDC_KEYCLOAK_INTERNAL_ERROR");
+      fail("OIDC_KEYCLOAK_ERROR_PAGE");
+    }
+    if (state?.path === expectedPath) fail("OIDC_HOME_SHELL_MISSING");
+    if (state?.path === "/") fail("OIDC_ROOT_REDIRECT_STALLED");
+    fail("OIDC_REDIRECT_STALLED");
+  }
+  await page.waitForApiIdle();
+}
+
+async function navigateExpect(page, route, expectedPath, code) {
+  page.currentRoute = expectedPath;
+  const result = await page.cdp.call("Page.navigate", { url: `${page.origin}${route}` }, page.sessionId);
+  if (result.errorText) fail("BROWSER_NAVIGATION_FAILED");
+  await page.waitForExpression(
+    `location.origin === ${JSON.stringify(page.origin)} && location.pathname === ${JSON.stringify(expectedPath)} && document.readyState === "complete" && Boolean(document.body)`,
+    code,
+    30_000,
+  );
+  await page.waitForApiIdle();
+}
+
+async function bindSessionAccess(page, expectedEnterprise, expectedRole, code) {
+  await page.waitForApiIdle();
+  const events = page.apiResponseEvents.filter(
+    (event) => event.path === SESSION_ACCESS_PATH && event.status === 200 && event.requestId,
+  );
+  if (events.length === 0) fail(code);
+  const last = events[events.length - 1];
+  const body = await page.getResponseBody(last.requestId, code);
+  let payload;
+  try {
+    payload = JSON.parse(body);
+  } catch {
+    fail(code);
+  }
+  if (payload?.enterprise_id !== expectedEnterprise || payload?.product_role !== expectedRole) {
+    fail(code);
+  }
+  const meta = page.apiRequestsById.get(last.requestId);
+  if (!meta || meta.enterprise !== expectedEnterprise) fail(code);
+  return 1;
 }
 
 async function waitForApplicationShell(page) {
@@ -2648,6 +2844,30 @@ async function verifyCredentialAtIdentityProvider(origin, username, password) {
   fail("OIDC_CREDENTIAL_PREFLIGHT_UNAVAILABLE");
 }
 
+async function runIdentityToPath(cdp, origin, secretDirectory, identity, expectedPath, operation) {
+  let owned;
+  let primaryError = null;
+  try {
+    owned = await createPage(cdp, origin);
+    let password = await readSecret(secretDirectory, identity.secret);
+    try {
+      await loginToPath(owned.page, identity.username, password, expectedPath);
+    } finally {
+      password = null;
+    }
+    return await operation(owned.page);
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      await disposePage(cdp, owned);
+    } catch (cleanupError) {
+      if (!primaryError) throw cleanupError;
+    }
+  }
+}
+
 async function runIdentity(cdp, origin, secretDirectory, identity, operation) {
   let owned;
   let primaryError = null;
@@ -2703,6 +2923,7 @@ async function preflightIdentities(origin, secretDirectory, identities = IDENTIT
   if (key === "admin") fail("OIDC_ADMIN_CREDENTIAL_REJECTED");
   if (key === "auditor") fail("OIDC_AUDITOR_CREDENTIAL_REJECTED");
   if (key === "tenant") fail("OIDC_TENANT_CREDENTIAL_REJECTED");
+  if (key === "invitee") fail("OIDC_INVITEE_CREDENTIAL_REJECTED");
   fail("OIDC_CREDENTIAL_PREFLIGHT_REJECTED");
 }
 
@@ -3327,6 +3548,7 @@ async function executePwaOs() {
 
 function preflightIdentitiesForStage(stage) {
   if (stage === "pwa-os") return [];
+  if (stage === "analysis-report-uat") return ANALYSIS_REPORT_IDENTITIES;
   if (stage === "material-rag-uat" || stage === "material-rag-uat-human") return [IDENTITIES[0]];
   if (["faults", "pwa-update"].includes(stage)) return [IDENTITIES[0]];
   return IDENTITIES;
@@ -4327,6 +4549,124 @@ async function executeMaterialRagUatHuman(cdp, origin, secretDirectory) {
   );
 }
 
+async function executeAnalysisReportUat(cdp, origin, secretDirectory) {
+  const provider = await runIdentityToPath(
+    cdp,
+    origin,
+    secretDirectory,
+    ANALYSIS_REPORT_IDENTITIES[0],
+    "/console/clients",
+    async (page) => {
+      const text = String(await page.evaluate(`document.body?.textContent ?? ""`));
+      if (!text.includes("安环运营台") || !text.includes("客户企业")) {
+        fail("PROVIDER_CONSOLE_MISSING");
+      }
+      if (text.includes("本地合成数据")) fail("ANALYSIS_REPORT_MOCK_DATA_PRESENT");
+      const sessionBound = await bindSessionAccess(
+        page,
+        UAT_SEED_ENTERPRISE_A,
+        "provider_admin",
+        "PROVIDER_SESSION_ACCESS_UNBOUND",
+      );
+      await page.navigate("/workbench");
+      await page.waitForExpression(
+        `location.pathname === "/workbench" && Boolean(document.querySelector(".ant-layout-header")) && (document.body?.textContent ?? "").includes("工作台")`,
+        "PROVIDER_LEGACY_TREE_MISSING",
+      );
+      await navigateExpect(page, "/portal/qa", "/console/clients", "PROVIDER_PORTAL_NOT_DENIED");
+      await page.waitForExpression(
+        `(document.body?.textContent ?? "").includes("安环运营台")`,
+        "PROVIDER_CONSOLE_AFTER_PORTAL_MISSING",
+      );
+      await page.evaluate(`(() => {
+        const key = ${JSON.stringify(SELECTED_ENTERPRISE_KEY)};
+        const oldValue = localStorage.getItem(key);
+        localStorage.setItem(key, ${JSON.stringify(ANALYSIS_REPORT_UNKNOWN_ENTERPRISE)});
+        window.dispatchEvent(new StorageEvent("storage", {
+          key,
+          oldValue,
+          newValue: ${JSON.stringify(ANALYSIS_REPORT_UNKNOWN_ENTERPRISE)},
+        }));
+        return true;
+      })()`);
+      await page.waitForExpression(
+        `location.pathname === "/console/clients" && Boolean(document.querySelector(".ant-layout-header")) && (document.body?.textContent ?? "").includes("安环运营台")`,
+        "PROVIDER_STORAGE_REVALIDATE_FAILED",
+        30_000,
+      );
+      await page.waitForApiIdle();
+      if (page.tenantRequests.some((value) => value === ANALYSIS_REPORT_UNKNOWN_ENTERPRISE)) {
+        fail("UNKNOWN_ENTERPRISE_HEADER_SENT");
+      }
+      await bindSessionAccess(
+        page,
+        UAT_SEED_ENTERPRISE_A,
+        "provider_admin",
+        "PROVIDER_SESSION_REVALIDATE_UNBOUND",
+      );
+      return {
+        arkCalls: page.arkCalls,
+        provider_console: 1,
+        provider_legacy_tree: 1,
+        provider_portal_denied: 1,
+        provider_session_enterprise_a: sessionBound,
+        provider_storage_revalidated: 1,
+      };
+    },
+  );
+  const client = await runIdentityToPath(
+    cdp,
+    origin,
+    secretDirectory,
+    ANALYSIS_REPORT_IDENTITIES[1],
+    "/portal/qa",
+    async (page) => {
+      const text = String(await page.evaluate(`document.body?.textContent ?? ""`));
+      if (!text.includes("安环智能助手") || !text.includes("检索能力接入中")) {
+        fail("CLIENT_PORTAL_MISSING");
+      }
+      if (text.includes("本地合成数据")) fail("ANALYSIS_REPORT_MOCK_DATA_PRESENT");
+      const sessionBound = await bindSessionAccess(
+        page,
+        UAT_SEED_ENTERPRISE_B,
+        "client_user",
+        "CLIENT_SESSION_ACCESS_UNBOUND",
+      );
+      await navigateExpect(page, "/console/clients", "/portal/qa", "CLIENT_CONSOLE_NOT_DENIED");
+      await navigateExpect(page, "/workbench", "/portal/qa", "CLIENT_LEGACY_TREE_NOT_DENIED");
+      await page.waitForExpression(
+        `(document.body?.textContent ?? "").includes("安环智能助手")`,
+        "CLIENT_PORTAL_AFTER_DENY_MISSING",
+      );
+      if (page.tenantRequests.some((value) => value === ANALYSIS_REPORT_UNKNOWN_ENTERPRISE || value === UAT_SEED_ENTERPRISE_A)) {
+        fail("CLIENT_FOREIGN_ENTERPRISE_HEADER_SENT");
+      }
+      return {
+        arkCalls: page.arkCalls,
+        client_console_denied: 1,
+        client_legacy_tree_denied: 1,
+        client_portal: 1,
+        client_session_enterprise_b: sessionBound,
+      };
+    },
+  );
+  return {
+    ark_calls: provider.arkCalls + client.arkCalls,
+    cdp_request_id_bound: 1,
+    client_console_denied: client.client_console_denied,
+    client_legacy_tree_denied: client.client_legacy_tree_denied,
+    client_portal: client.client_portal,
+    client_session_enterprise_b: client.client_session_enterprise_b,
+    mock_data: 0,
+    provider_console: provider.provider_console,
+    provider_legacy_tree: provider.provider_legacy_tree,
+    provider_portal_denied: provider.provider_portal_denied,
+    provider_session_enterprise_a: provider.provider_session_enterprise_a,
+    provider_storage_revalidated: provider.provider_storage_revalidated,
+    stage: "analysis-report-uat",
+  };
+}
+
 async function executeStage(
   stage,
   cdp,
@@ -4361,6 +4701,9 @@ async function executeStage(
   }
   if (stage === "material-rag-uat-human") {
     return executeMaterialRagUatHuman(cdp, origin, secretDirectory);
+  }
+  if (stage === "analysis-report-uat") {
+    return executeAnalysisReportUat(cdp, origin, secretDirectory);
   }
   fail("BROWSER_STAGE_INVALID");
 }

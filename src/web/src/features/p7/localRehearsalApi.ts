@@ -1,10 +1,9 @@
-import { API, getSelectedEnterprise } from "../../api";
+import { tenantFetch, ApiError } from "../../api";
 import { p7ReasonCopy } from "./reasonCopy";
 import type {
   CreateRehearsalCheckInput,
   CreateRehearsalPlanInput,
   LocalRehearsalDashboard,
-  P7ErrorEnvelope,
   RecordRehearsalResultInput,
   RehearsalCheck,
   RehearsalPlanCollection,
@@ -36,52 +35,31 @@ interface RequestOptions {
   signal?: AbortSignal;
 }
 
-function requestHeaders(options: RequestOptions): Headers {
-  const headers = new Headers();
-  if (options.token) headers.set("Authorization", "Bearer " + options.token);
-  const enterpriseId = getSelectedEnterprise();
-  if (enterpriseId) headers.set("X-Enterprise-Id", enterpriseId);
-  if (options.body !== undefined) headers.set("Content-Type", "application/json");
-  return headers;
-}
-
-function normalizeErrorEnvelope(value: unknown): P7ErrorEnvelope {
-  return value && typeof value === "object" ? value as P7ErrorEnvelope : {};
-}
-
-async function responseError(response: Response): Promise<LocalRehearsalApiError> {
-  let envelope: P7ErrorEnvelope = {};
-  try { envelope = normalizeErrorEnvelope(await response.json()); } catch { envelope = {}; }
-  const detail = envelope.detail;
-  const code =
-    typeof detail === "string" && /^[A-Z0-9_]{1,96}$/.test(detail)
-      ? detail
-      : detail && typeof detail !== "string" && typeof detail.code === "string" && /^[A-Z0-9_]{1,96}$/.test(detail.code)
-        ? detail.code
-        : response.status === 404 ? "NOT_FOUND" : "HTTP_" + response.status;
-  return new LocalRehearsalApiError(response.status, code, Boolean(detail && typeof detail !== "string" && detail.retryable));
+function mapTransportError(error: unknown): LocalRehearsalApiError {
+  if (error instanceof LocalRehearsalApiError) return error;
+  if (error instanceof ApiError) {
+    if (error.code === "TENANT_SNAPSHOT_UNREADY") {
+      return new LocalRehearsalApiError(0, "TENANT_CONTEXT_REQUIRED", false);
+    }
+    return new LocalRehearsalApiError(error.status, error.code, error.retryable);
+  }
+  return new LocalRehearsalApiError(0, "NETWORK_ERROR", true);
 }
 
 async function requestJson<T>(path: string, options: RequestOptions): Promise<T> {
   if (!path.startsWith(LOCAL_REHEARSAL_BASE)) throw new LocalRehearsalApiError(0, "INVALID_P7_PATH", false);
-  if (!getSelectedEnterprise()) throw new LocalRehearsalApiError(0, "TENANT_CONTEXT_REQUIRED", false);
-  let response: Response;
   try {
-    response = await fetch(API + path, {
-      method: options.method ?? "GET",
-      headers: requestHeaders(options),
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    const result = await tenantFetch<T>(path, {
+      method: options.method,
+      token: options.token,
+      body: options.body,
       signal: options.signal,
+      parse: "json",
     });
+    return result.payload;
   } catch (error) {
-    if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
-      throw new LocalRehearsalApiError(0, "REQUEST_ABORTED", false);
-    }
-    throw new LocalRehearsalApiError(0, "NETWORK_ERROR", true);
+    throw mapTransportError(error);
   }
-  if (!response.ok) throw await responseError(response);
-  if (response.status === 204) return undefined as T;
-  try { return await response.json() as T; } catch { throw new LocalRehearsalApiError(response.status, "INVALID_RESPONSE", true); }
 }
 
 function itemPath(segment: string, id: string): string {

@@ -2,18 +2,22 @@
 // mock 只在 DEV 且 VITE_MATERIAL_RAG_REPORT_MOCK=1 时启用；其余一律 HTTP。
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { Spin } from "antd";
 import { useAuth } from "../auth/OidcProvider";
 import {
+  ENTERPRISE_CHANGED_EVENT,
   api,
   getSelectedEnterprise,
-  setSelectedEnterprise,
+  getTenantGeneration,
+  getTenantSnapshot,
+  commitTenantSnapshot,
+  isTenantAbortError,
   type Membership,
 } from "../api";
 import type { AnalysisReportApi } from "./AnalysisReportApi";
 import type { SessionAccess } from "./SessionAccess";
 import { HttpAnalysisReportApi } from "./HttpAnalysisReportApi";
 import { MockAnalysisReportApi } from "./MockAnalysisReportApi";
+import { ApiError } from "./errors";
 import type { SessionAccessV1 } from "./types";
 
 export const isMockData =
@@ -36,6 +40,16 @@ export function ApiProvider({ children }: { children: ReactNode }) {
   tokenRef.current = getAccessToken;
   const apiClient = useMemo(() => createApi(() => tokenRef.current()), []);
   const [tenantReady, setTenantReady] = useState(isMockData);
+  const [membershipEpoch, setMembershipEpoch] = useState(0);
+
+  useEffect(() => {
+    const onInvalidate = () => {
+      setTenantReady(false);
+      setMembershipEpoch((value) => value + 1);
+    };
+    window.addEventListener(ENTERPRISE_CHANGED_EVENT, onInvalidate);
+    return () => window.removeEventListener(ENTERPRISE_CHANGED_EVENT, onInvalidate);
+  }, []);
 
   useEffect(() => {
     if (isMockData) {
@@ -48,29 +62,40 @@ export function ApiProvider({ children }: { children: ReactNode }) {
       return;
     }
     let active = true;
+    const born = getTenantGeneration();
     setTenantReady(false);
-    api<Membership[]>("/v1/users/me/enterprises", { token: getAccessToken() })
+    api<Membership[]>("/v1/users/me/enterprises", {
+      token: getAccessToken(),
+      enterpriseId: null,
+    })
       .then((data) => {
-        if (!active) return;
+        if (!active || born !== getTenantGeneration()) return;
         const stored = getSelectedEnterprise();
         const next = data.some((item) => item.enterprise_id === stored)
           ? stored
           : (data[0]?.enterprise_id ?? null);
-        if (next !== stored) setSelectedEnterprise(next);
+        if (!next) return;
+        commitTenantSnapshot(next, born);
+        setTenantReady(true);
       })
-      .catch(() => undefined)
+      .catch(() => {
+        if (!active || born !== getTenantGeneration()) return;
+      })
       .finally(() => {
-        if (active) setTenantReady(true);
+        if (!active || born !== getTenantGeneration()) return;
       });
     return () => {
       active = false;
     };
-  }, [getAccessToken, isAuthenticated, isInitializing]);
+  }, [getAccessToken, isAuthenticated, isInitializing, membershipEpoch]);
 
-  if (!isMockData && isAuthenticated && !tenantReady) {
-    return <Spin fullscreen tip="正在确认企业身份" />;
-  }
-  return <ApiContext.Provider value={apiClient}>{children}</ApiContext.Provider>;
+  const membershipReady =
+    isMockData || (tenantReady && getTenantSnapshot().ready);
+  return (
+    <ApiContext.Provider value={apiClient}>
+      <SessionAccessProvider tenantReady={membershipReady}>{children}</SessionAccessProvider>
+    </ApiContext.Provider>
+  );
 }
 
 export function useApi(): AppApi {
@@ -86,38 +111,92 @@ export interface SessionState {
   reload: () => void;
 }
 
-// 会话身份加载：每个壳加载一次，角色门只读这里。
-export function useSessionAccess(): SessionState {
-  const api = useApi();
+const SessionContext = createContext<SessionState | null>(null);
+
+function SessionAccessProvider({
+  children,
+  tenantReady,
+}: {
+  children: ReactNode;
+  tenantReady: boolean;
+}) {
+  const apiClient = useApi();
+  const { isAuthenticated, isInitializing } = useAuth();
   const [session, setSession] = useState<SessionAccessV1 | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
+    const onEnterpriseChanged = () => {
+      setSession(null);
+      setError(null);
+      setLoading(true);
+      setNonce((n) => n + 1);
+    };
+    window.addEventListener(ENTERPRISE_CHANGED_EVENT, onEnterpriseChanged);
+    return () => window.removeEventListener(ENTERPRISE_CHANGED_EVENT, onEnterpriseChanged);
+  }, []);
+
+  useEffect(() => {
+    if (isInitializing) return;
+    if (!isAuthenticated) {
+      setSession(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+    if (!tenantReady) {
+      setSession(null);
+      setError(null);
+      setLoading(true);
+      return;
+    }
     let active = true;
+    let settled = false;
+    const born = getTenantGeneration();
     setLoading(true);
     setError(null);
-    api
+    apiClient
       .getSessionAccess()
-      .then((s) => {
-        if (active) setSession(s);
+      .then((next) => {
+        if (!active || born !== getTenantGeneration()) return;
+        setSession(next);
+        settled = true;
       })
-      .catch((e) => {
-        if (active) setError(e);
+      .catch((caught) => {
+        if (!active || born !== getTenantGeneration()) return;
+        if (isTenantAbortError(caught) || (caught instanceof ApiError && caught.code === "REQUEST_ABORTED")) {
+          return;
+        }
+        setError(caught);
+        settled = true;
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (!active || born !== getTenantGeneration()) return;
+        if (settled) setLoading(false);
       });
     return () => {
       active = false;
     };
-  }, [api, nonce]);
+  }, [apiClient, nonce, isAuthenticated, isInitializing, tenantReady]);
 
-  return {
-    session,
-    loading,
-    error,
-    reload: () => setNonce((n) => n + 1),
-  };
+  const value = useMemo<SessionState>(
+    () => ({
+      session,
+      loading,
+      error,
+      reload: () => setNonce((n) => n + 1),
+    }),
+    [session, loading, error],
+  );
+
+  return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+}
+
+// 共享会话：企业变化立即丢弃旧 session，不把 localStorage 当权威。
+export function useSessionAccess(): SessionState {
+  const state = useContext(SessionContext);
+  if (!state) throw new Error("SessionAccessProvider missing");
+  return state;
 }

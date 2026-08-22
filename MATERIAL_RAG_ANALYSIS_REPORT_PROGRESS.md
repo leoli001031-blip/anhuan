@@ -1,5 +1,37 @@
 # MATERIAL RAG Analysis Report Progress
 
+## 2026-08-22｜frontend tenant hardening + dual-identity UAT｜PASSED
+
+- 目标：封前端租户串线与 fixture 身份冲突，并取得真实双身份浏览器证据；报告全流程另记 PENDING。
+- 顺序：行为门 → tenantFetch/六旁路/invitee → 真实 fixture PG → unittest → lint/build → `analysis-report-uat-check` → 合同 `<br>` 与仓外证据。
+- 最大风险：登录后一帧 `tenantReady` 仍为登出值，session 未就绪被旧门送回 `/login`；UAT 冒充既有 stage；共享栈漂移。
+- 建议替换（已落地，未改禁止文件）：① compose `seed` 锁死 head=`f1_0014`，UAT 改为 host 调 `local_seed._ensure_*` 且断言 `f1_0017`；② overlay `localnet.internal: false`，否则宿主机 `127.0.0.1:LOCAL_PG_PORT` 被挡；③ `loginToPath` 只认本树「登录」，不改 `Login.tsx`、不扩 `BROWSER_STAGES`；④ Docker 发布端口后 `inet_server_addr()` 是容器 IP，fixture loopback 门只留在 `pg_host()`。
+- 不 commit/push。旧 evidence-v2 根未覆盖。`git diff HEAD^ HEAD --check` 仍是历史 commit 红灯，未伪称已修。
+
+## 2026-08-22｜dual-identity UAT + tenantFetch｜STARTED
+
+- 目标：封租户串线与 fixture 身份冲突，并拿到真实双身份浏览器证据；报告全流程另记 PENDING。
+- 顺序：行为红灯 → tenantFetch/六旁路/invitee fixture → 真实 PG 门 → lint/build → analysis-report-uat-check → 合同 `<br>` 与证据。
+- 最大风险：localStorage 仍参与 no-op、六旁路漏接、UAT 冒充 material-rag、共享栈漂移。
+- 不 commit/push。UAT 最多 2 个 live 周期。
+
+## 2026-08-22｜tenant snapshot + fixture identity guard｜PASSED
+
+- 唯一目标检查（只跑一次）：
+  `PYTHONPATH="$PWD/src:$PWD" F1_KEYCLOAK_ISSUER_URL=http://material-rag.invalid/realms/anhuan /Users/lichenhao/Desktop/安环项目/.venv/bin/python3 -B -m unittest tests.test_engineering_closeout_frontend_api`
+  输出：`Ran 3 tests in 0.017s` / `OK` / `real 0.06` / exit=0；failures/errors/skipped=0。
+- 租户：membership 显式 `enterpriseId: null`；binder 不读 localStorage；报告请求未就绪则 `TENANT_SNAPSHOT_UNREADY` 且不 fetch；setter 与 native `storage` 同走 `invalidateTenantContext`（generation++ → abort → 清快照）；stale `then/catch/finally` 用 `born !== getTenantGeneration()` 丢弃。
+- fixture：写前只读 preflight（双 flag、loopback、pgint 闭集+后缀、current_database/user、head=`f1_0017`、control dir/receipt）；源码无 membership DELETE / role 覆盖；异常固定码 + rollback。pgint 只补 `non_sensitive_identity_env` + `identity.receipt`，不启动栈。
+- 复核：HEAD=`1882ad0106618525c206622c290aab5648e9bb47` staged=0；`git diff --check`=0；`git diff HEAD^ HEAD --check` 仍只报冻结合同 Markdown 行尾空格（exit=2）；App/LegacyProviderGate/合同 SHA 与 evidence-v2 root=`8317e37bc124763ffae93d4d946b3d491ea60c4686bdbdb6a3f8638b933a7b2b` 未变；白名单外 OUTSIDE_WHITELIST=NONE；未 commit/push。
+- 现役：`TARGETED_TEST_PASSED / FRONTEND_TENANT_CONTEXT_HARDENING_IMPLEMENTED / LOCAL_FIXTURE_TARGET_IDENTITY_IMPLEMENTED / CHECKPOINT_DIFF_CHECK_WAIVER_PENDING / FRONTEND_BUILD_REVALIDATION_PENDING / FIXTURE_RUNTIME_NOT_TESTED / BROWSER_UAT_PENDING / NOT_PUSHED / NOT_PRODUCTION`
+
+## 2026-08-22｜tenant snapshot + fixture identity guard｜STARTED
+
+- 目标：封企业切换串上下文与 fixture 误写库两个 P1；只跑一次 <60s 前端合同。
+- 顺序：核基线 → 内存 tenant snapshot → fixture 写前身份门 → 只改既有第三项 → 唯一 unittest。
+- 最大风险：binder 仍读 localStorage、stale then/catch 落 B 状态、fixture 在 preflight 前 DML。
+- 不跑 build/PG/Docker/浏览器；不 commit。现役将含 `CHECKPOINT_DIFF_CHECK_WAIVER_PENDING`。
+
 ## 2026-08-22｜checkpoint + frontend UAT wiring｜STARTED
 
 - 目标：先把当前 61 路径封成可恢复本地 commit，再补旧路由隔离、租户会话原子性与 A→B fixture，使前端达可进浏览器 UAT 的代码状态。
@@ -14,6 +46,14 @@
 - 仓外 evidence-v2 复制 v1 原始 19 项并封存最终 61 文件；旧 raw 重锚，未重跑测试。未 push。
 - 建议替换：`git diff --cached --check` 因冻结合同 `MATERIAL_RAG_ANALYSIS_REPORT_API_CONTRACT.md` 的 Markdown 硬换行（行尾两空格）为 2；不改 59 路径字节，优先保全 61 文件可恢复。
 - 现役：`ANALYSIS_REPORT_CHECKPOINT_COMMITTED / CHECKPOINT_EVIDENCE_CLOSED / FRONTEND_UNCHANGED_SINCE_INTEGRATION_SEAL / NOT_PUSHED / NOT_PRODUCTION`
+
+## 2026-08-22｜frontend route gate + local fixture｜PASSED
+
+- LegacyProviderGate 包住旧 `/` 树：仅 provider_admin 渲染 Layout；client_user 转 `/portal/qa`；加载/错误不先出 Layout。login/callback/portal/console 未包裹。
+- 企业切换中止在途请求、丢弃旧 session 并重取；请求冻结同一企业快照；session.enterprise_id 与请求头不一致 fail-closed。UI 门不是后端安全边界。
+- 专属 fixture 仅 `F1_LOCAL_ENGINEERING=1` 且 head=`f1_0017`：复用 tenant-a / employee，A enterprise_admin 单 membership、B plant_admin 单 membership、A 属 CRM 与 A→B active binding。未跑 fixture 运行时，不是 Keycloak 验收。
+- 验证各一次且首次 exit=0：py_compile / lint / build。已删本任务 node_modules symlink 与 dist。staged=0。
+- 现役：`FRONTEND_ROUTE_GATE_IMPLEMENTED / LOCAL_REPORT_FIXTURE_IMPLEMENTED / FRONTEND_LINT_BUILD_PASSED / FIXTURE_RUNTIME_NOT_TESTED / BROWSER_UAT_PENDING / NOT_PRODUCTION`
 
 ## 2026-08-22｜authz RLS closeout + PG runtime｜PASSED
 

@@ -1,7 +1,7 @@
 # Analysis Report API Contract v1
 
-schema: `anhuan-analysis-report-api-v1`  
-frozen: 2026-08-21  
+schema: `anhuan-analysis-report-api-v1`<br>
+frozen: 2026-08-21<br>
 implementation MUST NOT silently rename or drop fields.
 
 Identity header: `Authorization: Bearer`. Optional `X-Enterprise-Id` only selects among the caller's memberships (existing platform rule). Client bodies/queries MUST NOT include `client_account_id`, `tenant_id`, `enterprise_id`, or `knowledge_scope_id`.
@@ -19,7 +19,7 @@ Response `SessionAccessV1`:
 | template_title | const `企业安环资料分析报告` | |
 | capabilities | string[] | closed set below |
 
-provider capabilities: `list_client_reports`, `create_report`, `generate`, `review`, `publish`, `withdraw`  
+provider capabilities: `list_client_reports`, `create_report`, `generate`, `review`, `publish`, `withdraw`<br>
 client capabilities: `list_published`, `read_published`
 
 ## Client
@@ -36,7 +36,7 @@ Detail or **404**. Never 403 for wrong tenant/client/unpublished.
 
 `PublishedReportDetailV1`: summary fields plus `sections[]`, `citations[]`.
 
-`SectionV1`: `key`, `title`, `body`  
+`SectionV1`: `key`, `title`, `body`<br>
 `CitationV1`: `citation_id`, `document_version_id`, `document_name`, `version_number`, `page_number`, `excerpt`
 
 Section keys frozen: `source_scope`, `status_summary`, `key_findings`, `risks_and_gaps`, `remediation`, `citations`, `usage_boundary`.
@@ -47,7 +47,7 @@ Path param `client_account_id` is the sole client selector and MUST be a `crm_ac
 
 ### GET /api/v1/analysis-reports/clients/{client_account_id}/reports
 
-`{schema: anhuan-analysis-report-provider-list-v1, reports:[ProviderReportSummaryV1]}`  
+`{schema: anhuan-analysis-report-provider-list-v1, reports:[ProviderReportSummaryV1]}`<br>
 `ProviderReportSummaryV1`: `report_id`, `current_version_id`, `current_status`, `version_number`, `title`, `updated_at`
 
 ### POST /api/v1/analysis-reports/clients/{client_account_id}/reports
@@ -56,9 +56,9 @@ Body `{request_id: uuid}` only. Creates empty report. 200 `ProviderReportSummary
 
 ### POST /api/v1/analysis-reports/clients/{client_account_id}/reports/{report_id}/generations
 
-Body `{request_id: uuid}`. Requires flags. Creates immutable version + job, freezes source fingerprint, runs fake generator.  
-200 `GenerationAcceptedV1`: `job_id`, `version_id`, `status` (`generating` or terminal `draft`/`failed`).  
-409 `REQUEST_ID_CONFLICT` if request_id reused with different fingerprint.  
+Body `{request_id: uuid}`. Requires flags. Creates immutable version + job, freezes source fingerprint, runs fake generator.<br>
+200 `GenerationAcceptedV1`: `job_id`, `version_id`, `status` (`generating` or terminal `draft`/`failed`).<br>
+409 `REQUEST_ID_CONFLICT` if request_id reused with different fingerprint.<br>
 404 if client/report mismatch, empty client sources, ineligible sources.
 
 ### GET /api/v1/analysis-reports/jobs/{job_id}
@@ -81,13 +81,13 @@ Empty body. 200 `ProviderReportSummaryV1`. Illegal transition → 409 `REPORT_TR
 
 ### GET /api/v1/analysis-reports/{report_id}/versions
 
-`{schema, versions:[VersionHistoryItemV1]}`  
+`{schema, versions:[VersionHistoryItemV1]}`<br>
 `VersionHistoryItemV1`: `version_id`, `version_number`, `status`, `created_at`
 
 ## Error envelope
 
-HTTP 404 `{"detail":"REPORT_NOT_FOUND"}` for all client misses.  
-409 `REQUEST_ID_CONFLICT` / `REPORT_TRANSITION_INVALID`.  
+HTTP 404 `{"detail":"REPORT_NOT_FOUND"}` for all client misses.<br>
+409 `REQUEST_ID_CONFLICT` / `REPORT_TRANSITION_INVALID`.<br>
 404 `ANALYSIS_REPORT_GENERATION_DISABLED` when flags off (fail-closed, no disclose).
 
 ## Forbidden response keys
