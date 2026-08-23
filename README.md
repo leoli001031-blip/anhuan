@@ -2,7 +2,7 @@
 
 这是一个面向环保托管运营的多租户本地原型，当前代码覆盖服务任务、受控文档进入、业务驾驶舱与内部 CRM、政策审核、合成质量、本地演练以及内部 PWA 壳。
 
-项目目前是 `NOT_RELEASE_VERIFIED / NOT_PRODUCTION`。现役事实、验证证据和未开放边界统一见 [PROJECT_STATUS.md](./PROJECT_STATUS.md)；根 [PROGRESS.md](./PROGRESS.md) 与 [BLOCKED.md](./BLOCKED.md) 仅保留历史过程。
+项目目前是 `NOT_RELEASE_VERIFIED / NOT_PRODUCTION`。项目级现役入口是 [PROJECT_STATUS.md](./PROJECT_STATUS.md)；当前 A-Eco 分析报告候选另以 [RELEASE_CANDIDATE_PROGRESS.md](./RELEASE_CANDIDATE_PROGRESS.md)、[RELEASE_CANDIDATE_BLOCKED.md](./RELEASE_CANDIDATE_BLOCKED.md) 与 [RELEASE_CANDIDATE_REVIEW.md](./RELEASE_CANDIDATE_REVIEW.md) 保存精确机器门、阻断和 PR/迁移边界。根 [PROGRESS.md](./PROGRESS.md) 与 [BLOCKED.md](./BLOCKED.md) 仅保留历史过程。
 
 ## 功能地图
 
@@ -13,6 +13,7 @@
 - P6：合成 Oracle、质量 run、结果与人工分歧处置。
 - P7：本地人工计划、检查快照、结果与回滚门；不执行部署。
 - P8：内部可安装 PWA 静态壳；不缓存业务 API 数据，不发布正式小程序。
+- A-Eco 分析报告候选：双身份报告创建、确定性本地生成、审核/发布、客户阅读与不可变健康度快照；`deterministic_local` 仅为测试能力，正式评分无可信快照时保持“暂不评分”。
 
 ## 代码入口
 
@@ -21,6 +22,7 @@
 - React 前端：`src/web/`
 - 阶段定向检查与 scratch runners：`tests/`
 - 本地栈配置：`infra/f1/docker-compose.yml`
+- 分析报告服务器交接模板：`deploy/analysis-report/`
 
 前端开发：
 

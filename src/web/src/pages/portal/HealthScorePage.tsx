@@ -85,6 +85,7 @@ export default function HealthScorePage() {
           基于已发布材料与分析报告形成的管理参考
         </Typography.Paragraph>
         <section className="health-unavailable">
+          <span className="health-environment-label">正式环境评分</span>
           <Typography.Title level={2}>暂不评分</Typography.Title>
           <Typography.Paragraph type="secondary">
             当前没有已发布的健康度快照。页面不会自行计算或回退到示例分数。
@@ -101,6 +102,8 @@ export default function HealthScorePage() {
     );
   }
 
+  const isDeterministic = snapshot.evidenceMode === "deterministic_local";
+
   return (
     <main className="portal-page health-page">
       <div className="portal-breadcrumb">
@@ -112,23 +115,41 @@ export default function HealthScorePage() {
       <Typography.Paragraph type="secondary" className="portal-page__subtitle">
         基于已发布材料与本次分析报告形成的管理参考
       </Typography.Paragraph>
-      {snapshot.evidenceMode === "deterministic_local" ? (
-        <Typography.Paragraph type="secondary">测试环境·确定性评分</Typography.Paragraph>
-      ) : null}
-
-      <section className="health-detail-hero">
-        <div className="health-score-line health-score-line--detail">
-          <strong>{snapshot.score}</strong>
-          <span>/ {snapshot.maxScore}</span>
-        </div>
-        <div className="health-detail-hero__status">
-          <strong>{snapshot.statusLabel}</strong>
-          <span>评估日期&nbsp;&nbsp;{snapshot.assessedOn}</span>
-        </div>
-        <Link to={`/portal/reports/${snapshot.reportId}`}>
-          查看本期分析报告&nbsp;›
-        </Link>
-      </section>
+      <div className={`health-environment-grid${isDeterministic ? "" : " health-environment-grid--single"}`}>
+        <section className="health-detail-hero health-detail-hero--scored">
+          <span className="health-environment-label">
+            {isDeterministic ? "测试环境·确定性评分" : "正式环境评分"}
+          </span>
+          <div className="health-detail-hero__content">
+            <div className="health-score-line health-score-line--detail">
+              <strong>{snapshot.score}</strong>
+              <span>/ {snapshot.maxScore}</span>
+            </div>
+            <div className="health-detail-hero__status">
+              <strong>{snapshot.statusLabel}</strong>
+              <span>评估日期&nbsp;&nbsp;{snapshot.assessedOn}</span>
+              <span>{snapshot.basisLabel}</span>
+            </div>
+          </div>
+          <Link to={`/portal/reports/${snapshot.reportId}`}>
+            查看本期分析报告&nbsp;›
+          </Link>
+        </section>
+        {isDeterministic ? (
+          <section className="health-formal-pending" aria-labelledby="formal-health-heading">
+            <span className="health-environment-label health-environment-label--formal">
+              正式环境评分
+            </span>
+            <Typography.Title id="formal-health-heading" level={2}>暂不评分</Typography.Title>
+            <Typography.Paragraph>
+              当前没有可审计的正式环境健康度快照，页面不会把测试分数当作正式结论。
+            </Typography.Paragraph>
+            <Typography.Text type="secondary">
+              正式快照完成材料发布与校验后，才会在这里展示。
+            </Typography.Text>
+          </section>
+        ) : null}
+      </div>
 
       <div className="health-detail-grid">
         <section className="health-dimensions" aria-labelledby="dimension-heading">

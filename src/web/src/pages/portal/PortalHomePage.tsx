@@ -91,19 +91,21 @@ export default function PortalHomePage() {
         查看最新分析结论、管理改善重点与服务安排。
       </Typography.Paragraph>
 
-      {healthLoading ? (
-        <section className="health-summary health-summary--empty" aria-busy="true">
-          <Spin style={{ display: "block", margin: "24px auto" }} />
-        </section>
-      ) : healthError ? (
-        <section className="health-summary health-summary--empty">
-          <ErrorState error={healthError} onRetry={() => setHealthNonce((n) => n + 1)} />
-        </section>
-      ) : (
-        <ManagementHealthSummary snapshot={health} />
-      )}
+      <div className="portal-home__health">
+        {healthLoading ? (
+          <section className="health-summary health-summary--empty" aria-busy="true">
+            <Spin style={{ display: "block", margin: "24px auto" }} />
+          </section>
+        ) : healthError ? (
+          <section className="health-summary health-summary--empty">
+            <ErrorState error={healthError} onRetry={() => setHealthNonce((n) => n + 1)} />
+          </section>
+        ) : (
+          <ManagementHealthSummary snapshot={health} />
+        )}
+      </div>
 
-      <section className="portal-section" aria-labelledby="latest-report-heading">
+      <section className="portal-section portal-section--latest" aria-labelledby="latest-report-heading">
         <Typography.Title id="latest-report-heading" level={3}>
           最新报告
         </Typography.Title>

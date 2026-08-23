@@ -1,22 +1,24 @@
 # 项目现役状态
 
-更新日期：2026-08-21（worker runtime + restore preflight 已提交；live retrieval AUTH_PENDING；stacked PR 待按门禁合并）
+更新日期：2026-08-24（A-Eco 分析报告本地候选组件门与部署包已收口；整体证据 BLOCKED；人工、远端、提交、合并与部署均 pending）
 本页是当前状态的唯一项目级入口；阶段文档中的早期 `当前`、`READY` 或 `NOT_TESTED` 记录均按其日期保留，不覆盖本页。
 
 ## 代码与版本
 
-- 开发 checkout：`/Users/lichenhao/Desktop/安环项目/material-rag-backend-runtime-20260819/source/repo`
-- 分支：`codex/material-rag-postgres-integration`（stacked draft PR #2，base=`codex/material-rag-scanner-protocol`）。提交与远端身份以 Git 与 PR #2 head 为准，不在本文内嵌未知 commit SHA。
-- 干净基线：`origin/main@8d2e791b019ede7f1c3b5e939258952503bf7b89`
-- 当前工程基线：`codex/engineering-closeout@69f6d41`，其上为材料录入切片
-- F1 Alembic：已推送检查点曾为 `f1_0015`。本地 `6f15f83` 已纳入 `f1_0016`（无新表，`claim_next` + due SELECT/UPDATE policy）。`migrate_f1` 闭集精确 `{f1_0014,f1_0015,f1_0016}`；默认工程目标锁定 `f1_0014`；专属 `infra/f1/material-rag/migrate.py` 显式请求 `f1_0016`。`head`/`f1_0013`/`f1_0017`/argv/env/非字符串仍 `F1_MIGRATE_TARGET_INVALID`。closeout 合同模块已绿（`Ran 11 / OK`）。默认 seed/verify/backup 的 0014/35 合同保持原样。未把 material-RAG 并入默认运行栈。编排仅 exact 双开关 `F1_MATERIAL_RAG_ORCHESTRATION_LOCAL=1` 且 `F1_LOCAL_ENGINEERING=1`
-- 远端边界：发布目标为 `origin/codex/material-rag-scanner-protocol`；PR #2 保持 OPEN+draft。三阶段 `VOLUMES_REPLACED / DB_RESTORED / MINIO_REPLAYED` SIGKILL 矩阵已验收并纳入本 checkpoint。不部署、不写生产
+- 当前候选 checkout：`/Users/lichenhao/Desktop/安环项目/material-rag-analysis-report-visual-polish-20260823/source/repo`，分支 `codex/material-report-aeco-polish@1ea4fe3161f94b0397b2016f50571a1b18bf2250`。
+- PR 栈：#3=`main@dd466e5 → codex/material-report-integration@6cdbba3`；#4=`codex/material-report-integration@6cdbba3 → codex/material-report-aeco-polish@1ea4fe3`。两者均 `OPEN / draft / MERGEABLE / statusCheckRollup=[]`；这是无 CI 门禁，不是 CI 通过。
+- 合并顺序固定为 #3 先入 `main`；随后把 #4 base 改为 `main` 并核差异只剩本层。用户已授权当前候选做本地 commit；仍未授权 push、改 PR、mark ready、merge 或 deploy。
+- PR #2 已于 2026-08-21 合并，合并时 head 为 `codex/material-rag-postgres-integration@af0d74470a81275a64be08638d7272197bd53095`；原“OPEN+draft”说法已经退役。其 worktree 仅保留历史/并行工程现场，不是当前候选 checkout。
+- F1 Alembic：源码单一 head 为 `f1_0018`，线性顺序含 `f1_0016 → f1_0017 → f1_0018`；`migrate_f1` 目标闭集为 `{f1_0014,f1_0015,f1_0016,f1_0017,f1_0018}`。默认工程仍锁 `f1_0014`，material-RAG 专属目标为 `f1_0016`，analysis-report 专属目标为 `f1_0018`；默认 seed/verify/backup 的 0014/35 合同保持不变。
+- 分析报告能力：只在专属本地 demo 以 `tenant-a` / `invitee` 合成身份、`deterministic_local`、`ark_calls=0`、`mock_data=0` 取证；不是正式评分器、生产 worker、真实 Ark 或客户数据能力。
+- 远端边界：Netlify 静态前端 + 单一 HTTPS edge 的参数化部署/回滚/smoke 已本地整合，但没有真实 DNS/TLS/Keycloak/CORS/PG 参数，未连接、未部署、未生产。
 - 旧 `codex/f1-1-1-repair` 只保留作历史证据，不再继续开发或推送
 
 ## 阶段状态
 
 | 阶段 | 当前标签 | 已验证层 | 未开放边界 |
 | --- | --- | --- | --- |
+| A-Eco 分析报告候选 | `BLOCKED / VISUAL_IMPLEMENTATION_LOCAL_PASSED / WORKFLOW_UAT_PASSED / TARGETED_TEST_PASSED / DEPLOYMENT_PACKAGE_INTEGRATED_LOCAL / COMMITTED_LOCAL / NOT_PUSHED / NOT_PRODUCTION` | 19项部署 preflight、7页双视口14图、真实 UI 主流程、workflow UAT、lint/build/diff-check；全部为本地合成身份与测试生成器 | 历史 OIDC code 输出与收尾命令规则违规未裁决；无 CI、未人工签字、未 push/合并、无远端参数、未部署 |
 | 工程收口 | `TECHNICAL_ENGINEERING_READY / GOVERNANCE_CLOSEOUT_PENDING / NOT_PRODUCTION` | 已保留 230/230、verify 五门、reset/restore、重启、浏览器/PWA 技术摘要 | 精确顺序的治理证据重放表仍为 pending；OS 级 PWA 安装因浏览器自动化边界未测；未 UAT、未生产 |
 | F1.1.1 | `F1_1_1_PAUSED_NOT_ACCEPTED` | 历史修复与拒绝证据保留 | formal/reverse/SBOM/clean/M4 未恢复；tracked v0.3 仍为 `F1_1_1_REJECTED` |
 | P2 | `TARGETED_TEST_PASSED / SMOKE_PASSED / NOT_PRODUCTION` | 真实 API + FORCE RLS 主链、跨租户边界、非法关闭 409 与事务零漂移；真实 Keycloak 合成身份 | 真实客户资料、发布验收、生产 |
@@ -33,6 +35,7 @@
 
 ## 运行与发布边界
 
+- 分析报告专属 demo 当前已停止，专属 containers/running/volumes/networks/control directory 均为 0；`src/web/dist`、临时 `src/web/node_modules` symlink 与根 `netlify.toml` 均不存在。仓外最终截图与机器原始证据继续保留为 0700/0600，不是当前 live 服务。
 - 材料录入分支已在专属、双标签本地 Compose 栈从实库 `f1_0011` 迁移到 `f1_0014`，并在随机 scratch 数据库和随机 MinIO 桶将同一份合成 PDF 分别按服务公司域、客户域验证。第一次迁移因 `FORCE RLS` 遮蔽旧文档回填而失败且事务整体回滚；限定 bootstrap session 的有界 `RESET ROLE` 回填修复后重跑得到 `LOCAL_MIGRATE_OK`。提交前又以 `f1_0014` 收紧底层原件/受控任务读取并完成同一验证。没有使用旧共享 `anhuan-f1` 栈作证。
 - 默认工程 closeout 栈目前停止且保留数据卷：本机可见 9 个 `anhuan-closeout-*` 容器全部 Exited，对应卷仍在。material-RAG 最近一次重放的专属 container、volume、network、runtime image 残留为 0。两者不是同一运行环境。
 - 宿主另有桌面 checkout 的共享 `anhuan-f1`（本窗口实测 15 容器全部 exited）和历史 `anhuan-f0d`。本窗口未启停任何共享容器。共享栈仍不是索引、检索或工程完成证据。
@@ -59,7 +62,8 @@
 - 材料录入切片：[MATERIAL_INTAKE_PROGRESS.md](./MATERIAL_INTAKE_PROGRESS.md)
 - 双知识域物理 RAG：[任务书](./MATERIAL_RAG_TASKBOOK.md)／[进展证据](./MATERIAL_RAG_PROGRESS.md)／[当前阻塞](./MATERIAL_RAG_BLOCKED.md)／[backup/restore 设计](./MATERIAL_RAG_BACKUP_RESTORE_DESIGN.md)／[离线 UAT 机器门](./MATERIAL_RAG_UAT_REPORT.md)
 - 本地 Fixture 使用边界：[LOCAL_FIXTURE_BOUNDARY.md](./LOCAL_FIXTURE_BOUNDARY.md)
+- A-Eco 分析报告候选：[现役进度](./RELEASE_CANDIDATE_PROGRESS.md)／[当前阻断](./RELEASE_CANDIDATE_BLOCKED.md)／[PR、迁移与视觉复核](./RELEASE_CANDIDATE_REVIEW.md)／[本机交接](./TEST_HANDOFF.md)／[远端参数化命令单](./deploy/analysis-report/DEPLOYMENT.md)
 
 ## 下一步
 
-材料类型与知识归属仍分开，客户材料不能进入公司政策草稿。本地 HEAD 含 worker runtime 与 restore preflight。PR #2 仍 OPEN；合并仅在门禁满足后按 PR #1→PR #2 进行。正式用户 restore apply 仍未开放。Ark 为 `LIVE_RETRIEVAL_AUTH_PENDING`。不是 `UAT_PASSED`，不是 `RELEASE_VERIFIED`，未 headed open，未人工签字，未写 `HUMAN_UAT_READY`，未部署。不处理 F0-I key。不恢复旧 F1.1.1 发布验收或 PWA OS 探针，不进入真实 UAT 签字、生产或正式小程序。`pdf-inspector` 仍为 `RUNTIME_DISABLED`。
+当前候选只能停在本地组件级通过：整体仍因历史 OIDC callback code 输出与收尾命令硬规则违规保持 `BLOCKED`。后续若另行授权，先由发布负责人裁决两项过程例外，再按 PR #3→#4 顺序推进；#3 合入后必须把 #4 base 改为 `main` 并复核。之后仍需人工视觉签字、真实远端参数、备份点、`f1_0017→f1_0018` 专属迁移与双身份 remote smoke。PR #2 已合并；material-RAG 的 Ark live、正式用户 restore apply、断电验证和领导 UAT 仍各自 pending。不是 `RELEASE_VERIFIED`，未部署，不进入生产或正式小程序；`pdf-inspector` 仍为 `RUNTIME_DISABLED`。

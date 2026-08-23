@@ -61,17 +61,9 @@ export default function ClientsPage() {
   const activeCount = (rows ?? []).filter((r) => r.stage === "active").length;
 
   return (
-    <div style={{ maxWidth: 960 }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: 8,
-          gap: 16,
-        }}
-      >
-        <Typography.Title level={4} style={{ margin: 0, whiteSpace: "nowrap" }}>
+    <main className="console-page clients-page">
+      <div className="console-page__header">
+        <Typography.Title level={2}>
           客户企业
         </Typography.Title>
         {isMockData && (
@@ -80,7 +72,7 @@ export default function ClientsPage() {
           </Button>
         )}
       </div>
-      <Typography.Paragraph type="secondary" style={{ marginBottom: 16 }}>
+      <Typography.Paragraph type="secondary" className="console-page__subtitle">
         {rows === null
           ? "正在加载客户列表…"
           : `共 ${rows.length} 家客户 · 服务中 ${activeCount} 家。进入客户后可管理材料与报告。`}
@@ -110,6 +102,7 @@ export default function ClientsPage() {
         )
       ) : (
         <Table<ClientAccount>
+          className="clients-table"
           rowKey="id"
           loading={rows === null}
           dataSource={rows ?? []}
@@ -174,6 +167,6 @@ export default function ClientsPage() {
           </Form.Item>
         </Form>
       </Modal>
-    </div>
+    </main>
   );
 }

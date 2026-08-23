@@ -33,6 +33,9 @@ export const antdTheme: ThemeConfig = {
     colorPrimaryHover: eco.primaryHover,
     colorPrimaryBg: eco.primarySoft,
     borderRadius: 6,
+    controlHeight: 38,
+    fontSize: 14,
+    lineHeight: 1.6,
     boxShadow: "none",
     fontFamily:
       'system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
@@ -52,9 +55,17 @@ export const antdTheme: ThemeConfig = {
       activeBarBorderWidth: 0,
     },
     Table: {
-      headerBg: eco.contentBackground,
+      headerBg: eco.primarySoft,
       headerSplitColor: "transparent",
       borderColor: eco.border,
+      rowHoverBg: eco.primarySoft,
+      cellPaddingBlock: 15,
+      cellPaddingInline: 18,
+    },
+    Tabs: {
+      itemSelectedColor: eco.primary,
+      itemHoverColor: eco.primaryHover,
+      inkBarColor: eco.primary,
     },
   },
 };

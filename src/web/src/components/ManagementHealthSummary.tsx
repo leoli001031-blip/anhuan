@@ -35,6 +35,9 @@ export default function ManagementHealthSummary({
   return (
     <section className="health-summary" aria-labelledby="health-heading">
       <div className="health-summary__score">
+        {snapshot.evidenceMode === "deterministic_local" ? (
+          <span className="health-environment-label">测试环境·确定性评分</span>
+        ) : null}
         <Typography.Title id="health-heading" level={4} className="health-summary__title">
           安环管理健康度
         </Typography.Title>
@@ -47,9 +50,6 @@ export default function ManagementHealthSummary({
         <strong>{snapshot.statusLabel}</strong>
         <span>评估日期&nbsp;&nbsp;{snapshot.assessedOn}</span>
         <span>{snapshot.basisLabel}</span>
-        {snapshot.evidenceMode === "deterministic_local" ? (
-          <span>测试环境·确定性评分</span>
-        ) : null}
       </div>
       <div className="health-summary__dimensions" aria-label="健康度维度摘要">
         {snapshot.dimensions.map((dimension) => (
@@ -71,9 +71,12 @@ export default function ManagementHealthSummary({
       <div className="health-summary__action">
         <Link to="/portal/health">查看健康度详情&nbsp;›</Link>
       </div>
-      <Typography.Text type="secondary" className="health-summary__boundary">
-        {MANAGEMENT_HEALTH_BOUNDARY}
-      </Typography.Text>
+      <div className="health-summary__boundary">
+        {snapshot.evidenceMode === "deterministic_local" ? (
+          <strong>正式环境：暂不评分</strong>
+        ) : null}
+        <Typography.Text type="secondary">{MANAGEMENT_HEALTH_BOUNDARY}</Typography.Text>
+      </div>
     </section>
   );
 }

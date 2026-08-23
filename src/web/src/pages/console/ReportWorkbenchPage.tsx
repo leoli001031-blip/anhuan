@@ -189,6 +189,8 @@ export default function ReportWorkbenchPage() {
 
   const current = versions?.find((v) => v.version_id === selectedId) ?? null;
   const status = current?.status ?? (versions && versions.length === 0 ? "empty" : null);
+  const checklistComplete =
+    status === "approved" || status === "published" || status === "superseded" || status === "withdrawn";
 
   const runTransition = async (
     action: "submit" | "return" | "approve" | "publish" | "withdraw",
@@ -284,18 +286,26 @@ export default function ReportWorkbenchPage() {
     job !== null && job.status !== "draft" && job.status !== "failed";
 
   return (
-    <div style={{ maxWidth: 1200 }}>
-      <div style={{ marginBottom: 16 }}>
+    <main className="console-page workbench-page">
+      <div className="workbench-back">
         <Link to={clientId ? `/console/clients/${clientId}/reports` : "/console/clients"}>
           ← 返回报告列表
         </Link>
       </div>
       <div className="workbench-grid">
         <div className="workbench-doc">
-          <Typography.Title level={4} style={{ marginTop: 0 }}>
-            企业安环资料分析报告
-            {current ? ` · 第 ${current.version_number} 版` : ""}
-          </Typography.Title>
+          <header className="workbench-doc__header">
+            <Typography.Title level={2}>
+              企业安环资料分析报告
+            </Typography.Title>
+            <div className="workbench-doc__meta">
+              {current ? <span>第 {current.version_number} 版</span> : null}
+              <StatusDot
+                tone={STATUS_TONE[status ?? "empty"]}
+                label={REPORT_STATUS_LABEL[status ?? "empty"]}
+              />
+            </div>
+          </header>
           {detailError ? (
             <ErrorState error={detailError} onRetry={refresh} />
           ) : !current ? (
@@ -313,7 +323,7 @@ export default function ReportWorkbenchPage() {
           )}
         </div>
         <div className="workbench-panel">
-          <section>
+          <section className="workbench-panel__section">
               <Typography.Text strong>生成进度</Typography.Text>
               <div style={{ marginTop: 8 }}>
                 {jobPollFailed && job ? (
@@ -342,14 +352,14 @@ export default function ReportWorkbenchPage() {
               </div>
             </section>
 
-            <section>
+            <section className="workbench-panel__section">
               <Typography.Text strong>审核清单</Typography.Text>
-              <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+              <div className="workbench-checklist">
                 {CHECKLIST.map((item, i) => (
                   <div
                     key={item}
                     data-review-check={item}
-                    data-checked={checked[i] ? "1" : "0"}
+                    data-checked={checked[i] || checklistComplete ? "1" : "0"}
                     style={{ cursor: status === "review_pending" ? "pointer" : "not-allowed" }}
                     onClick={() => {
                       if (status !== "review_pending") return;
@@ -357,7 +367,7 @@ export default function ReportWorkbenchPage() {
                     }}
                   >
                     <Checkbox
-                      checked={checked[i]}
+                      checked={checked[i] || checklistComplete}
                       disabled={status !== "review_pending"}
                       style={{ pointerEvents: "none" }}
                     >
@@ -368,9 +378,9 @@ export default function ReportWorkbenchPage() {
               </div>
             </section>
 
-            <section>
+            <section className="workbench-panel__section">
               <Typography.Text strong>版本历史</Typography.Text>
-              <div style={{ marginTop: 8 }}>
+              <div className="workbench-version-list">
                 {versions.length === 0 && (
                   <Typography.Text type="secondary">尚无版本</Typography.Text>
                 )}
@@ -405,11 +415,12 @@ export default function ReportWorkbenchPage() {
             </section>
 
             <section
+              className="workbench-panel__section workbench-panel__section--actions"
               data-report-status={status ?? ""}
               data-approve-ready={status === "review_pending" && checked.every(Boolean) ? "1" : "0"}
             >
               <Typography.Text strong>操作</Typography.Text>
-              <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              <div className="workbench-action-stack">
                 {capabilities.has("generate") &&
                   (status === "empty" || status === "changes_requested" || status === "failed" ||
                   status === "superseded" || status === "withdrawn") && (
@@ -476,6 +487,6 @@ export default function ReportWorkbenchPage() {
             </section>
         </div>
       </div>
-    </div>
+    </main>
   );
 }

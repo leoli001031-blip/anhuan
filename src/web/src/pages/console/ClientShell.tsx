@@ -35,7 +35,7 @@ export default function ClientShell({
   if (!client) return <Spin style={{ display: "block", margin: "64px auto" }} />;
 
   return (
-    <div style={{ maxWidth: 1100 }}>
+    <main className="console-page client-shell">
       <Breadcrumb
         style={{ marginBottom: 8 }}
         items={[
@@ -43,7 +43,7 @@ export default function ClientShell({
           { title: client.name },
         ]}
       />
-      <Typography.Title level={4} style={{ marginTop: 0 }}>
+      <Typography.Title level={2} className="client-shell__title">
         {client.name}
       </Typography.Title>
       <Tabs
@@ -55,6 +55,6 @@ export default function ClientShell({
         items={TABS.map((t) => ({ key: t.key, label: t.label }))}
       />
       {children}
-    </div>
+    </main>
   );
 }

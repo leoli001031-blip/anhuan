@@ -8,7 +8,9 @@ export default function ClientMaterialsPage() {
   const { clientId = "" } = useParams();
   return (
     <ClientShell clientId={clientId}>
-      <MaterialPanel scope="client" clientId={clientId} />
+      <div className="client-materials-page">
+        <MaterialPanel scope="client" clientId={clientId} />
+      </div>
     </ClientShell>
   );
 }

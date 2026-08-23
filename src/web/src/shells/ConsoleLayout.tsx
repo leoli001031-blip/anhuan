@@ -38,6 +38,7 @@ export default function ConsoleLayout() {
   return (
     <Layout style={{ minHeight: "100vh" }}>
       <Layout.Header
+        className="console-header"
         style={{
           display: "flex",
           alignItems: "center",
@@ -54,8 +55,8 @@ export default function ConsoleLayout() {
         >
           菜单
         </Button>
-        <Typography.Text strong style={{ fontSize: 15, whiteSpace: "nowrap" }}>
-          安环运营台
+        <Typography.Text strong className="console-brand">
+          A‑Eco <span>安环运营台</span>
         </Typography.Text>
         <div style={{ flex: 1 }} />
         <Typography.Text type="secondary" className="console-email" style={{ fontSize: 13 }}>
@@ -71,11 +72,12 @@ export default function ConsoleLayout() {
           className="console-sider"
           style={{
             borderRight: "1px solid var(--eco-border)",
-            background: "var(--eco-content-bg)",
+            background: "var(--eco-primary)",
             paddingTop: 8,
           }}
         >
           <Menu
+            className="console-nav"
             mode="inline"
             selectedKeys={[selectedKey(location.pathname)]}
             items={NAV}

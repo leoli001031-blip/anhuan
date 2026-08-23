@@ -66,8 +66,8 @@ export default function ReportDetailPage() {
   }
 
   return (
-    <div style={{ maxWidth: 960, margin: "0 auto", padding: "40px 24px 96px" }}>
-      <Row gutter={48}>
+    <main className="portal-report-reading">
+      <Row gutter={40} wrap>
         <Col className="report-nav-col">
           <nav className="section-nav" aria-label="章节目录">
             {SECTION_ORDER.map(({ key, title }) => (
@@ -84,15 +84,20 @@ export default function ReportDetailPage() {
           </nav>
         </Col>
         <Col className="report-body-col">
-          <Typography.Title level={3} style={{ marginTop: 0 }}>
-            {report.title}
-          </Typography.Title>
-          <Typography.Paragraph type="secondary" style={{ marginBottom: 32 }}>
-            {formatDateTime(report.published_at)} 发布 · 第 {report.version_number} 版
-          </Typography.Paragraph>
-          <ReportDocument sections={report.sections} citations={report.citations} serif />
+          <article className="report-paper">
+            <div className="report-paper__header">
+              <Typography.Title level={2}>{report.title}</Typography.Title>
+              <div className="report-paper__meta">
+                <span className="portal-report-row__status">已发布</span>
+                <Typography.Text type="secondary">
+                  {formatDateTime(report.published_at)} · 第 {report.version_number} 版
+                </Typography.Text>
+              </div>
+            </div>
+            <ReportDocument sections={report.sections} citations={report.citations} serif />
+          </article>
         </Col>
       </Row>
-    </div>
+    </main>
   );
 }

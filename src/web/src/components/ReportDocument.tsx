@@ -25,7 +25,7 @@ export default function ReportDocument({
   const byKey = new Map(sections.map((s) => [s.key, s]));
   const [open, setOpen] = useState<CitationV1 | null>(null);
   return (
-    <div>
+    <div className="report-document">
       {SECTION_ORDER.map(({ key, title }, index) => {
         const section = byKey.get(key);
         if (!section) return null;
@@ -40,9 +40,9 @@ export default function ReportDocument({
               </Typography.Paragraph>
             </div>
             {key === "citations" && citations.length > 0 && (
-              <div style={{ marginTop: 8 }}>
+              <div className="citation-list">
                 {citations.map((c, i) => (
-                  <div key={c.citation_id} style={{ padding: "6px 0" }}>
+                  <div key={c.citation_id} className="citation-list__item">
                     <button
                       type="button"
                       className="citation-ref"
