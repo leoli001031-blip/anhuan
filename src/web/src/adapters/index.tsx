@@ -41,10 +41,12 @@ export function ApiProvider({ children }: { children: ReactNode }) {
   const apiClient = useMemo(() => createApi(() => tokenRef.current()), []);
   const [tenantReady, setTenantReady] = useState(isMockData);
   const [membershipEpoch, setMembershipEpoch] = useState(0);
+  const [membershipError, setMembershipError] = useState<unknown>(null);
 
   useEffect(() => {
     const onInvalidate = () => {
       setTenantReady(false);
+      setMembershipError(null);
       setMembershipEpoch((value) => value + 1);
     };
     window.addEventListener(ENTERPRISE_CHANGED_EVENT, onInvalidate);
@@ -64,6 +66,7 @@ export function ApiProvider({ children }: { children: ReactNode }) {
     let active = true;
     const born = getTenantGeneration();
     setTenantReady(false);
+    setMembershipError(null);
     api<Membership[]>("/v1/users/me/enterprises", {
       token: getAccessToken(),
       enterpriseId: null,
@@ -74,15 +77,18 @@ export function ApiProvider({ children }: { children: ReactNode }) {
         const next = data.some((item) => item.enterprise_id === stored)
           ? stored
           : (data[0]?.enterprise_id ?? null);
-        if (!next) return;
+        // 空 membership 是可恢复错误状态，不是无限加载。
+        if (!next) {
+          setMembershipError(new ApiError(403, "NO_MEMBERSHIP", false));
+          return;
+        }
         commitTenantSnapshot(next, born);
         setTenantReady(true);
       })
-      .catch(() => {
+      .catch((caught) => {
         if (!active || born !== getTenantGeneration()) return;
-      })
-      .finally(() => {
-        if (!active || born !== getTenantGeneration()) return;
+        // membership 失败可恢复：交会员话层呈现错误与重试。
+        setMembershipError(caught);
       });
     return () => {
       active = false;
@@ -93,7 +99,13 @@ export function ApiProvider({ children }: { children: ReactNode }) {
     isMockData || (tenantReady && getTenantSnapshot().ready);
   return (
     <ApiContext.Provider value={apiClient}>
-      <SessionAccessProvider tenantReady={membershipReady}>{children}</SessionAccessProvider>
+      <SessionAccessProvider
+        tenantReady={membershipReady}
+        membershipError={membershipError}
+        onMembershipRetry={() => setMembershipEpoch((value) => value + 1)}
+      >
+        {children}
+      </SessionAccessProvider>
     </ApiContext.Provider>
   );
 }
@@ -116,9 +128,13 @@ const SessionContext = createContext<SessionState | null>(null);
 function SessionAccessProvider({
   children,
   tenantReady,
+  membershipError,
+  onMembershipRetry,
 }: {
   children: ReactNode;
   tenantReady: boolean;
+  membershipError: unknown;
+  onMembershipRetry: () => void;
 }) {
   const apiClient = useApi();
   const { isAuthenticated, isInitializing } = useAuth();
@@ -143,6 +159,13 @@ function SessionAccessProvider({
     if (!isAuthenticated) {
       setSession(null);
       setError(null);
+      setLoading(false);
+      return;
+    }
+    // membership 失败/为空：呈现可恢复错误，重试走 membership 重载。
+    if (membershipError) {
+      setSession(null);
+      setError(membershipError);
       setLoading(false);
       return;
     }
@@ -179,16 +202,18 @@ function SessionAccessProvider({
     return () => {
       active = false;
     };
-  }, [apiClient, nonce, isAuthenticated, isInitializing, tenantReady]);
+  }, [apiClient, nonce, isAuthenticated, isInitializing, tenantReady, membershipError]);
 
   const value = useMemo<SessionState>(
     () => ({
       session,
       loading,
       error,
-      reload: () => setNonce((n) => n + 1),
+      reload: membershipError
+        ? onMembershipRetry
+        : () => setNonce((n) => n + 1),
     }),
-    [session, loading, error],
+    [session, loading, error, membershipError, onMembershipRetry],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

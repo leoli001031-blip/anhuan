@@ -14,6 +14,7 @@ SCHEMA_JOB = "anhuan-analysis-report-job-v1"
 SCHEMA_HISTORY = "anhuan-analysis-report-version-history-v1"
 SCHEMA_PROVIDER_LIST = "anhuan-analysis-report-provider-list-v1"
 SCHEMA_DRAFT = "anhuan-analysis-report-draft-v1"
+SCHEMA_HEALTH = "anhuan-analysis-report-health-v1"
 
 TEMPLATE_ID = "enterprise-ehs-material-analysis-v1"
 TEMPLATE_TITLE = "企业安环资料分析报告"
@@ -107,6 +108,10 @@ class GenerationFailed(Exception):
         self.reason = reason
 
 
+class HealthSnapshotUnavailable(Exception):
+    """Integrity or database failure. HTTP 503. Never fall back to an older score."""
+
+
 @dataclass(frozen=True, slots=True)
 class EligibleSource:
     document_version_id: uuid.UUID
@@ -153,6 +158,20 @@ class ReportGeneratorPort(Protocol):
         """Return structured JSON or raise GenerationFailed. Never returns stale."""
 
 
+@dataclass(frozen=True, slots=True)
+class HealthScoreContext:
+    report_id: uuid.UUID
+    version_id: uuid.UUID
+    version_number: int
+    report_title: str
+    assessed_on: datetime
+
+
+class HealthScorerPort(Protocol):
+    def score(self, context: HealthScoreContext) -> dict[str, object]:
+        """Return a frozen snapshot object. Independent of the report generator."""
+
+
 __all__ = (
     "SCHEMA_SESSION",
     "SCHEMA_PUBLISHED_LIST",
@@ -162,6 +181,7 @@ __all__ = (
     "SCHEMA_HISTORY",
     "SCHEMA_PROVIDER_LIST",
     "SCHEMA_DRAFT",
+    "SCHEMA_HEALTH",
     "TEMPLATE_ID",
     "TEMPLATE_TITLE",
     "SECTION_KEYS",
@@ -187,4 +207,7 @@ __all__ = (
     "GeneratedCitation",
     "GeneratedReport",
     "ReportGeneratorPort",
+    "HealthSnapshotUnavailable",
+    "HealthScoreContext",
+    "HealthScorerPort",
 )

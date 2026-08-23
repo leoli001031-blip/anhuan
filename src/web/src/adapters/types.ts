@@ -171,14 +171,15 @@ export interface ClientAccount {
   name: string;
   stage: ClientStage;
   updatedAt: string;
+  nextFollowUpAt: string | null;
 }
 
 export type MaterialStatus = "processing" | "ready" | "blocked" | "failed";
 
 export const MATERIAL_STATUS_LABEL: Record<MaterialStatus, string> = {
   processing: "处理中",
-  ready: "可用",
-  blocked: "受阻",
+  ready: "入库处理完成",
+  blocked: "待确认",
   failed: "解析失败",
 };
 

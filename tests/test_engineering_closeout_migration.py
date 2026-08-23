@@ -358,15 +358,16 @@ class AlembicOrchestrationContracts(unittest.TestCase):
 
         self.assertEqual(
             migrate_f1.F1_ALLOWED_MIGRATE_TARGETS,
-            frozenset({"f1_0014", "f1_0015", "f1_0016", "f1_0017"}),
+            frozenset({"f1_0014", "f1_0015", "f1_0016", "f1_0017", "f1_0018"}),
         )
         self.assertEqual(migrate_f1.F1_DEFAULT_MIGRATE_TARGET, "f1_0014")
         self.assertEqual(migrate_f1.F1_MATERIAL_RAG_MIGRATE_TARGET, "f1_0016")
-        self.assertEqual(migrate_f1.F1_ANALYSIS_REPORT_MIGRATE_TARGET, "f1_0017")
+        self.assertEqual(migrate_f1.F1_ANALYSIS_REPORT_MIGRATE_TARGET, "f1_0018")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0014"), "f1_0014")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0015"), "f1_0015")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0016"), "f1_0016")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0017"), "f1_0017")
+        self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0018"), "f1_0018")
         closed_source = ast.unparse(_function(F1_MIGRATOR, "_closed_f1_migrate_target"))
         self.assertIn("type(target) is not str", closed_source)
         self.assertNotIn("isinstance(target", closed_source)
@@ -402,6 +403,7 @@ class AlembicOrchestrationContracts(unittest.TestCase):
         for illegal in (
             "head",
             "f1_0013",
+            "f1_0019",
             "f1_0014 ",
             "",
             None,

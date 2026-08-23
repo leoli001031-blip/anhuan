@@ -20,6 +20,10 @@ import type {
   VersionHistoryItemV1,
 } from "./types";
 import type { SessionAccess } from "./SessionAccess";
+import {
+  SYNTHETIC_MANAGEMENT_HEALTH,
+  type ManagementHealthSnapshot,
+} from "../features/managementHealth";
 
 const delay = (ms = 260) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -96,8 +100,8 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
         : "provider_admin";
     const now = new Date().toISOString();
     this.clients = [
-      { id: CLIENT_A_ID, name: "蓝海化工有限公司", stage: "active", updatedAt: now },
-      { id: CLIENT_B_ID, name: "青松电子科技有限公司", stage: "lead", updatedAt: now },
+      { id: CLIENT_A_ID, name: "蓝海化工有限公司", stage: "active", updatedAt: now, nextFollowUpAt: "2026-09-05T09:00:00+00:00" },
+      { id: CLIENT_B_ID, name: "青松电子科技有限公司", stage: "lead", updatedAt: now, nextFollowUpAt: null },
     ];
     this.sharedMaterials = [
       { id: "m-sh-1", name: "安全生产管理制度（共享模板）", status: "ready", versionCount: 2, updatedAt: now },
@@ -230,6 +234,11 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     };
   }
 
+  async getLatestManagementHealth(): Promise<ManagementHealthSnapshot | null> {
+    await delay();
+    return SYNTHETIC_MANAGEMENT_HEALTH;
+  }
+
   // —— 运营台 · 客户 ——
 
   async listClients(): Promise<ClientAccount[]> {
@@ -251,6 +260,7 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
       name: input.name,
       stage: input.stage,
       updatedAt: new Date().toISOString(),
+      nextFollowUpAt: null,
     };
     this.clients.push(client);
     this.clientMaterials[client.id] = [];

@@ -1,6 +1,8 @@
-// 客户端智能问答：HTTP 模式诚实禁用（检索能力接入中）；mock 保留五态走查。
+// 客户端智能问答：mock 走查保留五态；HTTP 模式问答未开放，
+// 直达本页只给简洁说明与「查看分析报告」下一步，不渲染残废表单。
 import { useState } from "react";
 import { Button, Input, Skeleton, Typography } from "antd";
+import { Link } from "react-router-dom";
 import { isMockData, useApi } from "../../adapters";
 import type { QaAnswer } from "../../adapters/types";
 import ErrorState from "../../components/ErrorState";
@@ -20,15 +22,14 @@ export default function QaPage() {
     return (
       <div className="reading-column">
         <Typography.Title level={4} style={{ marginTop: 0 }}>
-          向你们的安环资料提问
+          智能问答
         </Typography.Title>
-        <Typography.Paragraph type="secondary">检索能力接入中</Typography.Paragraph>
-        <Input.TextArea rows={3} disabled placeholder="检索能力接入中" />
-        <div style={{ marginTop: 12, textAlign: "right" }}>
-          <Button type="primary" disabled>
-            提问
-          </Button>
-        </div>
+        <Typography.Paragraph type="secondary">
+          问答能力正在接入，暂未开放。你可以先查看已发布的分析报告。
+        </Typography.Paragraph>
+        <Link to="/portal/reports">
+          <Button type="primary">查看分析报告</Button>
+        </Link>
       </div>
     );
   }

@@ -455,7 +455,7 @@ def _pg_env(state: dict[str, object], paths: dict[str, Path]) -> dict[str, str]:
 
 def _seed_identities(state: dict[str, object], paths: dict[str, Path]) -> None:
     # local_seed.main() is frozen at f1_0014. This UAT migrator stops at
-    # f1_0017, so the same ensure_* helpers run on the host with that head.
+    # f1_0018, so the same ensure_* helpers run on the host with that head.
     from infra.f1 import local_seed
     from infra.f1.migrate_f1 import _bootstrap_dsn
 
@@ -470,7 +470,7 @@ def _seed_identities(state: dict[str, object], paths: dict[str, Path]) -> None:
                 "SELECT string_agg(version_num, ',' ORDER BY version_num) "
                 "FROM f1.alembic_version"
             ).fetchone()
-            if head is None or head[0] != "f1_0017":
+            if head is None or head[0] != "f1_0018":
                 raise UatError("LOCAL_ANALYSIS_REPORT_UAT_SEED_HEAD_MISMATCH")
             local_seed._ensure_enterprise(
                 connection, local_seed.ENTERPRISE_A, "Local Enterprise A", "LOCAL-A"
@@ -626,6 +626,12 @@ WORKFLOW_SUMMARY_KEYS = frozenset(
         "dedicated_v",
         "generation_draft",
         "generation_idempotent",
+        "health_detail_dimensions",
+        "health_http_max_score",
+        "health_http_score",
+        "health_null_after_withdraw",
+        "health_snapshot_count",
+        "health_test_provenance",
         "hidden_after_withdraw",
         "mock_data",
         "provider_create",
@@ -698,10 +704,26 @@ def _workflow_supervisor(
                 "WHERE report.client_account_id=%s",
                 (fixture.CRM_ACCOUNT_ID,),
             ).fetchone()
+            health = connection.execute(
+                "SELECT count(*), min(score), min(max_score), "
+                "min(payload->>'evidence_mode') "
+                "FROM f1.analysis_report_health_snapshot "
+                "WHERE client_account_id=%s",
+                (fixture.CRM_ACCOUNT_ID,),
+            ).fetchone()
         if reports is None or versions is None or int(reports[0]) != 1 or int(versions[0]) != 1:
             raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_SUPERVISOR_COUNT")
+        if (
+            health is None
+            or int(health[0]) != 1
+            or int(health[1]) != 60
+            or int(health[2]) != 100
+            or str(health[3]) != "deterministic_local"
+        ):
+            raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_HEALTH_COUNT")
         summary["create_idempotent"] = 1
         summary["generation_idempotent"] = 1
+        summary["health_snapshot_count"] = 1
     except UatError:
         raise
     except Exception as error:
@@ -727,6 +749,12 @@ def _workflow_expected(summary: dict[str, object]) -> None:
         "dedicated_v": 0,
         "generation_draft": 1,
         "generation_idempotent": 1,
+        "health_detail_dimensions": 6,
+        "health_http_max_score": 100,
+        "health_http_score": 60,
+        "health_null_after_withdraw": 1,
+        "health_snapshot_count": 1,
+        "health_test_provenance": 1,
         "hidden_after_withdraw": 1,
         "mock_data": 0,
         "provider_create": 1,

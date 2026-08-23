@@ -1,16 +1,17 @@
 /* A-Eco 环保企业版 · 全局样式。颜色只允许引用 CSS 变量，变量与 src/theme.ts 保持同步。 */
 :root {
-  --eco-primary: #0F766E;
-  --eco-primary-hover: #115E59;
-  --eco-primary-soft: #ECFDF5;
-  --eco-page-bg: #F7F9F6;
-  --eco-content-bg: #FFFFFF;
-  --eco-text: #1F2937;
-  --eco-text-secondary: #66736C;
-  --eco-border: #DDE5DF;
-  --eco-success: #2E7D32;
-  --eco-warning: #B26A00;
-  --eco-danger: #B42318;
+  --eco-primary: #174D3A;
+  --eco-primary-hover: #2F7D61;
+  --eco-primary-soft: #EEF5F1;
+  --eco-page-bg: #F5F7F4;
+  --eco-content-bg: #FBFCFA;
+  --eco-text: #202824;
+  --eco-text-secondary: #66706A;
+  --eco-border: #DCE5DF;
+  --eco-success: #2F7D61;
+  --eco-warning: #A86605;
+  --eco-danger: #C7463A;
+  --eco-progress-trail: #E8EDE9;
   --eco-serif: "Source Han Serif SC", "Noto Serif SC", "Songti SC", "SimSun", serif;
 }
 
@@ -127,4 +128,650 @@ body {
 
 .section-nav a:hover {
   color: var(--eco-primary);
+}
+
+/* 当前章节状态（滚动定位） */
+.section-nav a.section-nav--current {
+  color: var(--eco-primary);
+  font-weight: 600;
+}
+
+/* 键盘焦点：全站清晰可见 */
+a:focus-visible,
+button:focus-visible,
+.ant-btn:focus-visible,
+.ant-checkbox-wrapper:focus-visible {
+  outline: 2px solid var(--eco-primary);
+  outline-offset: 2px;
+}
+
+/* —— Portal 顶栏（窄屏基准 390px，折叠点 768px） —— */
+.portal-header {
+  flex-wrap: wrap;
+  row-gap: 0;
+  height: auto;
+  line-height: normal;
+  min-height: 64px;
+  padding-inline: 42px !important;
+}
+.portal-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+  padding: 18px 0;
+}
+.portal-brand > strong {
+  color: var(--eco-primary);
+  font-size: 25px;
+  letter-spacing: -0.03em;
+}
+.portal-brand > i {
+  width: 1px;
+  height: 24px;
+  margin: 0 8px;
+  background: var(--eco-border);
+}
+.portal-brand__context {
+  color: var(--eco-primary);
+}
+.portal-nav {
+  display: flex;
+  gap: 44px;
+  flex: 1;
+  align-items: center;
+}
+.portal-email {
+  margin-left: auto;
+  color: var(--eco-text);
+  font-size: 14px;
+  white-space: nowrap;
+}
+.portal-mobile-menu,
+.portal-mobile-enterprise {
+  display: none;
+}
+
+/* —— 客户门户 · 方向 1 企业化版式 —— */
+.portal-page {
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: 44px 48px 88px;
+}
+.portal-page__title.ant-typography {
+  margin: 0;
+  color: var(--eco-text);
+  font-size: 30px;
+  line-height: 1.28;
+  letter-spacing: -0.02em;
+}
+.portal-page__subtitle.ant-typography {
+  margin: 8px 0 28px;
+  color: var(--eco-text-secondary);
+  font-size: 15px;
+}
+.portal-section {
+  margin-top: 28px;
+}
+.portal-section > .ant-typography {
+  margin: 0 0 12px;
+  font-size: 18px;
+}
+.portal-report-feature {
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  min-height: 132px;
+  padding: 26px 28px;
+  border: 1px solid var(--eco-border);
+  border-radius: 6px;
+  background: var(--eco-content-bg);
+}
+.portal-report-feature__body {
+  flex: 1;
+  min-width: 0;
+}
+.portal-report-feature__body .ant-typography {
+  margin: 0;
+}
+.portal-report-feature__body .ant-typography + .ant-typography {
+  margin-top: 6px;
+}
+.portal-support-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+.portal-support-grid > section {
+  min-height: 118px;
+  padding: 26px 28px;
+  border: 1px solid var(--eco-border);
+  border-radius: 6px;
+  background: var(--eco-content-bg);
+}
+.portal-support-grid .ant-typography {
+  margin-top: 0;
+}
+
+/* —— 安环管理健康度：客户只读，不代表法定合规结论 —— */
+.health-summary {
+  display: grid;
+  grid-template-columns: 200px 250px minmax(420px, 1fr) 170px;
+  align-items: center;
+  column-gap: 28px;
+  min-height: 194px;
+  padding: 28px 30px 20px;
+  border: 1px solid var(--eco-border);
+  border-radius: 6px;
+  background: var(--eco-content-bg);
+}
+.health-summary__title.ant-typography {
+  margin: 0 0 22px;
+  font-size: 20px;
+}
+.health-score-line {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  white-space: nowrap;
+}
+.health-score-line strong {
+  color: var(--eco-warning);
+  font-size: 54px;
+  font-weight: 650;
+  line-height: 1;
+}
+.health-score-line span {
+  color: var(--eco-text-secondary);
+  font-size: 22px;
+}
+.health-summary__status {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding-left: 28px;
+  border-left: 1px solid var(--eco-border);
+}
+.health-summary__status strong {
+  color: var(--eco-warning);
+  font-size: 22px;
+}
+.health-summary__status span {
+  color: var(--eco-text-secondary);
+  font-size: 14px;
+}
+.health-summary__dimensions {
+  display: grid;
+  gap: 7px;
+  padding: 0 28px;
+  border-inline: 1px solid var(--eco-border);
+}
+.health-mini-dimension {
+  display: grid;
+  grid-template-columns: 88px minmax(120px, 1fr) 48px;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+}
+.health-mini-dimension .ant-progress {
+  margin: 0;
+  line-height: 1;
+}
+.health-mini-dimension strong {
+  color: var(--eco-text-secondary);
+  font-weight: 500;
+}
+.health-summary__action {
+  justify-self: center;
+  white-space: nowrap;
+}
+.health-summary__boundary {
+  grid-column: 1 / -1;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--eco-border);
+  font-size: 12px;
+  text-align: center;
+}
+.health-summary--empty {
+  grid-template-columns: 1fr auto;
+  min-height: 168px;
+}
+.health-empty__status.ant-typography {
+  margin: 0 0 8px;
+  font-size: 30px;
+}
+.health-empty__copy.ant-typography {
+  max-width: 720px;
+  margin: 0;
+}
+.portal-breadcrumb {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 16px;
+  color: var(--eco-text-secondary);
+  font-size: 14px;
+}
+.health-page .portal-page__subtitle {
+  margin-bottom: 22px;
+}
+.health-detail-hero {
+  display: flex;
+  align-items: center;
+  gap: 46px;
+  min-height: 142px;
+  padding: 28px 34px;
+  border: 1px solid var(--eco-border);
+  border-radius: 6px;
+  background: var(--eco-content-bg);
+}
+.health-score-line--detail {
+  padding-right: 42px;
+  border-right: 1px solid var(--eco-border);
+}
+.health-score-line--detail strong {
+  font-size: 64px;
+}
+.health-detail-hero__status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.health-detail-hero__status strong {
+  color: var(--eco-warning);
+  font-size: 24px;
+}
+.health-detail-hero__status span {
+  color: var(--eco-text-secondary);
+}
+.health-detail-hero > a {
+  margin-left: auto;
+}
+.health-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.9fr) minmax(320px, 1fr);
+  gap: 18px;
+  margin-top: 18px;
+}
+.health-dimensions,
+.health-priorities,
+.health-basis,
+.health-boundary-panel,
+.health-unavailable {
+  border: 1px solid var(--eco-border);
+  border-radius: 6px;
+  background: var(--eco-content-bg);
+}
+.health-dimensions {
+  padding: 28px 30px;
+}
+.health-dimensions > .ant-typography,
+.health-priorities > .ant-typography,
+.health-basis > .ant-typography,
+.health-boundary-panel > .ant-typography {
+  margin-top: 0;
+  font-size: 22px;
+}
+.health-dimension {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 1.15fr) 54px;
+  align-items: center;
+  gap: 24px;
+  min-height: 92px;
+  border-top: 1px solid var(--eco-border);
+}
+.health-dimension:first-of-type {
+  border-top: none;
+}
+.health-dimension__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.health-dimension__copy strong {
+  font-size: 17px;
+}
+.health-dimension__copy span {
+  color: var(--eco-text-secondary);
+  font-size: 14px;
+}
+.health-detail-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.health-priorities,
+.health-basis {
+  padding: 28px 30px;
+}
+.health-priority {
+  display: grid;
+  grid-template-columns: 32px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 70px;
+  border-top: 1px solid var(--eco-border);
+  font-style: normal;
+}
+.health-priority > span {
+  color: var(--eco-primary);
+  font-size: 18px;
+}
+.health-priority > strong {
+  font-weight: 500;
+}
+.health-priority > em {
+  color: var(--eco-warning);
+  font-size: 13px;
+  font-style: normal;
+}
+.health-priority > em.health-priority--high {
+  color: var(--eco-danger);
+}
+.health-report-button {
+  margin-top: 14px;
+}
+.health-basis dl,
+.health-basis dd {
+  margin: 0;
+}
+.health-basis dl > div {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 10px;
+  padding: 7px 0;
+}
+.health-basis dt {
+  color: var(--eco-text-secondary);
+}
+.health-basis dd {
+  color: var(--eco-text);
+}
+.health-boundary-panel {
+  margin-top: 18px;
+  padding: 20px 26px 12px;
+}
+.health-unavailable {
+  max-width: 820px;
+  padding: 48px;
+}
+
+@media (max-width: 767px) {
+  .portal-header {
+    column-gap: 8px !important;
+    padding-inline: 20px !important;
+  }
+  .portal-brand {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+  }
+  .portal-brand > strong {
+    font-size: 22px;
+  }
+  .portal-brand > i,
+  .portal-brand__context {
+    display: none;
+  }
+  .portal-desktop-logout,
+  .portal-nav,
+  .portal-email {
+    display: none;
+  }
+  .portal-mobile-menu {
+    display: block;
+    position: relative;
+    flex: 0 0 auto;
+  }
+  .portal-mobile-menu summary {
+    display: grid;
+    width: 40px;
+    height: 40px;
+    cursor: pointer;
+    list-style: none;
+    place-items: center;
+  }
+  .portal-mobile-menu summary::-webkit-details-marker {
+    display: none;
+  }
+  .portal-mobile-menu summary .anticon {
+    color: var(--eco-primary);
+    font-size: 23px;
+  }
+  .portal-mobile-menu > div {
+    position: absolute;
+    top: 44px;
+    right: 0;
+    z-index: 20;
+    display: grid;
+    min-width: 156px;
+    padding: 8px;
+    border: 1px solid var(--eco-border);
+    border-radius: 6px;
+    background: var(--eco-content-bg);
+    box-shadow: 0 8px 24px rgb(23 77 58 / 10%);
+  }
+  .portal-mobile-menu a,
+  .portal-mobile-menu button {
+    padding: 10px 12px;
+    border: 0;
+    background: transparent;
+    color: var(--eco-text);
+    font: inherit;
+    text-align: left;
+    text-decoration: none;
+  }
+  .portal-mobile-menu a.active {
+    color: var(--eco-primary);
+    font-weight: 600;
+  }
+  .portal-mobile-enterprise {
+    display: block;
+    flex-basis: calc(100% + 40px);
+    order: 5;
+    margin-inline: -20px;
+    padding: 16px 20px;
+    border-top: 1px solid var(--eco-border);
+    font-size: 16px;
+  }
+  .portal-page {
+    padding: 30px 20px 64px;
+  }
+  .portal-page__title.ant-typography {
+    font-size: 27px;
+  }
+  .health-summary,
+  .health-summary--empty {
+    grid-template-columns: 1fr;
+    row-gap: 20px;
+    padding: 22px 20px;
+  }
+  .health-summary__title.ant-typography {
+    margin-bottom: 12px;
+  }
+  .health-score-line strong {
+    font-size: 48px;
+  }
+  .health-summary__status {
+    padding: 18px 0 0;
+    border-top: 1px solid var(--eco-border);
+    border-left: none;
+  }
+  .health-summary__dimensions {
+    padding: 18px 0;
+    border-block: 1px solid var(--eco-border);
+    border-inline: none;
+  }
+  .health-summary__action {
+    justify-self: start;
+  }
+  .health-summary__boundary {
+    text-align: left;
+  }
+  .portal-report-feature {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .portal-report-feature .ant-btn {
+    width: 100%;
+  }
+  .portal-support-grid {
+    grid-template-columns: 1fr;
+  }
+  .health-detail-hero {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 18px;
+    padding: 22px 20px;
+  }
+  .health-score-line--detail {
+    width: 100%;
+    padding: 0 0 18px;
+    border-right: none;
+    border-bottom: 1px solid var(--eco-border);
+  }
+  .health-score-line--detail strong {
+    font-size: 54px;
+  }
+  .health-detail-hero > a {
+    margin-left: 0;
+  }
+  .health-detail-grid {
+    grid-template-columns: 1fr;
+  }
+  .health-dimensions,
+  .health-priorities,
+  .health-basis {
+    padding: 22px 20px;
+  }
+  .health-dimension {
+    grid-template-columns: minmax(0, 1fr) 52px;
+    gap: 8px 14px;
+    padding: 14px 0;
+  }
+  .health-dimension__copy {
+    grid-column: 1 / -1;
+  }
+  .health-dimension .ant-progress {
+    grid-column: 1;
+  }
+  .health-priority {
+    grid-template-columns: 32px minmax(0, 1fr) auto;
+  }
+  .health-boundary-panel {
+    padding-inline: 20px;
+  }
+  .health-unavailable {
+    padding: 32px 20px;
+  }
+}
+
+/* —— 报告详情：窄屏目录转为顶部横向滚动条 —— */
+.report-nav-col {
+  flex: 0 0 140px;
+  max-width: 140px;
+}
+.report-body-col {
+  flex: 1 1 auto;
+  max-width: 680px;
+  min-width: 0;
+}
+
+@media (max-width: 767px) {
+  .report-nav-col,
+  .report-body-col {
+    flex: 0 0 100%;
+    max-width: 100%;
+  }
+  .section-nav {
+    position: static;
+    display: flex;
+    gap: 16px;
+    overflow-x: auto;
+    white-space: nowrap;
+    line-height: 2.2;
+    border-bottom: 1px solid var(--eco-border);
+    margin-bottom: 8px;
+  }
+  .section-nav div {
+    flex: none;
+  }
+}
+
+/* —— Console：1280px 以下收起固定侧栏，改抽屉导航 —— */
+.console-menu-button {
+  display: none;
+}
+.console-email {
+  white-space: nowrap;
+}
+
+@media (max-width: 1279px) {
+  .console-sider {
+    display: none;
+  }
+  .console-menu-button {
+    display: inline-flex;
+  }
+}
+
+@media (max-width: 767px) {
+  .console-email {
+    display: none;
+  }
+  .console-content {
+    padding: 16px 16px 64px !important;
+  }
+}
+
+/* —— 审核台：≥1280 左右结构；<1280 正文在上、审核区在下 —— */
+.workbench-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 32px;
+  max-width: 1200px;
+}
+.workbench-doc {
+  min-width: 0;
+}
+.workbench-panel {
+  border-left: 1px solid var(--eco-border);
+  padding-left: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  min-width: 0;
+}
+
+@media (max-width: 1279px) {
+  .workbench-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .workbench-panel {
+    border-left: none;
+    border-top: 1px solid var(--eco-border);
+    padding-left: 0;
+    padding-top: 24px;
+  }
+}
+
+/* —— 客户列表窄屏：列表形态，不依赖横向滚动、不逐字换行 —— */
+.client-mobile-item {
+  padding: 14px 0;
+  border-top: 1px solid var(--eco-border);
+}
+.client-mobile-item:first-of-type {
+  border-top: none;
+}
+.client-mobile-meta {
+  margin-top: 2px;
+  font-size: 13px;
+  color: var(--eco-text-secondary);
+}
+.client-mobile-actions {
+  margin-top: 6px;
+  display: flex;
+  gap: 16px;
+  font-size: 14px;
 }

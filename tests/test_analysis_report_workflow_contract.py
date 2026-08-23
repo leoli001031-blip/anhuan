@@ -63,6 +63,9 @@ class AnalysisReportWorkflowContractTests(unittest.TestCase):
 
     def test_workflow_summary_key_set_is_closed(self) -> None:
         source = (ROOT / "infra/f1/analysis_report_uat.py").read_text(encoding="utf-8")
+        runner = (ROOT / "src/web/scripts/engineering-browser-verify.mjs").read_text(
+            encoding="utf-8"
+        )
         ast.parse(source)
         self.assertIn(
             'WORKFLOW_OK_TAG = "LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_OK"',
@@ -71,6 +74,11 @@ class AnalysisReportWorkflowContractTests(unittest.TestCase):
         self.assertIn("dedicated_c", source)
         self.assertIn("run_workflow_check", source)
         self.assertIn("analysis-report-workflow", source)
+        self.assertIn("health_http_score", source)
+        self.assertIn("health_null_after_withdraw", source)
+        self.assertIn("health_snapshot_count", source)
+        self.assertIn("CLIENT_HEALTH_PAYLOAD_INVALID", runner)
+        self.assertIn("CLIENT_HEALTH_WITHDRAW_PAYLOAD_INVALID", runner)
 
 
 if __name__ == "__main__":

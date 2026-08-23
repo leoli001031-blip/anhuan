@@ -1,6 +1,8 @@
 // 甲方运营台壳：顶部品牌条 + 左侧 200px 细线边栏（文字导航，无图标堆砌）。
+// <1280px：固定侧栏收起，顶栏出现「菜单」按钮，导航改为抽屉。
 // 客户上下文唯一来源是路由 :clientId，由客户列表进入，无切换器。
-import { Button, Layout, Menu, Spin, Typography } from "antd";
+import { useState } from "react";
+import { Button, Drawer, Layout, Menu, Spin, Typography } from "antd";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useSessionAccess, isMockData } from "../adapters";
 import { homePathFor } from "../adapters/SessionAccess";
@@ -25,6 +27,7 @@ export default function ConsoleLayout() {
   const { session, loading, error, reload } = useSessionAccess();
   const navigate = useNavigate();
   const location = useLocation();
+  const [navOpen, setNavOpen] = useState(false);
 
   if (loading) return <Spin fullscreen tip="正在加载" />;
   if (error) return <ErrorState error={error} onRetry={reload} />;
@@ -38,16 +41,24 @@ export default function ConsoleLayout() {
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 24,
+          gap: 16,
           borderBottom: "1px solid var(--eco-border)",
           background: "var(--eco-content-bg)",
         }}
       >
-        <Typography.Text strong style={{ fontSize: 15 }}>
+        <Button
+          type="text"
+          size="small"
+          className="console-menu-button"
+          onClick={() => setNavOpen(true)}
+        >
+          菜单
+        </Button>
+        <Typography.Text strong style={{ fontSize: 15, whiteSpace: "nowrap" }}>
           安环运营台
         </Typography.Text>
         <div style={{ flex: 1 }} />
-        <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+        <Typography.Text type="secondary" className="console-email" style={{ fontSize: 13 }}>
           {user?.profile.email ?? user?.profile.preferred_username ?? ""}
         </Typography.Text>
         <Button type="text" size="small" onClick={() => void logout()}>
@@ -57,6 +68,7 @@ export default function ConsoleLayout() {
       <Layout>
         <Layout.Sider
           width={200}
+          className="console-sider"
           style={{
             borderRight: "1px solid var(--eco-border)",
             background: "var(--eco-content-bg)",
@@ -71,7 +83,26 @@ export default function ConsoleLayout() {
             style={{ border: "none", background: "transparent" }}
           />
         </Layout.Sider>
+        <Drawer
+          placement="left"
+          open={navOpen}
+          onClose={() => setNavOpen(false)}
+          width={220}
+          title="安环运营台"
+        >
+          <Menu
+            mode="inline"
+            selectedKeys={[selectedKey(location.pathname)]}
+            items={NAV}
+            onClick={({ key }) => {
+              setNavOpen(false);
+              navigate(key);
+            }}
+            style={{ border: "none", background: "transparent" }}
+          />
+        </Drawer>
         <Layout.Content
+          className="console-content"
           style={{ background: "var(--eco-page-bg)", padding: "24px 32px 64px" }}
         >
           <Outlet />

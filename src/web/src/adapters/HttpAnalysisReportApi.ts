@@ -33,13 +33,17 @@ import {
   parseSessionAccess,
   parseVersionDetail,
   parseVersionHistory,
+  managementHealthFromHttp,
 } from "./wire";
+import type { ManagementHealthSnapshot } from "../features/managementHealth";
+import { toUiHealthSnapshot } from "../features/managementHealth";
 
 interface RawCrmAccount {
   id: string;
   display_name: string;
   stage: ClientStage;
   updated_at: string;
+  next_follow_up_at: string | null;
 }
 
 function toClient(raw: RawCrmAccount): ClientAccount {
@@ -48,6 +52,7 @@ function toClient(raw: RawCrmAccount): ClientAccount {
     name: raw.display_name,
     stage: raw.stage,
     updatedAt: raw.updated_at,
+    nextFollowUpAt: raw.next_follow_up_at ?? null,
   };
 }
 
@@ -67,6 +72,13 @@ function toMaterial(raw: RawDocument): MaterialItem {
     versionCount: raw.version_count,
     updatedAt: raw.updated_at,
   };
+}
+
+// 响应身份闭合：响应对象 ID 必须与请求一致，否则按合同错误 fail-closed。
+function assertResponseId(expected: string, actual: string): void {
+  if (expected !== actual) {
+    throw new ApiError(409, "RESPONSE_ID_MISMATCH", false);
+  }
 }
 
 export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
@@ -128,7 +140,18 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     const { payload } = await this.request<unknown>(
       `/v1/analysis-reports/published/${encodeURIComponent(reportId)}`,
     );
-    return parsePublishedDetail(payload);
+    const detail = parsePublishedDetail(payload);
+    assertResponseId(reportId, detail.report_id);
+    return detail;
+  }
+
+  async getLatestManagementHealth(): Promise<ManagementHealthSnapshot | null> {
+    const { status, payload } = await this.request<unknown>(
+      "/v1/analysis-reports/health/latest",
+    );
+    const envelope = managementHealthFromHttp(status, payload);
+    if (envelope.snapshot === null) return null;
+    return toUiHealthSnapshot(envelope.snapshot);
   }
 
   // —— 运营台 · 客户企业（既有 /api/v1/views-reports/crm/accounts） ——
@@ -234,14 +257,18 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     const { payload } = await this.request<unknown>(
       `/v1/analysis-reports/jobs/${encodeURIComponent(jobId)}`,
     );
-    return parseJobStatus(payload);
+    const job = parseJobStatus(payload);
+    assertResponseId(jobId, job.job_id);
+    return job;
   }
 
   async getVersion(versionId: string): Promise<VersionDetailV1> {
     const { payload } = await this.request<unknown>(
       `/v1/analysis-reports/versions/${encodeURIComponent(versionId)}`,
     );
-    return parseVersionDetail(payload);
+    const detail = parseVersionDetail(payload);
+    assertResponseId(versionId, detail.version_id);
+    return detail;
   }
 
   async listVersions(reportId: string): Promise<VersionHistoryItemV1[]> {

@@ -14,6 +14,7 @@ import type {
   VersionDetailV1,
   VersionHistoryItemV1,
 } from "./types";
+import type { ManagementHealthSnapshot } from "../features/managementHealth";
 
 export type TransitionAction = "submit" | "return" | "approve" | "publish" | "withdraw";
 
@@ -24,6 +25,7 @@ export interface AnalysisReportApi {
   // 客户端 · 已发布报告（本企业 published + artifact_ready）
   listPublishedReports(): Promise<PublishedReportSummaryV1[]>;
   getPublishedReport(reportId: string): Promise<PublishedReportDetailV1>;
+  getLatestManagementHealth(): Promise<ManagementHealthSnapshot | null>;
 
   // 运营台 · 客户企业
   listClients(): Promise<ClientAccount[]>;

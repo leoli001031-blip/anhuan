@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from ...auth import Tenant, tenant_from_header
 from ...features.analysis_reports import (
     GenerationDisabled,
+    HealthSnapshotUnavailable,
     ReportNotFound,
     ReportTransitionInvalid,
     RequestIdConflict,
@@ -16,6 +17,7 @@ from ...features.analysis_reports import (
     generate_report,
     get_published,
     job_status,
+    latest_health,
     list_client_reports,
     list_published,
     session_access,
@@ -49,6 +51,8 @@ def _map_error(exc: Exception) -> HTTPException:
         return HTTPException(status_code=409, detail="REPORT_TRANSITION_INVALID")
     if isinstance(exc, GenerationDisabled):
         return HTTPException(status_code=404, detail="ANALYSIS_REPORT_GENERATION_DISABLED")
+    if isinstance(exc, HealthSnapshotUnavailable):
+        return HTTPException(status_code=503, detail="HEALTH_SNAPSHOT_UNAVAILABLE")
     raise exc
 
 
@@ -82,6 +86,18 @@ async def client_get_published(
     _client_identity_rejected(request)
     try:
         return await get_published(tenant, report_id)
+    except Exception as exc:  # noqa: BLE001
+        raise _map_error(exc) from None
+
+
+@router.get("/health/latest")
+async def client_latest_health(
+    request: Request,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> dict:
+    _client_identity_rejected(request)
+    try:
+        return await latest_health(tenant)
     except Exception as exc:  # noqa: BLE001
         raise _map_error(exc) from None
 

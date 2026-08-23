@@ -5,7 +5,7 @@ the default f1_0014 compose, never creates realm users or passwords, and
 never writes real personal data.
 
 Requires dual local flags, pgint closed-set identity, and alembic head
-exactly f1_0017. Reuses realm subjects tenant-a (provider A) and invitee
+exactly f1_0018. Reuses realm subjects tenant-a (provider A) and invitee
 (client B). employee remains enterprise A / plant_admin and is never
 rewritten. Extra memberships and wrong roles fail-closed; this fixture
 never deletes memberships or overwrites roles.
@@ -49,6 +49,12 @@ CRM_DISPLAY_NAME = "Local analysis-report audience B"
 PARSER_VERSION = "arfix1"
 PROVIDER_MATERIAL_LABEL = "arfix-provider"
 CLIENT_MATERIAL_LABEL = "arfix-client"
+
+# 客户可见的材料展示名（内部 label / object_key / 散列保持原样）
+_DISPLAY_TITLES = {
+    PROVIDER_MATERIAL_LABEL: "服务商共享制度汇编",
+    CLIENT_MATERIAL_LABEL: "企业安环基础制度",
+}
 
 PROJECT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 PROJECT_NAME_RE = re.compile(r"^anhuan-ar-pgint-([0-9a-f]{12})$")
@@ -166,7 +172,7 @@ def _preflight_target_identity(
         "SELECT string_agg(version_num, ',' ORDER BY version_num), count(*) "
         "FROM f1.alembic_version"
     ).fetchone()
-    if head is None or tuple(head) != ("f1_0017", 1):
+    if head is None or tuple(head) != ("f1_0018", 1):
         raise RuntimeError("LOCAL_REPORT_FIXTURE_HEAD_MISMATCH")
 
 
@@ -397,7 +403,8 @@ def _insert_synthetic_unit(
     unit_id = _stable_material_id("unit", label)
     source_sha = hashlib.sha256(f"arfix|{label}|{local_seed.ENTERPRISE_A}".encode()).hexdigest()
     object_key = f"arfix/{label}"
-    title = f"{label}-current"
+    # 展示名面向客户可见，用业务化标题；内部 label/object_key/散列保持原样。
+    title = _DISPLAY_TITLES[label]
     body = f"{label} 合成材料用于分析报告本地夹具。"
     body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
     aad_sha = hashlib.sha256(f"arfix-aad|{label}".encode()).hexdigest()

@@ -1,14 +1,17 @@
 """Analysis-report application service. Fail-closed generation."""
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy.exc import SQLAlchemyError
+
 from ...auth import Tenant
 from ...database import session_scope
-from . import repository
+from . import health, repository
 from .contracts import (
     CLIENT_CAPABILITIES,
     ENGINEERING_FLAG,
@@ -16,6 +19,8 @@ from .contracts import (
     FrozenSourceSet,
     GenerationDisabled,
     GenerationFailed,
+    HealthScoreContext,
+    HealthSnapshotUnavailable,
     LOCAL_FLAG,
     PROVIDER_CAPABILITIES,
     PROVIDER_MEMBER_ROLES,
@@ -495,6 +500,18 @@ async def apply_transition(
         )
         if not ok:
             raise ReportTransitionInvalid()
+        if action == "publish" and generation_enabled():
+            published = await repository.get_version(
+                session, tenant.enterprise_id, version_id
+            )
+            if published is None or published.get("published_at") is None:
+                raise HealthSnapshotUnavailable()
+            await _store_health_snapshot(
+                session,
+                enterprise_id=tenant.enterprise_id,
+                version=published,
+                actor_id=actor_id,
+            )
         report = await repository.get_report(
             session, tenant.enterprise_id, version["report_id"]
         )
@@ -502,6 +519,100 @@ async def apply_transition(
     if report is None:
         raise ReportNotFound()
     return _summary(report)
+
+
+async def _store_health_snapshot(
+    session: Any,
+    *,
+    enterprise_id: uuid.UUID,
+    version: dict[str, Any],
+    actor_id: uuid.UUID,
+) -> None:
+    context = HealthScoreContext(
+        report_id=uuid.UUID(str(version["report_id"])),
+        version_id=uuid.UUID(str(version["id"])),
+        version_number=int(version["version_number"]),
+        report_title=TEMPLATE_TITLE,
+        assessed_on=version["published_at"],
+    )
+    snapshot = health.local_scorer().score(context)
+    snapshot = health.validate_snapshot(snapshot)
+    digest = health.payload_sha256(snapshot)
+    await repository.insert_health_snapshot(
+        session,
+        enterprise_id=enterprise_id,
+        report_id=version["report_id"],
+        version_id=version["id"],
+        client_account_id=version["client_account_id"],
+        payload=snapshot,
+        payload_sha256=digest,
+        score=int(snapshot["score"]),
+        max_score=int(snapshot["max_score"]),
+    )
+    await repository.add_audit(
+        session,
+        enterprise_id=enterprise_id,
+        report_id=version["report_id"],
+        version_id=version["id"],
+        actor_id=actor_id,
+        action="health_snapshot_created",
+        from_status="approved",
+        to_status="published",
+    )
+
+
+async def latest_health(tenant: Tenant) -> dict[str, Any]:
+    if product_role_for(tenant) != "client_user":
+        raise ReportNotFound()
+    if not generation_enabled():
+        return health.empty_envelope()
+    try:
+        async with session_scope(
+            role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
+        ) as session:
+            published = await repository.list_published_for_client(
+                session, tenant.enterprise_id
+            )
+            if not published:
+                return health.empty_envelope()
+            latest = published[0]
+            row = await repository.get_health_snapshot(
+                session, latest["version_id"]
+            )
+            if row is None:
+                return health.empty_envelope()
+            if (
+                str(row["report_id"]) != str(latest["report_id"])
+                or str(row["version_id"]) != str(latest["version_id"])
+                or int(row["version_number"]) != int(latest["version_number"])
+            ):
+                raise HealthSnapshotUnavailable()
+            payload = row["payload"]
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except json.JSONDecodeError as extra:
+                    raise HealthSnapshotUnavailable() from extra
+            if not isinstance(payload, dict):
+                raise HealthSnapshotUnavailable()
+            snapshot = health.validate_snapshot(payload, from_storage=True)
+            if (
+                snapshot["report_id"] != str(latest["report_id"])
+                or snapshot["version_id"] != str(latest["version_id"])
+                or int(snapshot["version_number"]) != int(latest["version_number"])
+                or snapshot["assessed_on"] != health.as_iso(row["published_at"])
+            ):
+                raise HealthSnapshotUnavailable()
+            digest = health.payload_sha256(snapshot)
+            if digest != row["payload_sha256"] or int(row["score"]) != int(
+                snapshot["score"]
+            ) or int(row["max_score"]) != int(snapshot["max_score"]):
+                raise HealthSnapshotUnavailable()
+            return health.http_envelope(snapshot)
+    except HealthSnapshotUnavailable:
+        raise
+    except (SQLAlchemyError, TypeError, ValueError) as exc:
+        raise HealthSnapshotUnavailable() from exc
 
 
 async def version_history(tenant: Tenant, report_id: uuid.UUID) -> dict[str, Any]:

@@ -3,17 +3,17 @@
 import type { ThemeConfig } from "antd";
 
 export const eco = {
-  primary: "#0F766E",
-  primaryHover: "#115E59",
-  primarySoft: "#ECFDF5",
-  pageBackground: "#F7F9F6",
-  contentBackground: "#FFFFFF",
-  textPrimary: "#1F2937",
-  textSecondary: "#66736C",
-  border: "#DDE5DF",
-  success: "#2E7D32",
-  warning: "#B26A00",
-  danger: "#B42318",
+  primary: "#174D3A",
+  primaryHover: "#2F7D61",
+  primarySoft: "#EEF5F1",
+  pageBackground: "#F5F7F4",
+  contentBackground: "#FBFCFA",
+  textPrimary: "#202824",
+  textSecondary: "#66706A",
+  border: "#DCE5DF",
+  success: "#2F7D61",
+  warning: "#A86605",
+  danger: "#C7463A",
 } as const;
 
 export const antdTheme: ThemeConfig = {
@@ -33,6 +33,7 @@ export const antdTheme: ThemeConfig = {
     colorPrimaryHover: eco.primaryHover,
     colorPrimaryBg: eco.primarySoft,
     borderRadius: 6,
+    boxShadow: "none",
     fontFamily:
       'system-ui, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif',
   },

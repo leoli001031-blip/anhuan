@@ -301,7 +301,7 @@ async def list_published_for_client(
                 " AND version.report_id = report.id "
                 "WHERE version.status = 'published' "
                 "AND version.artifact_ready IS TRUE "
-                "ORDER BY version.published_at DESC"
+                "ORDER BY version.published_at DESC, version.version_number DESC, version.id DESC"
             ),
             {"audience_enterprise_id": audience_enterprise_id},
         )
@@ -874,3 +874,60 @@ async def add_audit(
             "to_status": to_status,
         },
     )
+
+
+async def insert_health_snapshot(
+    session: AsyncSession,
+    *,
+    enterprise_id: uuid.UUID,
+    report_id: uuid.UUID,
+    version_id: uuid.UUID,
+    client_account_id: uuid.UUID,
+    payload: dict[str, Any],
+    payload_sha256: str,
+    score: int,
+    max_score: int,
+) -> None:
+    await session.execute(
+        text(
+            "INSERT INTO f1.analysis_report_health_snapshot ("
+            "id, enterprise_id, report_id, version_id, client_account_id, "
+            "payload, payload_sha256, score, max_score"
+            ") VALUES ("
+            ":id, :enterprise_id, :report_id, :version_id, :client_account_id, "
+            "CAST(:payload AS jsonb), :payload_sha256, :score, :max_score"
+            ")"
+        ),
+        {
+            "id": uuid.uuid4(),
+            "enterprise_id": enterprise_id,
+            "report_id": report_id,
+            "version_id": version_id,
+            "client_account_id": client_account_id,
+            "payload": json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            "payload_sha256": payload_sha256,
+            "score": score,
+            "max_score": max_score,
+        },
+    )
+
+
+async def get_health_snapshot(
+    session: AsyncSession, version_id: uuid.UUID
+) -> dict[str, Any] | None:
+    row = (
+        await session.execute(
+            text(
+                "SELECT snapshot.payload, snapshot.payload_sha256, snapshot.score, "
+                "snapshot.max_score, snapshot.report_id, snapshot.version_id, "
+                "version.version_number, version.published_at "
+                "FROM f1.analysis_report_health_snapshot AS snapshot "
+                "JOIN f1.analysis_report_version AS version "
+                "  ON version.enterprise_id = snapshot.enterprise_id "
+                " AND version.id = snapshot.version_id "
+                "WHERE snapshot.version_id = :version_id"
+            ),
+            {"version_id": version_id},
+        )
+    ).mappings().first()
+    return dict(row) if row else None

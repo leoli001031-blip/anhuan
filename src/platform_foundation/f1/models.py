@@ -3035,6 +3035,63 @@ class AnalysisReportAuditEvent(Base):
     )
 
 
+class AnalysisReportHealthSnapshot(Base):
+    __tablename__ = "analysis_report_health_snapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="analysis_report_health_snapshot_enterprise_id_id_uq"
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "version_id",
+            name="analysis_report_health_snapshot_version_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "report_id", "version_id"),
+            (
+                "f1.analysis_report_version.enterprise_id",
+                "f1.analysis_report_version.report_id",
+                "f1.analysis_report_version.id",
+            ),
+            name="analysis_report_health_snapshot_version_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "report_id", "client_account_id"),
+            (
+                "f1.analysis_report.enterprise_id",
+                "f1.analysis_report.id",
+                "f1.analysis_report.client_account_id",
+            ),
+            name="analysis_report_health_snapshot_client_fk",
+        ),
+        CheckConstraint("score >= 0 AND score <= 100", name="analysis_report_health_snapshot_score_ck"),
+        CheckConstraint("max_score = 100", name="analysis_report_health_snapshot_max_ck"),
+        CheckConstraint("score <= max_score", name="analysis_report_health_snapshot_score_max_ck"),
+        CheckConstraint(
+            "payload_sha256 ~ '^[0-9a-f]{64}$'",
+            name="analysis_report_health_snapshot_sha_ck",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(payload) = 'object'",
+            name="analysis_report_health_snapshot_payload_object_ck",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
+    report_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    client_account_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON)
+    payload_sha256: Mapped[str] = mapped_column(String(64))
+    score: Mapped[int] = mapped_column(Integer)
+    max_score: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
 __all__ = (
     "Enterprise",
     "Plant",
@@ -3074,6 +3131,7 @@ __all__ = (
     "AnalysisReportCitation",
     "AnalysisReportGenerationJob",
     "AnalysisReportAuditEvent",
+    "AnalysisReportHealthSnapshot",
     "PolicySource",
     "PolicyVersion",
     "MaterialAnalysis",

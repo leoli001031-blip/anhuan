@@ -437,7 +437,7 @@ def run_status() -> dict[str, object]:
     expected = {
         "ark_calls": 0,
         "client_login_ready": 1,
-        "f1_head": "f1_0017",
+        "f1_head": "f1_0018",
         "generator": "deterministic_local",
         "mock_data": 0,
         "provider_login_ready": 1,

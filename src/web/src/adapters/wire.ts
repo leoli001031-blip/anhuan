@@ -17,6 +17,7 @@ import type {
   VersionDetailV1,
   VersionHistoryItemV1,
 } from "./types";
+import type { ManagementHealthSnapshotV1 } from "../features/managementHealth";
 import {
   SECTION_ORDER,
   SESSION_SCHEMA,
@@ -278,4 +279,155 @@ export function parseVersionDetail(raw: unknown): VersionDetailV1 {
     sections: reqArray(row, "sections").map(parseSection),
     citations: reqArray(row, "citations").map(parseCitation),
   };
+}
+
+const HEALTH_SCHEMA = "anhuan-analysis-report-health-v1";
+const HEALTH_ENVELOPE_KEYS = ["schema", "snapshot"] as const;
+const HEALTH_SNAPSHOT_KEYS = [
+  "report_id",
+  "version_id",
+  "version_number",
+  "report_title",
+  "score",
+  "max_score",
+  "status_label",
+  "assessed_on",
+  "basis_label",
+  "evidence_mode",
+  "dimensions",
+  "priorities",
+  "boundary",
+] as const;
+const HEALTH_DIMENSION_KEYS = ["key", "label", "score", "max_score", "summary", "tone"] as const;
+const HEALTH_PRIORITY_KEYS = ["title", "level"] as const;
+const HEALTH_DIMENSION_SPECS = [
+  { key: "material-completeness", max: 15 },
+  { key: "permits", max: 20 },
+  { key: "monitoring", max: 20 },
+  { key: "remediation", max: 25 },
+  { key: "expiry", max: 10 },
+  { key: "evidence", max: 10 },
+] as const;
+const HEALTH_TONES = new Set(["positive", "attention", "priority"]);
+const HEALTH_LEVELS = new Set(["high", "medium"]);
+const HEALTH_ISO =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
+const HEALTH_LEAK = /provider|client|binding|scope|dataset|chunk|sha|lease|request[_-]?id/i;
+
+function isRealUtcCalendarDate(value: string): boolean {
+  if (!HEALTH_ISO.test(value)) return false;
+  const year = Number(value.slice(0, 4));
+  const month = Number(value.slice(5, 7));
+  const day = Number(value.slice(8, 10));
+  const utc = new Date(Date.UTC(year, month - 1, day));
+  return (
+    utc.getUTCFullYear() === year &&
+    utc.getUTCMonth() === month - 1 &&
+    utc.getUTCDate() === day
+  );
+}
+
+function exactKeys(row: Record<string, unknown>, keys: readonly string[]): void {
+  const actual = Object.keys(row);
+  if (actual.length !== keys.length || actual.some((key, index) => key !== keys[index])) {
+    wireError("CONTRACT_FIELD_MISSING");
+  }
+}
+
+function rejectLeaks(value: unknown): void {
+  if (Array.isArray(value)) {
+    value.forEach(rejectLeaks);
+    return;
+  }
+  if (value !== null && typeof value === "object") {
+    for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+      if (HEALTH_LEAK.test(key)) wireError("CONTRACT_FIELD_MISSING");
+      rejectLeaks(inner);
+    }
+  }
+}
+
+export function parseHealthEnvelope(
+  raw: unknown,
+): { schema: typeof HEALTH_SCHEMA; snapshot: ManagementHealthSnapshotV1 | null } {
+  const row = asRecord(raw, "CONTRACT_FIELD_MISSING");
+  exactKeys(row, HEALTH_ENVELOPE_KEYS);
+  rejectLeaks(row);
+  reqConst(row, "schema", HEALTH_SCHEMA);
+  if (row.snapshot === null) {
+    return { schema: HEALTH_SCHEMA, snapshot: null };
+  }
+  const snapshot = asRecord(row.snapshot, "CONTRACT_FIELD_MISSING");
+  exactKeys(snapshot, HEALTH_SNAPSHOT_KEYS);
+  if (reqInt(snapshot, "max_score", 100) !== 100) wireError("CONTRACT_FIELD_MISSING");
+  const assessedOn = reqString(snapshot, "assessed_on");
+  if (!isRealUtcCalendarDate(assessedOn)) wireError("CONTRACT_FIELD_MISSING");
+  const evidenceMode = reqString(snapshot, "evidence_mode");
+  if (evidenceMode !== "deterministic_local") wireError("CONTRACT_FIELD_MISSING");
+  const dimensionsRaw = reqArray(snapshot, "dimensions");
+  if (dimensionsRaw.length !== HEALTH_DIMENSION_SPECS.length) {
+    wireError("CONTRACT_FIELD_MISSING");
+  }
+  const dimensions = dimensionsRaw.map((item, index) => {
+    const dim = asRecord(item, "CONTRACT_FIELD_MISSING");
+    exactKeys(dim, HEALTH_DIMENSION_KEYS);
+    const spec = HEALTH_DIMENSION_SPECS[index];
+    if (reqString(dim, "key") !== spec.key) wireError("CONTRACT_FIELD_MISSING");
+    const maxScore = reqInt(dim, "max_score", spec.max);
+    if (maxScore !== spec.max) wireError("CONTRACT_FIELD_MISSING");
+    const score = reqInt(dim, "score", 0);
+    if (score > spec.max) wireError("CONTRACT_FIELD_MISSING");
+    const tone = reqString(dim, "tone");
+    if (!HEALTH_TONES.has(tone)) wireError("CONTRACT_FIELD_MISSING");
+    return {
+      key: spec.key,
+      label: reqString(dim, "label"),
+      score,
+      max_score: spec.max,
+      summary: reqString(dim, "summary"),
+      tone: tone as "positive" | "attention" | "priority",
+    };
+  });
+  const score = reqInt(snapshot, "score", 0);
+  const summed = dimensions.reduce((total, dim) => total + dim.score, 0);
+  if (score !== summed || score > 100) wireError("CONTRACT_FIELD_MISSING");
+  const prioritiesRaw = reqArray(snapshot, "priorities");
+  if (prioritiesRaw.length < 1 || prioritiesRaw.length > 3) {
+    wireError("CONTRACT_FIELD_MISSING");
+  }
+  const priorities = prioritiesRaw.map((item) => {
+    const priority = asRecord(item, "CONTRACT_FIELD_MISSING");
+    exactKeys(priority, HEALTH_PRIORITY_KEYS);
+    const level = reqString(priority, "level");
+    if (!HEALTH_LEVELS.has(level)) wireError("CONTRACT_FIELD_MISSING");
+    return { title: reqString(priority, "title"), level: level as "high" | "medium" };
+  });
+  return {
+    schema: HEALTH_SCHEMA,
+    snapshot: {
+      report_id: reqUuid(snapshot, "report_id"),
+      version_id: reqUuid(snapshot, "version_id"),
+      version_number: reqInt(snapshot, "version_number", 1),
+      report_title: reqString(snapshot, "report_title"),
+      score,
+      max_score: 100,
+      status_label: reqString(snapshot, "status_label"),
+      assessed_on: assessedOn,
+      basis_label: reqString(snapshot, "basis_label"),
+      evidence_mode: "deterministic_local",
+      dimensions,
+      priorities,
+      boundary: reqString(snapshot, "boundary"),
+    },
+  };
+}
+
+export function managementHealthFromHttp(
+  status: number,
+  payload: unknown,
+): { schema: typeof HEALTH_SCHEMA; snapshot: ManagementHealthSnapshotV1 | null } {
+  if (status === 503) {
+    throw new ApiError(503, "HEALTH_SNAPSHOT_UNAVAILABLE", true);
+  }
+  return parseHealthEnvelope(payload);
 }

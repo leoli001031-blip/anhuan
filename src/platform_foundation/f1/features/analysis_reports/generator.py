@@ -49,15 +49,14 @@ class FakeDeterministicReportGenerator:
             raise GenerationFailed("REPORT_CITATION_MISSING")
         provider_n = sum(1 for s in frozen.sources if s.scope_kind == "service_provider")
         client_n = sum(1 for s in frozen.sources if s.scope_kind == "client")
-        digest = frozen.fingerprint_sha256[:12]
         bodies = {
             "source_scope": f"已纳入服务方共享资料 {provider_n} 份与本企业已发布资料 {client_n} 份。",
-            "status_summary": f"企业已建立基础安环制度，现场执行记录不完整（{digest}）。",
+            "status_summary": "企业已建立基础安环制度，现场执行记录不完整。",
             "key_findings": "危化品台账与现场标识存在不一致。",
             "risks_and_gaps": "应急预案未覆盖夜班值班场景。",
             "remediation": "30 日内完成台账核对并补齐应急预案附录。",
-            "citations": "结论均绑定已发布文档版本页码，见 citations 列表。",
-            "usage_boundary": "本报告由本地确定性夹具生成，不得作为执法或生产放行依据。",
+            "citations": "结论均可溯源至下列已发布材料的版本与页码。",
+            "usage_boundary": "本报告基于所列材料生成，仅供内部管理参考，不作为执法或生产放行依据。",
         }
         sections = tuple(
             GeneratedSection(key=key, title=SECTION_TITLES[key], body=bodies[key])
@@ -66,6 +65,6 @@ class FakeDeterministicReportGenerator:
         if len(sections) != 7:
             raise GenerationFailed("REPORT_SCHEMA_INVALID")
         _ = TEMPLATE_TITLE
-        _ = hashlib.sha256(digest.encode("utf-8")).hexdigest()
+        _ = hashlib.sha256(frozen.fingerprint_sha256.encode("utf-8")).hexdigest()
         _ = uuid.uuid5(_NAMESPACE, frozen.fingerprint_sha256)
         return GeneratedReport(sections=sections, citations=tuple(citations))

@@ -11,6 +11,8 @@ export function useClient(clientId: string) {
 
   useEffect(() => {
     let active = true;
+    // 路由客户变化：先清旧状态再加载，避免串客户残留。
+    setClient(null);
     setError(null);
     api
       .getClient(clientId)

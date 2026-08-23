@@ -1,7 +1,7 @@
 """Task-local migration entrypoint for analysis-report tables.
 
 Default engineering remains frozen at f1_0014. Material-RAG dedicated
-migrator remains f1_0016. This entrypoint alone requests f1_0017.
+migrator remains f1_0016. This entrypoint alone requests f1_0018.
 """
 from __future__ import annotations
 
@@ -65,6 +65,7 @@ ANALYSIS_REPORT_TABLES = (
     "analysis_report_citation",
     "analysis_report_generation_job",
     "analysis_report_audit_event",
+    "analysis_report_health_snapshot",
 )
 EXPECTED_RLS_TABLES = (
     P2_P7_FORCE_RLS_TABLES + MATERIAL_RAG_TABLES + ANALYSIS_REPORT_TABLES
@@ -81,7 +82,7 @@ def _verify_catalog(connection: object) -> None:
             "(SELECT min(version_num) FROM f1.alembic_version)"
         )
     ).one()
-    if tuple(heads) != (1, "f0d_0006", 1, "f1_0017"):
+    if tuple(heads) != (1, "f0d_0006", 1, "f1_0018"):
         raise RuntimeError("LOCAL_ANALYSIS_REPORT_MIGRATION_HEAD_MISMATCH")
 
     observed = connection.execute(

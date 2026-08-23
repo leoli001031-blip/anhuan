@@ -1,11 +1,11 @@
 // 运营台 · 报告工作台（/console/clients/:clientId/reports/:reportId）
-// 左 60% 文档预览（与客户所见同版式），右 40%：生成进度 / 审核清单 / 版本历史 / 操作。
+// ≥1280px 左文档右审核；<1280px 正文在上、审核区在下，全部操作保持可见。
 // 危险操作（退回、撤回）二次确认；409 映射为「状态已变化」并自动刷新。
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button, Checkbox, Col, Modal, Row, Spin, Typography, message } from "antd";
+import { Button, Checkbox, Modal, Spin, Typography, message } from "antd";
 import { Link, useParams } from "react-router-dom";
-import { useApi } from "../../adapters";
-import { errorKind } from "../../adapters/errors";
+import { useApi, useSessionAccess } from "../../adapters";
+import { ApiError, errorKind } from "../../adapters/errors";
 import type {
   ReportStatus,
   VersionDetailV1,
@@ -35,7 +35,10 @@ const CHECKLIST = ["引用证据可溯源", "风险与缺口表述完整", "使�
 export default function ReportWorkbenchPage() {
   const { reportId = "", clientId = "" } = useParams();
   const api = useApi();
+  const { session } = useSessionAccess();
+  const capabilities = new Set(session?.capabilities ?? []);
   const generateRequestId = useRef<string | null>(null);
+  const detailEpoch = useRef(0);
 
   const [versions, setVersions] = useState<VersionHistoryItemV1[] | null>(null);
   const [listError, setListError] = useState<unknown>(null);
@@ -44,11 +47,57 @@ export default function ReportWorkbenchPage() {
   const [detailError, setDetailError] = useState<unknown>(null);
   const [checked, setChecked] = useState<boolean[]>(CHECKLIST.map(() => false));
   const [job, setJob] = useState<{ jobId: string; status: string } | null>(null);
+  const [jobPollFailed, setJobPollFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [nonce, setNonce] = useState(0);
+  // 绑定证明：reportId 必须先出现在该客户的报告列表里，否则禁止读版本与执行动作。
+  const [bound, setBound] = useState(false);
 
-  // 版本历史
+  // 生成任务上下文按报告持久化（sessionStorage），查询中断可恢复重查。
+  const jobStorageKey = `ar-job:${reportId}`;
+
+  // 路由客户/报告变化：先清旧状态（版本/选中/详情/任务/请求ID），不残留上一上下文。
   useEffect(() => {
+    setVersions(null);
+    setListError(null);
+    setSelectedId(null);
+    setDetail(null);
+    setDetailError(null);
+    setChecked(CHECKLIST.map(() => false));
+    setJobPollFailed(false);
+    setBound(false);
+    generateRequestId.current = null;
+    detailEpoch.current += 1;
+    const saved = sessionStorage.getItem(jobStorageKey);
+    setJob(saved ? { jobId: saved, status: "generating" } : null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportId, clientId]);
+
+  // 归属证明：listClientReports(clientId) 命中 reportId 才允许后续读取与动作
+  useEffect(() => {
+    if (bound) return;
+    let active = true;
+    api
+      .listClientReports(clientId)
+      .then((reports) => {
+        if (!active) return;
+        if (reports.some((r) => r.report_id === reportId)) {
+          setBound(true);
+        } else {
+          setListError(new ApiError(404, "REPORT_NOT_FOUND", false));
+        }
+      })
+      .catch((e) => {
+        if (active) setListError(e);
+      });
+    return () => {
+      active = false;
+    };
+  }, [api, clientId, reportId, bound]);
+
+  // 版本历史（绑定后才读取）
+  useEffect(() => {
+    if (!bound) return;
     let active = true;
     setListError(null);
     api
@@ -68,56 +117,73 @@ export default function ReportWorkbenchPage() {
     return () => {
       active = false;
     };
-  }, [api, reportId, nonce]);
+  }, [api, reportId, nonce, bound]);
 
   useEffect(() => {
     setChecked(CHECKLIST.map(() => false));
   }, [selectedId]);
 
-  // 选中版本的草稿/审核详情。刷新不得清空已勾审核清单。
+  // 选中版本的草稿/审核详情。刷新不得清空已勾审核清单；epoch 拒绝迟到响应。
   useEffect(() => {
-    if (!selectedId) {
+    if (!selectedId || !bound) {
       setDetail(null);
       return;
     }
     let active = true;
+    const at = ++detailEpoch.current;
     setDetailError(null);
     api
       .getVersion(selectedId)
       .then((d) => {
-        if (active) setDetail(d);
+        if (active && at === detailEpoch.current) setDetail(d);
       })
       .catch((e) => {
-        if (active) setDetailError(e);
+        if (active && at === detailEpoch.current) setDetailError(e);
       });
     return () => {
       active = false;
     };
-  }, [api, selectedId, nonce]);
+  }, [api, selectedId, nonce, bound]);
 
-  // 生成进度轮询：终态即停，失败只给业务文案
+  // 生成进度轮询：终态即停并校验版本归属；查询失败保留上下文、允许重查。绑定后才轮询。
   useEffect(() => {
-    if (!job || job.status === "draft" || job.status === "failed") return;
+    if (!bound || !job || job.status === "draft" || job.status === "failed") return;
     const timer = setTimeout(() => {
       api
         .getJob(job.jobId)
         .then((next) => {
+          setJobPollFailed(false);
           setJob({ jobId: job.jobId, status: next.status });
           if (next.status === "draft") {
             generateRequestId.current = null;
-            message.success("生成完成，已进入草稿");
+            sessionStorage.removeItem(jobStorageKey);
+            // 归属校验：回读版本列表，确认新版本属于当前报告
             setNonce((n) => n + 1);
-            setSelectedId(next.version_id);
+            api
+              .listVersions(reportId)
+              .then((items) => {
+                if (items.some((v) => v.version_id === next.version_id)) {
+                  message.success("生成完成，已进入草稿");
+                  setSelectedId(next.version_id);
+                } else {
+                  message.error("版本归属校验失败，已为你刷新");
+                }
+              })
+              .catch(() => message.error("生成结果确认失败，请刷新重试"));
           } else if (next.status === "failed") {
             generateRequestId.current = null;
+            sessionStorage.removeItem(jobStorageKey);
             message.error("生成失败，请检查材料后重新生成");
             setNonce((n) => n + 1);
           }
         })
-        .catch(() => setJob(null));
+        .catch(() => {
+          // 状态查询中断：保留任务上下文，等待人工重查
+          setJobPollFailed(true);
+        });
     }, 2000);
     return () => clearTimeout(timer);
-  }, [api, job]);
+  }, [api, job, jobStorageKey, reportId, bound]);
 
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
 
@@ -186,6 +252,7 @@ export default function ReportWorkbenchPage() {
         refresh();
       } else {
         setJob({ jobId: accepted.job_id, status: accepted.status });
+        sessionStorage.setItem(jobStorageKey, accepted.job_id);
       }
     } catch (e) {
       if (errorKind(e) === "notFound") {
@@ -223,8 +290,8 @@ export default function ReportWorkbenchPage() {
           ← 返回报告列表
         </Link>
       </div>
-      <Row gutter={32}>
-        <Col flex="auto" style={{ minWidth: 0 }}>
+      <div className="workbench-grid">
+        <div className="workbench-doc">
           <Typography.Title level={4} style={{ marginTop: 0 }}>
             企业安环资料分析报告
             {current ? ` · 第 ${current.version_number} 版` : ""}
@@ -233,7 +300,7 @@ export default function ReportWorkbenchPage() {
             <ErrorState error={detailError} onRetry={refresh} />
           ) : !current ? (
             <Typography.Paragraph type="secondary">
-              空报告：尚无版本。请在右侧生成首个版本。
+              空报告：尚无版本。请在操作区生成首个版本。
             </Typography.Paragraph>
           ) : detail && detail.sections.length > 0 ? (
             <ReportDocument sections={detail.sections} citations={detail.citations} serif />
@@ -244,21 +311,27 @@ export default function ReportWorkbenchPage() {
                 : "该版本暂无内容。"}
             </Typography.Paragraph>
           )}
-        </Col>
-        <Col flex="360px">
-          <div
-            style={{
-              borderLeft: "1px solid var(--eco-border)",
-              paddingLeft: 24,
-              display: "flex",
-              flexDirection: "column",
-              gap: 24,
-            }}
-          >
-            <section>
+        </div>
+        <div className="workbench-panel">
+          <section>
               <Typography.Text strong>生成进度</Typography.Text>
               <div style={{ marginTop: 8 }}>
-                {generating ? (
+                {jobPollFailed && job ? (
+                  <div>
+                    <Typography.Paragraph type="secondary" style={{ marginBottom: 8 }}>
+                      状态查询中断，生成可能仍在进行。
+                    </Typography.Paragraph>
+                    <Button
+                      size="small"
+                      onClick={() => {
+                        setJobPollFailed(false);
+                        setJob({ jobId: job.jobId, status: "generating" });
+                      }}
+                    >
+                      重新查询
+                    </Button>
+                  </div>
+                ) : generating ? (
                   <StatusDot tone="processing" label="正在生成，通常需要数十秒…" />
                 ) : (
                   <StatusDot
@@ -337,7 +410,8 @@ export default function ReportWorkbenchPage() {
             >
               <Typography.Text strong>操作</Typography.Text>
               <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-                {(status === "empty" || status === "changes_requested" || status === "failed" ||
+                {capabilities.has("generate") &&
+                  (status === "empty" || status === "changes_requested" || status === "failed" ||
                   status === "superseded" || status === "withdrawn") && (
                   <Button
                     type="primary"
@@ -348,12 +422,12 @@ export default function ReportWorkbenchPage() {
                     {status === "empty" ? "生成首个版本" : "生成新版本"}
                   </Button>
                 )}
-                {status === "draft" && (
+                {status === "draft" && capabilities.has("review") && (
                   <Button type="primary" loading={busy} onClick={() => void runTransition("submit")}>
                     提交审核
                   </Button>
                 )}
-                {status === "review_pending" && (
+                {status === "review_pending" && capabilities.has("review") && (
                   <>
                     <Button
                       type="primary"
@@ -378,12 +452,12 @@ export default function ReportWorkbenchPage() {
                     </Button>
                   </>
                 )}
-                {status === "approved" && (
+                {status === "approved" && capabilities.has("publish") && (
                   <Button type="primary" loading={busy} onClick={confirmPublish}>
                     发布
                   </Button>
                 )}
-                {status === "published" && (
+                {status === "published" && capabilities.has("withdraw") && (
                   <Button
                     danger
                     loading={busy}
@@ -400,9 +474,8 @@ export default function ReportWorkbenchPage() {
                 )}
               </div>
             </section>
-          </div>
-        </Col>
-      </Row>
+        </div>
+      </div>
     </div>
   );
 }

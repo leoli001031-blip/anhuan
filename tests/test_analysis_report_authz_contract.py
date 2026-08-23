@@ -53,7 +53,7 @@ MATERIAL_RAG_3 = {
     "material_rag_unit",
     "material_rag_job",
 }
-ANALYSIS_REPORT_7 = {
+ANALYSIS_REPORT_8 = {
     "analysis_report_client_audience",
     "analysis_report",
     "analysis_report_version",
@@ -61,6 +61,7 @@ ANALYSIS_REPORT_7 = {
     "analysis_report_citation",
     "analysis_report_generation_job",
     "analysis_report_audit_event",
+    "analysis_report_health_snapshot",
 }
 
 
@@ -175,14 +176,15 @@ class AnalysisReportMigratorCatalogContracts(unittest.TestCase):
         expected = _tuple_names(MIGRATOR, "EXPECTED_RLS_TABLES")
         self.assertEqual(set(p2_tables), P2_P7_31)
         self.assertEqual(set(material_tables), MATERIAL_RAG_3)
-        self.assertEqual(set(analysis_tables), ANALYSIS_REPORT_7)
+        self.assertEqual(set(analysis_tables), ANALYSIS_REPORT_8)
         self.assertIn("analysis_report_client_audience", analysis_tables)
-        self.assertEqual(len(p2_tables) + len(material_tables) + len(analysis_tables), 41)
-        self.assertEqual(set(expected), P2_P7_31 | MATERIAL_RAG_3 | ANALYSIS_REPORT_7)
-        self.assertEqual(len(expected), 41)
-        self.assertEqual(len(set(expected)), 41)
+        self.assertIn("analysis_report_health_snapshot", analysis_tables)
+        self.assertEqual(len(p2_tables) + len(material_tables) + len(analysis_tables), 42)
+        self.assertEqual(set(expected), P2_P7_31 | MATERIAL_RAG_3 | ANALYSIS_REPORT_8)
+        self.assertEqual(len(expected), 42)
+        self.assertEqual(len(set(expected)), 42)
         source = _source(MIGRATOR)
-        self.assertIn('"f1_0017"', source)
+        self.assertIn('"f1_0018"', source)
         self.assertIn("F1_ANALYSIS_REPORT_MIGRATE_TARGET", source)
         self.assertNotIn("local_migrate.P2_P7_TABLES", source)
         self.assertIn("relforcerowsecurity", source)
