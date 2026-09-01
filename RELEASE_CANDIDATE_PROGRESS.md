@@ -155,3 +155,12 @@
 - **远端真实生成验证**：服务器 report-worker 启用后（修复：cloud-ocr override 此前漏挂 report-worker 的 key 卷，曾致 `REPORT_LLM_CONFIGURATION_INVALID` 正确 fail-closed），真实 GLM 生成 38s 完成：7 节草稿 + 3 条白名单引用；内容质量显著优于 extractive 模板——将扫描件 OCR 文本（环氧丙烷储罐区/重大危险源/每日研判公示）综合进发现/风险缺口（“制度有、执行证据缺”类推断）/整改建议。生成投递 `done`；此前缺 key 的一次尝试留 failed 版本（终态正确）。
 - 状态令牌诚实化：`_api_generator_flags` 探测 report-worker 的 LLM 开关报 `glm_chat`；`local_candidate` 期望值随 `A_ECO_REPORT_LLM` 环境推导（本地默认仍 `evidence_local`）。
 - 边界：生成质量未做人工评审与准确率评估；GLM 额度为个人 Coding Plan（交付前换甲方 key）；`failed` 历史版本保留为正确终态；LLM 报告亦受 usage_boundary 约束（非合规结论）。现役新增：`REMOTE_BROWSER_WORKFLOW_UAT_PASSED / LLM_REPORT_GENERATION_LIVE_PASSED / CONTENT_QUALITY_NOT_HUMAN_REVIEWED / NOT_PRODUCTION`。
+
+## 2026-09-02 正式 PDF 产物 + 最终浏览器门 + 交付收尾
+
+- **`artifact.pdf` 端点**：`pdf_artifact.render_pdf_artifact` 与 HTML 产物同 payload/同校验/同固定 reason（捆绑 OFL Noto Sans SC 字体、固定创建日期、输出限界、字体解析 fail-closed——显式 env 必须存在，不回落）；`/versions/{id}/artifact.pdf` 与 `/published/{report_id}/artifact.pdf` 镜像 HTML 路由；`_artifact_response` 按后缀分发媒体类型（PDF 强制 `%PDF-` 魔数）。依赖 fpdf2/defusedxml/fonttools/pillow 进锁（多平台 hash），`local.Dockerfile` 拷贝 `assets/`（字体+OFL）。部署期修复两处：包 `__init__` 未导出新服务（api 崩溃循环）、响应构造器硬编码 `.html`（404）。
+- **远端验证**：GLM 生成的 draft 版本 `artifact.pdf` 返回 200/`application/pdf`/65151 字节/`%PDF-1.6`，目检中文渲染与 7 节结构正常（截图留档）；产物已存 `smoke-evidence/a-eco-analysis-report-llm-draft.pdf`（0600）。
+- **前端入口**：portal 详情页与 console 工作台新增「下载 PDF 报告」按钮（adapter 泛化 fileArtifact、mock 同步实现）。
+- **最终浏览器门**：web 重建后重跑 `analysis-report-workflow` 全流程 `LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_OK` exit 0、stderr 空——且本次 `generation_draft` 实际由 GLM 生成（report-worker LLM=1），即浏览器全流程 × LLM 报告组合验证通过（7 节、3 引用、提交/批准/发布/客户可见/撤回隐藏全绿）。
+- **演示数据清理**：删除无版本的 `empty` 报告（DELETE 1）；`failed` 版本保留为 fail-closed 终态可追溯的展示；业务级清理 API 仍为已知 P1 缺口（版本表 FK NO ACTION + 不可变触发器使在线删除按设计困难）。
+- 边界：PDF 为确定性服务端渲染（同一版本字节级一致），不是签章/防伪文件；OCR 与报告内容质量仍未人工评审。现役新增：`REPORT_PDF_ARTifact_PASSED / FINAL_BROWSER_GATE_LLM_PASSED / NOT_PRODUCTION`。
