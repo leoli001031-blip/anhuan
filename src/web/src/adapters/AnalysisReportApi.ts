@@ -104,6 +104,7 @@ export interface AnalysisReportApi {
   listPublishedReports(): Promise<PublishedReportSummaryV1[]>;
   getPublishedReport(reportId: string): Promise<PublishedReportDetailV1>;
   getPublishedHtmlArtifact(reportId: string): Promise<HtmlReportArtifact>;
+  getPublishedPdfArtifact(reportId: string): Promise<HtmlReportArtifact>;
   getLatestManagementHealth(): Promise<ManagementHealthSnapshot | null>;
 
   // 运营台 · 客户企业
@@ -132,6 +133,7 @@ export interface AnalysisReportApi {
   getJob(jobId: string): Promise<JobStatusV1>;
   getVersion(versionId: string): Promise<VersionDetailV1>;
   getVersionHtmlArtifact(versionId: string): Promise<HtmlReportArtifact>;
+  getVersionPdfArtifact(versionId: string): Promise<HtmlReportArtifact>;
   listVersions(reportId: string): Promise<VersionHistoryItemV1[]>;
   transition(
     versionId: string,

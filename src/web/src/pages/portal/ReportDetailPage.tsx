@@ -69,6 +69,19 @@ export default function ReportDetailPage() {
     }
   };
 
+  const downloadPdf = async () => {
+    setDownloading(true);
+    try {
+      const artifact = await api.getPublishedPdfArtifact(reportId);
+      saveHtmlReportArtifact(artifact);
+      message.success("PDF 报告已开始下载");
+    } catch {
+      message.error("PDF 报告下载失败，请稍后重试");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   if (error) {
     return (
       <div className="reading-column">
@@ -107,6 +120,15 @@ export default function ReportDetailPage() {
                 <Typography.Text type="secondary">
                   {formatDateTime(report.published_at)} · 第 {report.version_number} 版
                 </Typography.Text>
+                <Button
+                  size="small"
+                  data-report-action="download-pdf"
+                  loading={downloading}
+                  onClick={() => void downloadPdf()}
+                  style={{ marginRight: 8 }}
+                >
+                  下载 PDF 报告
+                </Button>
                 <Button
                   size="small"
                   data-report-action="download-html"

@@ -319,6 +319,14 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     );
   }
 
+  async getPublishedPdfArtifact(reportId: string): Promise<HtmlReportArtifact> {
+    const report = await this.getPublishedReport(reportId);
+    return mockHtmlArtifact(
+      report,
+      `MOCK-aeco-published-report-v${report.version_number}.pdf`,
+    );
+  }
+
   async getLatestManagementHealth(): Promise<ManagementHealthSnapshot | null> {
     await delay();
     return SYNTHETIC_MANAGEMENT_HEALTH;

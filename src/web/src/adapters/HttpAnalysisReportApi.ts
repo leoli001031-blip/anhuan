@@ -280,6 +280,14 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     path: string,
     fallbackFilename: string,
   ): Promise<HtmlReportArtifact> {
+    return this.fileArtifact(path, fallbackFilename, "text/html");
+  }
+
+  private async fileArtifact(
+    path: string,
+    fallbackFilename: string,
+    expectedContentType: string,
+  ): Promise<HtmlReportArtifact> {
     const result = await tenantFetch(path, {
       token: this.getToken(),
       parse: "response",
@@ -297,7 +305,7 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
       .split(";", 1)[0]
       .trim()
       .toLowerCase();
-    if (contentType !== "text/html") {
+    if (contentType !== expectedContentType) {
       throw new ApiError(response.status, "REPORT_ARTIFACT_CONTENT_TYPE_INVALID", false);
     }
     const blob = await response.blob();
@@ -368,6 +376,15 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     return this.htmlArtifact(
       `/v1/analysis-reports/published/${encodeURIComponent(reportId)}/artifact.html`,
       `aeco-published-report-${suffix}.html`,
+    );
+  }
+
+  getPublishedPdfArtifact(reportId: string): Promise<HtmlReportArtifact> {
+    const suffix = UUID_RE.test(reportId) ? reportId : "published";
+    return this.fileArtifact(
+      `/v1/analysis-reports/published/${encodeURIComponent(reportId)}/artifact.pdf`,
+      `aeco-published-report-${suffix}.pdf`,
+      "application/pdf",
     );
   }
 
@@ -502,6 +519,15 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     return this.htmlArtifact(
       `/v1/analysis-reports/versions/${encodeURIComponent(versionId)}/artifact.html`,
       `aeco-analysis-report-${suffix}.html`,
+    );
+  }
+
+  getVersionPdfArtifact(versionId: string): Promise<HtmlReportArtifact> {
+    const suffix = UUID_RE.test(versionId) ? versionId : "version";
+    return this.fileArtifact(
+      `/v1/analysis-reports/versions/${encodeURIComponent(versionId)}/artifact.pdf`,
+      `aeco-analysis-report-${suffix}.pdf`,
+      "application/pdf",
     );
   }
 

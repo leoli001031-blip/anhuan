@@ -620,14 +620,24 @@ export default function ReportWorkbenchPage() {
               <Typography.Text strong>操作</Typography.Text>
               <div className="workbench-action-stack">
                 {selectedId && detail && detail.sections.length > 0 && (
-                  <Button
-                    data-report-action="download-html"
-                    loading={downloading}
-                    disabled={busy}
-                    onClick={() => void downloadHtml()}
-                  >
-                    下载 HTML 报告
-                  </Button>
+                  <>
+                    <Button
+                      data-report-action="download-pdf"
+                      loading={downloading}
+                      disabled={busy}
+                      onClick={() => void downloadPdf()}
+                    >
+                      下载 PDF 报告
+                    </Button>
+                    <Button
+                      data-report-action="download-html"
+                      loading={downloading}
+                      disabled={busy}
+                      onClick={() => void downloadHtml()}
+                    >
+                      下载 HTML 报告
+                    </Button>
+                  </>
                 )}
                 {capabilities.has("generate") &&
                   (status === "empty" || status === "changes_requested" || status === "failed" ||
