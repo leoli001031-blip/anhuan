@@ -1,16 +1,24 @@
 """Scope-derived material evidence retrieval without client-selected datasets."""
 from __future__ import annotations
 
+import os
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from ... import qa_service
-from ...auth import Tenant, require_role, tenant_from_header
+from ...auth import Tenant, tenant_from_header
 from ...features import material_rag
 
 router = APIRouter()
+
+
+def _aeco_audience_enabled() -> bool:
+    return (
+        os.environ.get("F1_LOCAL_ENGINEERING") == "1"
+        and os.environ.get("F1_MATERIAL_ANALYSIS_REPORT_LOCAL") == "1"
+    )
 
 
 class MaterialQaRequest(BaseModel):
@@ -45,17 +53,29 @@ async def ask_material_question(
     body: MaterialQaRequest,
     response: Response,
     tenant: Tenant = Depends(tenant_from_header),
-    _user: dict = Depends(
-        require_role("super_admin", "enterprise_admin", "plant_admin")
-    ),
 ) -> MaterialQaResponse:
     question = body.question.strip()
     if not question:
         raise HTTPException(status_code=422, detail="EMPTY_QUESTION")
     try:
-        context = await material_rag.derive_retrieval_context(
-            tenant, body.client_account_id
-        )
+        if tenant.role in {"super_admin", "enterprise_admin"}:
+            context = await material_rag.derive_retrieval_context(
+                tenant, body.client_account_id
+            )
+        elif _aeco_audience_enabled():
+            if body.client_account_id is not None:
+                raise material_rag.MaterialRagContextNotFound(
+                    "MATERIAL_CONTEXT_NOT_FOUND"
+                )
+            context = await material_rag.derive_audience_retrieval_context(tenant)
+        elif tenant.role == "plant_admin":
+            # Preserve the f1_0014 provider-side contract when the f1_0020
+            # client-audience bridge is not enabled/migrated.
+            context = await material_rag.derive_retrieval_context(
+                tenant, body.client_account_id
+            )
+        else:
+            raise HTTPException(status_code=403, detail="ROLE_REQUIRED")
         outcome = await qa_service.ask_material_question(
             question, body.request_id, tenant, context
         )

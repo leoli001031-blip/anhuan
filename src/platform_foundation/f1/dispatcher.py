@@ -31,12 +31,46 @@ def main() -> int:
         raise RuntimeError("F1_DISPATCH_INTERVAL_INVALID")
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
+    dispatchers = [dispatch_pending_outbox]
+    from .features.analysis_reports.delivery_repository import (
+        delivery_enabled as report_delivery_enabled,
+    )
+
+    if report_delivery_enabled():
+        from .features.analysis_reports.delivery_dispatcher import (
+            dispatch_pending_report_deliveries,
+        )
+
+        dispatchers.append(dispatch_pending_report_deliveries)
+    from .features.material_pipeline.coordinator import auto_pipeline_enabled
+
+    if auto_pipeline_enabled():
+        # The default f1_0014 and material-RAG f1_0016 stacks deliberately do
+        # not own the analysis-report delivery table.  Import and poll this
+        # domain only in the explicitly migrated analysis-report runtime.
+        from .features.material_pipeline.dispatcher import (
+            dispatch_pending_deliveries,
+        )
+
+        dispatchers.append(dispatch_pending_deliveries)
+    from .features.p3.delivery_repository import delivery_enabled
+
+    if delivery_enabled():
+        # This branch owns both the f1_0023 delivery table and the bounded
+        # physical purge of expired encrypted OCR checkpoints.  Default and
+        # older schema heads never import or query either capability.
+        from .features.p3.delivery_dispatcher import (
+            dispatch_pending_ingestion_deliveries,
+        )
+
+        dispatchers.append(dispatch_pending_ingestion_deliveries)
     while not _STOP.is_set():
         state = "ok"
-        try:
-            dispatch_pending_outbox()
-        except Exception:  # keep retrying without persisting exception details
-            state = "retry"
+        for dispatch in dispatchers:
+            try:
+                dispatch()
+            except Exception:  # keep retrying without exception details
+                state = "retry"
         _mark_heartbeat(state)
         _STOP.wait(interval)
     return 0

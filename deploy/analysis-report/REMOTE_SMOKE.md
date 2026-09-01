@@ -228,7 +228,7 @@ test "$code" = "200"
 printf 'publish_status=%s\n' "$code"
 ```
 
-## 5. 客户可见、健康度测试标识与撤回不可见
+## 5. 客户可见、健康度暂不评分与撤回不可见
 
 ```bash
 code="$(curl --silent --show-error \
@@ -255,17 +255,12 @@ code="$(curl --silent --show-error \
   --header "@$SMOKE_DIR/client.headers" \
   "$NETLIFY_ORIGIN/api/v1/analysis-reports/health/latest")"
 test "$code" = "200"
-python3 - "$SMOKE_DIR/health-latest.out" "$REPORT_ID" "$VERSION_ID" <<'PY'
+python3 - "$SMOKE_DIR/health-latest.out" <<'PY'
 import json, pathlib, sys
 data = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-snapshot = data.get("snapshot")
-assert isinstance(snapshot, dict)
-assert snapshot.get("report_id") == sys.argv[2]
-assert snapshot.get("version_id") == sys.argv[3]
-assert snapshot.get("evidence_mode") == "deterministic_local"
-print("health_snapshot=1")
-print("health_mode=deterministic_local")
-print("test_capability=1")
+assert data == {"schema": "anhuan-analysis-report-health-v1", "snapshot": None}
+print("health_snapshot=0")
+print("health_mode=unscored")
 PY
 
 code="$(curl --silent --show-error \
@@ -283,7 +278,7 @@ test "$code" = "404"
 printf 'client_visible_after_withdraw=0\n'
 ```
 
-`deterministic_local` 必须在页面显著标成测试能力；不得称为正式评分器。HTTP 503、空 snapshot 或合同错误都必须让前端显示“暂不评分”，不能回退到旧分数或假绿。
+`evidence_local` 只描述本地证据报告生成器，不是健康度评分依据。当前 HTTP 必须返回上述空 snapshot，前端显示“暂不评分”；HTTP 503 或合同错误也不得回退到旧分数或假绿。
 
 ## 6. Ark=0、mock=0 与证据边界
 
@@ -296,4 +291,4 @@ mock_data=0
 
 任一非零即失败。构建环境不得启用 `VITE_MATERIAL_RAG_REPORT_MOCK`、`VITE_MATERIAL_RAG_REPORT_MOCK_ROLE` 或 `VITE_MATERIAL_RAG_UAT_LOCAL`。不得查看或复制生产 provider 日志、真实材料或客户数据来凑计数。
 
-全部机器门通过后，远端层最多写 `REMOTE_SMOKE_PASSED / HUMAN_VISUAL_ACCEPTANCE_PENDING / NOT_PRODUCTION`。当前本地候选包没有远端执行证据，仍是 `REMOTE_TARGET_PENDING / NOT_DEPLOYED / NOT_PRODUCTION`。
+全部机器门通过后，远端层最多写 `REMOTE_SMOKE_PASSED / HUMAN_VISUAL_ACCEPTANCE=NOT_PART_OF_THIS_RUN / NOT_PRODUCTION`。当前本地候选包没有远端执行证据，仍是 `REMOTE_TARGET_PENDING / NOT_DEPLOYED / NOT_PRODUCTION`。

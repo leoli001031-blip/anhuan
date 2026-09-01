@@ -1,13 +1,13 @@
 # A-Eco 分析报告测试环境回滚命令单
 
-本文件是后续授权执行模板；当前 `NOT_DEPLOYED / NOT_PRODUCTION`。回滚必须恢复到已知可用发布与 `f1_0017` 备份点，不通过热改业务代码、放宽 RLS/CORS、暴露内部端口或伪造健康状态止血。
+本文件是后续授权执行模板；当前 `NOT_DEPLOYED / NOT_PRODUCTION`。回滚必须恢复到已知可用发布与 pre-0023（当前远端前置头为 `f1_0017`）备份点，不通过热改业务代码、放宽 RLS/CORS、暴露内部端口或伪造健康状态止血。
 
 ## 1. 决策顺序
 
 1. 立即停止新写入和新的 Netlify 别名切换，保留失败现场与日志边界。
 2. 仅前端/edge 配置故障：先回 Netlify deploy，再回 Keycloak 精确 origin；数据库不动。
-3. `f1_0018` 迁移后应用不兼容：走下方“恢复式回滚”，恢复 pre-0018 备份到新数据库，再切换服务；**禁止执行 Alembic downgrade**。
-4. 任何恢复后都重新跑 `REMOTE_SMOKE.md`；人工验收仍为 pending。
+3. `f1_0023` 迁移后应用不兼容：走下方“恢复式回滚”，恢复 pre-0023 备份到新数据库，再切换服务；**禁止执行 Alembic downgrade**。
+4. 任何恢复后都重新跑 `REMOTE_SMOKE.md`；人工视觉验收为 `NOT_PART_OF_THIS_RUN`。
 
 ## 2. Netlify 发布回滚
 
@@ -70,7 +70,7 @@ PY
 
 ## 4. PostgreSQL 恢复式回滚
 
-适用条件：已经成功到 `f1_0018`，且应用/数据兼容性要求回到迁移前。只使用 `DEPLOYMENT.md` 生成的 pre-0018 custom dump；不在原数据库上执行 down migration，不覆盖或删除原数据库。
+适用条件：已经线性迁移到 `f1_0023`，且应用/数据兼容性要求回到迁移前。只使用 `DEPLOYMENT.md` 生成的 pre-0023 custom dump；不在原数据库上执行 down migration，不覆盖或删除原数据库。
 
 在 0600 `release.env` 中另行填入新的、未存在的 `RESTORE_DATABASE`，然后：
 
@@ -95,7 +95,7 @@ restored_head="$(PGDATABASE="$RESTORE_DATABASE" psql -X -A -t -v ON_ERROR_STOP=1
 test "$restored_head" = "f1_0017"
 ```
 
-随后由服务器执行者把 API/worker 的 `F1_PG_DATABASE` 原子切到 `$RESTORE_DATABASE`，按其服务管理器重启并核 `/api/readyz`。原 `f1_0018` 数据库保持隔离只读，直到另一次明确的数据处置授权；本命令单不删除数据库、备份、卷或 secret。
+随后由服务器执行者把 API/worker 的 `F1_PG_DATABASE` 原子切到 `$RESTORE_DATABASE`，按其服务管理器重启并核 `/api/readyz`。原 `f1_0023` 数据库保持隔离只读，直到另一次明确的数据处置授权；本命令单不删除数据库、备份、卷或 secret。
 
 若迁移命令本身失败且事务回滚后 head 仍精确为 `f1_0017`，保留备份和错误输出，修配置后重试门禁；不要无条件恢复覆盖一枚仍正确的数据库。
 
@@ -113,4 +113,4 @@ netlify sites:delete "$NETLIFY_SITE_ID"
 
 ## 6. 恢复后状态
 
-恢复成功最多写：`REMOTE_SMOKE_PASSED / HUMAN_VISUAL_ACCEPTANCE_PENDING / NOT_PRODUCTION`。没有实际远端执行证据时仍保持 `REMOTE_TARGET_PENDING / NOT_DEPLOYED / NOT_PRODUCTION`。
+恢复成功最多写：`REMOTE_SMOKE_PASSED / HUMAN_VISUAL_ACCEPTANCE=NOT_PART_OF_THIS_RUN / NOT_PRODUCTION`。没有实际远端执行证据时仍保持 `REMOTE_TARGET_PENDING / NOT_DEPLOYED / NOT_PRODUCTION`。

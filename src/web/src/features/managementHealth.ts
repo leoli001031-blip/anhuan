@@ -31,7 +31,7 @@ export interface ManagementHealthSnapshot {
   statusLabel: string;
   assessedOn: string;
   basisLabel: string;
-  evidenceMode: "deterministic_local";
+  evidenceMode: "evidence_local" | "deterministic_local";
   reportId: string;
   versionId: string;
   versionNumber: number;
@@ -129,7 +129,7 @@ export interface ManagementHealthSnapshotV1 {
   status_label: string;
   assessed_on: string;
   basis_label: string;
-  evidence_mode: "deterministic_local";
+  evidence_mode: "evidence_local";
   dimensions: Array<{
     key: ManagementHealthDimensionKey;
     label: string;

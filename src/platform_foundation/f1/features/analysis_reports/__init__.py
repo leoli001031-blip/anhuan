@@ -19,9 +19,11 @@ from .service import (
     latest_health,
     list_client_reports,
     list_published,
+    published_artifact,
     product_role_for,
     session_access,
     version_detail,
+    version_artifact,
     version_history,
 )
 
@@ -42,8 +44,10 @@ __all__ = (
     "latest_health",
     "list_client_reports",
     "list_published",
+    "published_artifact",
     "product_role_for",
     "session_access",
     "version_detail",
+    "version_artifact",
     "version_history",
 )

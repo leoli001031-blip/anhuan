@@ -14,6 +14,7 @@ import unittest
 import uuid
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 from urllib.parse import urlparse
 
 from fastapi import FastAPI
@@ -27,10 +28,12 @@ from platform_foundation.f1.api.routers.analysis_reports import router as analys
 from platform_foundation.f1.features.analysis_reports import health, service
 from platform_foundation.f1.features.analysis_reports.contracts import (
     ENGINEERING_FLAG,
+    HealthScoreContext,
     HealthSnapshotUnavailable,
     LOCAL_FLAG,
     SCHEMA_HEALTH,
     ReportNotFound,
+    ReportTransitionInvalid,
     TEMPLATE_TITLE,
 )
 
@@ -45,6 +48,55 @@ STACK: PostgresIntegrationStack | None = None
 WORLD: Any = None
 OUTBOUND = 0
 _ORIG_CONNECT = socket.create_connection
+
+_EXPLICIT_DIMENSION_SPECS = (
+    ("material-completeness", "资料完整性", 15, 10),
+    ("permits", "证照与批复", 20, 12),
+    ("monitoring", "监测与台账", 20, 11),
+    ("remediation", "整改闭环", 25, 8),
+    ("expiry", "风险与到期", 10, 6),
+    ("evidence", "证据可信度", 10, 7),
+)
+_EXPLICIT_SNAPSHOT_SCORE = sum(
+    score for _key, _label, _maximum, score in _EXPLICIT_DIMENSION_SPECS
+)
+_APPROVAL_CHECKLIST = {
+    "citation_traceable": True,
+    "risks_complete": True,
+    "usage_boundary": True,
+}
+
+
+class _ExplicitSnapshotScorer:
+    """Test-only scorer for persistence and tamper contracts."""
+
+    def score(self, context: HealthScoreContext) -> dict[str, object]:
+        dimensions = [
+            {
+                "key": key,
+                "label": label,
+                "score": score,
+                "max_score": maximum,
+                "summary": f"{key}-integration-summary",
+                "tone": "attention",
+            }
+            for key, label, maximum, score in _EXPLICIT_DIMENSION_SPECS
+        ]
+        return {
+            "report_id": str(context.report_id),
+            "version_id": str(context.version_id),
+            "version_number": context.version_number,
+            "report_title": context.report_title,
+            "score": _EXPLICIT_SNAPSHOT_SCORE,
+            "max_score": 100,
+            "status_label": "测试快照",
+            "assessed_on": context.assessed_on.isoformat().replace("+00:00", "Z"),
+            "basis_label": "仅用于持久化契约测试",
+            "evidence_mode": "evidence_local",
+            "dimensions": dimensions,
+            "priorities": [{"title": "验证快照契约", "level": "high"}],
+            "boundary": health.HEALTH_BOUNDARY,
+        }
 
 
 def _run(coro):
@@ -103,12 +155,45 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
     def setUp(self) -> None:
         self.assertIsNotNone(STACK)
         self.assertIsNotNone(WORLD)
+        health.set_local_scorer(None)
+
+    def tearDown(self) -> None:
+        health.set_local_scorer(None)
+
+    async def _generate_to_draft(
+        self,
+        tenant,
+        client_account_id: uuid.UUID,
+        report_id: uuid.UUID,
+        request_id: uuid.UUID,
+    ) -> dict[str, Any]:
+        from platform_foundation.f1.features.analysis_reports import queue, worker
+
+        with patch.object(queue, "enqueue_generation") as enqueue:
+            queued = await service.generate_report(
+                tenant,
+                client_account_id,
+                report_id,
+                request_id,
+            )
+        self.assertEqual(queued["status"], "queued")
+        enqueue.assert_called_once_with(
+            uuid.UUID(queued["job_id"]), tenant.enterprise_id, tenant.sub
+        )
+        await worker._process_generation_job(
+            uuid.UUID(queued["job_id"]),
+            tenant.enterprise_id,
+            tenant.sub,
+        )
+        finished = await service.job_status(tenant, uuid.UUID(queued["job_id"]))
+        self.assertEqual(finished["status"], "draft")
+        return {**queued, "status": "draft"}
 
     async def _publish(self, client_account_id: uuid.UUID) -> dict[str, Any]:
         created = await service.create_report(
             WORLD.provider_a, client_account_id, uuid.uuid4()
         )
-        generated = await service.generate_report(
+        generated = await self._generate_to_draft(
             WORLD.provider_a,
             client_account_id,
             uuid.UUID(created["report_id"]),
@@ -116,7 +201,12 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         )
         version_id = uuid.UUID(generated["version_id"])
         await service.apply_transition(WORLD.provider_a, version_id, "submit")
-        await service.apply_transition(WORLD.provider_a, version_id, "approve")
+        await service.apply_transition(
+            WORLD.provider_a,
+            version_id,
+            "approve",
+            checklist=_APPROVAL_CHECKLIST,
+        )
         published = await service.apply_transition(
             WORLD.provider_a, version_id, "publish"
         )
@@ -127,6 +217,15 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
             "version_id": version_id,
             "report_id": uuid.UUID(created["report_id"]),
         }
+
+    async def _publish_with_explicit_snapshot(
+        self, client_account_id: uuid.UUID
+    ) -> dict[str, Any]:
+        health.set_local_scorer(_ExplicitSnapshotScorer())
+        try:
+            return await self._publish(client_account_id)
+        finally:
+            health.set_local_scorer(None)
 
     def test_dual_membership_realm_admin_cannot_manage_non_admin_enterprise(self) -> None:
         created = _run(
@@ -179,6 +278,15 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         self.assertEqual(len(detail["sections"]), 7)
         self.assertGreaterEqual(len(detail["citations"]), 1)
         self.assertTrue(detail["artifact_ready"])
+        with self.assertRaises(ReportTransitionInvalid):
+            _run(
+                service.generate_report(
+                    WORLD.provider_a,
+                    WORLD.bound_client_id,
+                    payload["report_id"],
+                    uuid.uuid4(),
+                )
+            )
         with self.assertRaises(ReportNotFound):
             _run(
                 service.create_report(
@@ -193,7 +301,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
             )
         )
         generated = _run(
-            service.generate_report(
+            self._generate_to_draft(
                 WORLD.provider_a,
                 WORLD.race_client_id,
                 uuid.UUID(created["report_id"]),
@@ -210,7 +318,14 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         self.assertEqual(before["analysis_report_citation"], 0)
         version_id = uuid.UUID(generated["version_id"])
         _run(service.apply_transition(WORLD.provider_a, version_id, "submit"))
-        _run(service.apply_transition(WORLD.provider_a, version_id, "approve"))
+        _run(
+            service.apply_transition(
+                WORLD.provider_a,
+                version_id,
+                "approve",
+                checklist=_APPROVAL_CHECKLIST,
+            )
+        )
         _run(service.apply_transition(WORLD.provider_a, version_id, "publish"))
         after = STACK.api_visible_report(
             WORLD.enterprise_c, WORLD.stranger_sub, report_id
@@ -249,7 +364,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
             )
         )
         generated = _run(
-            service.generate_report(
+            self._generate_to_draft(
                 WORLD.provider_a,
                 WORLD.race_client_id,
                 uuid.UUID(created["report_id"]),
@@ -258,7 +373,14 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         )
         version_id = uuid.UUID(generated["version_id"])
         _run(service.apply_transition(WORLD.provider_a, version_id, "submit"))
-        _run(service.apply_transition(WORLD.provider_a, version_id, "approve"))
+        _run(
+            service.apply_transition(
+                WORLD.provider_a,
+                version_id,
+                "approve",
+                checklist=_APPROVAL_CHECKLIST,
+            )
+        )
         errors: list[BaseException] = []
         barrier = threading.Barrier(2)
 
@@ -423,34 +545,31 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         self.assertNotEqual(STACK.project_name, "anhuan-f1")
         self.assertIn("anhuan-ar-pgint-", STACK.project_name)
 
-    def test_health_catalog_is_f1_0018_and_42_force_rls(self) -> None:
-        self.assertEqual(STACK.catalog_head(), "f1_0018")
+    def test_health_catalog_is_f1_0024_and_47_force_rls(self) -> None:
+        self.assertEqual(STACK.catalog_head(), "f1_0024")
         names = STACK.force_rls_names()
-        self.assertEqual(len(EXPECTED_RLS_TABLES), 42)
+        self.assertEqual(len(EXPECTED_RLS_TABLES), 47)
         self.assertTrue(set(EXPECTED_RLS_TABLES).issubset(names))
         self.assertIn("analysis_report_health_snapshot", names)
 
-    def test_publish_writes_snapshot_and_two_audits_atomically(self) -> None:
+    def test_publish_without_trusted_scorer_writes_no_snapshot(self) -> None:
         payload = _run(self._publish(WORLD.bound_client_id))
         snapshot = STACK.snapshot_row(payload["version_id"])
-        self.assertIsNotNone(snapshot)
-        assert snapshot is not None
-        self.assertEqual(int(snapshot["score"]), 60)
-        self.assertEqual(str(snapshot["report_id"]), str(payload["report_id"]))
+        self.assertIsNone(snapshot)
+        self.assertEqual(STACK.snapshot_count(payload["version_id"]), 0)
         actions = STACK.audit_actions(payload["version_id"])
         self.assertIn("publish", actions)
-        self.assertIn("health_snapshot_created", actions)
+        self.assertNotIn("health_snapshot_created", actions)
         envelope = _run(service.latest_health(WORLD.client_b))
         self.assertEqual(envelope["schema"], SCHEMA_HEALTH)
-        self.assertEqual(envelope["snapshot"]["score"], 60)
-        self.assertEqual(envelope["snapshot"]["evidence_mode"], "deterministic_local")
+        self.assertIsNone(envelope["snapshot"])
 
     def test_illegal_scorer_rolls_back_to_approved(self) -> None:
         created, generated, version_id = self._approve_only(WORLD.bound_client_id)
 
         class IllegalScorer:
-            def score(self, context: object) -> dict[str, object]:
-                snapshot = health.FakeDeterministicHealthScorer().score(context)  # type: ignore[arg-type]
+            def score(self, context: HealthScoreContext) -> dict[str, object]:
+                snapshot = _ExplicitSnapshotScorer().score(context)
                 broken = dict(snapshot)
                 broken["score"] = 1
                 return broken
@@ -484,6 +603,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
 
     def test_insert_failure_rolls_back_to_approved(self) -> None:
         created, generated, version_id = self._approve_only(WORLD.bound_client_id)
+        health.set_local_scorer(_ExplicitSnapshotScorer())
         with STACK._bootstrap() as connection:
             with connection.transaction():
                 connection.execute(
@@ -495,14 +615,17 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
             self.assertEqual(STACK.version_status(version_id), "approved")
             self.assertEqual(STACK.snapshot_count(version_id), 0)
         finally:
-            with STACK._bootstrap() as connection:
-                with connection.transaction():
-                    connection.execute(
-                        "GRANT INSERT ON f1.analysis_report_health_snapshot TO f1_api"
-                    )
+            try:
+                with STACK._bootstrap() as connection:
+                    with connection.transaction():
+                        connection.execute(
+                            "GRANT INSERT ON f1.analysis_report_health_snapshot TO f1_api"
+                        )
+            finally:
+                health.set_local_scorer(None)
 
-    def test_flags_off_do_not_write_or_read_old_score(self) -> None:
-        first = _run(self._publish(WORLD.bound_client_id))
+    def test_flags_off_do_not_write_or_read_existing_snapshot(self) -> None:
+        first = _run(self._publish_with_explicit_snapshot(WORLD.bound_client_id))
         self.assertEqual(STACK.snapshot_count(first["version_id"]), 1)
         previous = {
             LOCAL_FLAG: os.environ.get(LOCAL_FLAG),
@@ -532,7 +655,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
-    def test_client_can_read_and_provider_cross_tenant_revoke_withdraw_cannot(self) -> None:
+    def test_unscored_health_respects_role_binding_and_withdrawal(self) -> None:
         STACK.set_binding_client(
             provider_enterprise_id=WORLD.enterprise_a,
             audience_enterprise_id=WORLD.enterprise_c,
@@ -546,7 +669,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         try:
             payload = _run(self._publish(WORLD.race_client_id))
             readable = _run(service.latest_health(WORLD.client_b))
-            self.assertEqual(readable["snapshot"]["score"], 60)
+            self.assertIsNone(readable["snapshot"])
             with self.assertRaises(ReportNotFound):
                 _run(service.latest_health(WORLD.provider_a))
             stranger = _run(service.latest_health(WORLD.stranger_c))
@@ -578,7 +701,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
             )
 
     def test_sha_ok_assessed_on_wrong_is_503(self) -> None:
-        payload = _run(self._publish(WORLD.bound_client_id))
+        payload = _run(self._publish_with_explicit_snapshot(WORLD.bound_client_id))
         row = STACK.snapshot_row(payload["version_id"])
         self.assertIsNotNone(row)
         assert row is not None
@@ -624,7 +747,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
                     )
 
     def test_sha_ok_identity_wrong_and_tamper_are_503(self) -> None:
-        payload = _run(self._publish(WORLD.bound_client_id))
+        payload = _run(self._publish_with_explicit_snapshot(WORLD.bound_client_id))
         row = STACK.snapshot_row(payload["version_id"])
         self.assertIsNotNone(row)
         assert row is not None
@@ -659,7 +782,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
             _run(service.latest_health(WORLD.client_b))
 
     def test_snapshot_is_immutable(self) -> None:
-        payload = _run(self._publish(WORLD.bound_client_id))
+        payload = _run(self._publish_with_explicit_snapshot(WORLD.bound_client_id))
         before = STACK.snapshot_row(payload["version_id"])
         self.assertIsNotNone(before)
         with STACK._bootstrap() as connection:
@@ -705,7 +828,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual(body["schema"], SCHEMA_HEALTH)
-        self.assertEqual(body["snapshot"]["score"], 60)
+        self.assertIsNone(body["snapshot"])
         app.dependency_overrides[tenant_from_header] = lambda: WORLD.provider_a
         forbidden = http.get("/api/v1/analysis-reports/health/latest")
         self.assertEqual(forbidden.status_code, 404)
@@ -720,7 +843,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
             )
         )
         generated = _run(
-            service.generate_report(
+            self._generate_to_draft(
                 WORLD.provider_a,
                 client_account_id,
                 uuid.UUID(created["report_id"]),
@@ -729,7 +852,14 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         )
         version_id = uuid.UUID(generated["version_id"])
         _run(service.apply_transition(WORLD.provider_a, version_id, "submit"))
-        _run(service.apply_transition(WORLD.provider_a, version_id, "approve"))
+        _run(
+            service.apply_transition(
+                WORLD.provider_a,
+                version_id,
+                "approve",
+                checklist=_APPROVAL_CHECKLIST,
+            )
+        )
         return created, generated, version_id
 
     def _two_reports_and_versions(self) -> tuple[uuid.UUID, uuid.UUID]:
@@ -744,7 +874,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
             )
         )
         generated = _run(
-            service.generate_report(
+            self._generate_to_draft(
                 WORLD.provider_a,
                 WORLD.race_client_id,
                 uuid.UUID(second["report_id"]),

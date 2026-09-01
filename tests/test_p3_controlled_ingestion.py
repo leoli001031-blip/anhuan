@@ -25,6 +25,8 @@ from pypdf import PdfWriter
 from sqlalchemy import ForeignKeyConstraint, UniqueConstraint
 
 from platform_foundation.f1 import models
+from platform_foundation.f1.features.material_intake import ocr
+from platform_foundation.f1.features.material_pipeline import local_index
 from platform_foundation.f1.features.p3 import contracts, preview, processor, scanner
 
 
@@ -255,9 +257,10 @@ class P3MigrationAndTenantContractTests(unittest.TestCase):
         script = ScriptDirectory.from_config(
             Config(str(ROOT / "infra/f1/alembic.ini"))
         )
-        self.assertEqual(script.get_heads(), ["f1_0015"])
+        self.assertEqual(script.get_heads(), ["f1_0024"])
         self.assertEqual(script.get_revision("f1_0006").down_revision, "f1_0005")
         self.assertEqual(script.get_revision("f1_0015").down_revision, "f1_0014")
+        self.assertEqual(script.get_revision("f1_0024").down_revision, "f1_0023")
         if str(ROOT) not in sys.path:
             sys.path.insert(0, str(ROOT))
         from infra.f1.migrate_f1 import F1_DEFAULT_MIGRATE_TARGET
@@ -348,8 +351,12 @@ class P3PipelineBoundaryTests(unittest.TestCase):
         self.assertIn("host=scanner_host", source)
         self.assertIn("port=scanner_port", source)
         self.assertNotIn("scan_stream =", source)
+        self.assertLess(
+            source.index("await _publish_ready(tenant, claim, preview)"),
+            source.index("await retry_ready_material_analysis("),
+        )
 
-    def test_retry_post_resets_then_runs_the_real_processor(self) -> None:
+    def test_retry_post_resets_then_registers_durable_ingestion(self) -> None:
         source = ast.get_source_segment(
             _source(P3_ROUTER),
             _definition(P3_ROUTER, "retry_version"),
@@ -359,12 +366,22 @@ class P3PipelineBoundaryTests(unittest.TestCase):
         reset = source.index(
             'await act_on_version(tenant, version_id, action="retry")'
         )
-        process = source.index(
-            "await process_controlled_ingestion(tenant, version_id)"
-        )
+        process = source.index("await _request_ingestion(")
+        advance = source.index("await advance_auto_pipeline(")
         result = source.index("return await get_version(tenant, version_id)")
         self.assertLess(reset, process)
-        self.assertLess(process, result)
+        self.assertLess(process, advance)
+        self.assertLess(advance, result)
+        request = ast.get_source_segment(
+            _source(P3_ROUTER),
+            _definition(P3_ROUTER, "_request_ingestion"),
+        )
+        self.assertIsNotNone(request)
+        assert request is not None
+        self.assertLess(
+            request.index("await register_ingestion_delivery("),
+            request.index("background_tasks.add_task("),
+        )
 
     def test_document_list_types_every_optional_postgres_bind(self) -> None:
         literals = " ".join(_string_literals(P3_SERVICE, "list_documents"))
@@ -407,10 +424,20 @@ class P3PipelineBoundaryTests(unittest.TestCase):
                     f"legacy import in {path.name}",
                 )
 
-    def test_upload_finalizes_held_before_router_starts_processing(self) -> None:
+    def test_upload_finalizes_held_with_delivery_before_router_replay(self) -> None:
         finalize = " ".join(_string_literals(P3_SERVICE, "finalize_quarantine"))
         self.assertIn("object_state='quarantined'", finalize)
         self.assertIn("quarantine_status='held'", finalize)
+        finalize_source = ast.get_source_segment(
+            _source(P3_SERVICE),
+            _definition(P3_SERVICE, "finalize_quarantine"),
+        )
+        self.assertIsNotNone(finalize_source)
+        assert finalize_source is not None
+        self.assertLess(
+            finalize_source.index("await _register_ingestion_delivery_if_enabled("),
+            finalize_source.index("await session.commit()"),
+        )
         calls = _called_names(P3_SERVICE, "complete_upload")
         self.assertTrue(
             {
@@ -430,8 +457,46 @@ class P3PipelineBoundaryTests(unittest.TestCase):
             assert segment is not None
             self.assertLess(
                 segment.index("await complete_upload("),
-                segment.index("await process_controlled_ingestion("),
+                segment.index("await _request_ingestion("),
             )
+
+    def test_ready_analysis_failure_exposes_process_recovery(self) -> None:
+        reason = contracts.public_reason_code("MATERIAL_ANALYSIS_PERSIST_FAILED")
+        self.assertEqual(reason, "MATERIAL_ANALYSIS_RETRY_REQUIRED")
+        self.assertTrue(
+            contracts.reason_is_retryable("MATERIAL_ANALYSIS_PERSIST_FAILED")
+        )
+        self.assertEqual(
+            contracts.version_allowed_actions(
+                "enterprise_admin",
+                workflow_status="ready",
+                scan_status="clean",
+                preview_status="ready",
+                quarantine_status="held",
+                attempt=5,
+                reason_code=reason,
+            ),
+            ["process", "release", "reject"],
+        )
+        self.assertEqual(
+            contracts.version_allowed_actions(
+                "enterprise_admin",
+                workflow_status="ready",
+                scan_status="clean",
+                preview_status="ready",
+                quarantine_status="released",
+                attempt=5,
+                reason_code=None,
+            ),
+            ["process"],
+        )
+
+    def test_ocr_page_budget_matches_the_p3_pdf_contract(self) -> None:
+        self.assertEqual(ocr.MAX_OCR_PAGES_PER_DOCUMENT, contracts.MAX_PDF_PAGES)
+        self.assertEqual(ocr.DEFAULT_OCR_PAGES_PER_DOCUMENT, contracts.MAX_PDF_PAGES)
+        parse_source = inspect.getsource(local_index._parse_pdf)
+        self.assertIn("retryable=error.code in RETRYABLE_OCR_REASON_CODES", parse_source)
+        self.assertIn("retryable=reason in RETRYABLE_OCR_REASON_CODES", parse_source)
 
     def test_controlled_api_exposes_an_explicit_scan_preview_action(self) -> None:
         post_paths = _router_paths("post")
@@ -514,7 +579,7 @@ class P3PipelineBoundaryTests(unittest.TestCase):
             attempt=1,
             reason_code=None,
         )
-        self.assertEqual(exact_ready, ["release", "reject"])
+        self.assertEqual(exact_ready, ["process", "release", "reject"])
 
         scanner_unavailable = contracts.version_allowed_actions(
             "enterprise_admin",

@@ -1,6 +1,7 @@
 """Frozen analysis-report value contracts. Field names match API v1."""
 from __future__ import annotations
 
+import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -37,6 +38,11 @@ SECTION_TITLES = {
     "citations": "引用证据",
     "usage_boundary": "使用边界",
 }
+REVIEW_CHECKLIST_KEYS = (
+    "citation_traceable",
+    "risks_complete",
+    "usage_boundary",
+)
 
 ProductRole = Literal["provider_admin", "client_user"]
 VersionStatus = Literal[
@@ -52,6 +58,18 @@ VersionStatus = Literal[
     "failed",
 ]
 JobStatus = Literal["queued", "generating", "draft", "failed"]
+
+# Only failures caused by dispatch/runtime availability may replay the exact
+# frozen source/request identity.  Evidence and fingerprint failures are
+# deliberately absent and therefore remain terminal for that request.
+RECOVERABLE_GENERATION_FAILURE_REASONS = frozenset(
+    {
+        "REPORT_QUEUE_DISPATCH_FAILED",
+        "REPORT_GENERATION_RETRIES_EXHAUSTED",
+        "REPORT_WORKER_GENERATION_DISABLED",
+        "REPORT_ACTOR_REVOKED",
+    }
+)
 
 PROVIDER_CAPABILITIES = (
     "list_client_reports",
@@ -113,6 +131,20 @@ class HealthSnapshotUnavailable(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class EvidenceUnit:
+    page_number: int
+    ordinal: int
+    body_sha256: str
+    text: str
+
+    def __post_init__(self) -> None:
+        if self.page_number < 1 or self.ordinal < 1 or not self.text.strip():
+            raise ValueError("REPORT_SOURCE_EVIDENCE_INVALID")
+        if hashlib.sha256(self.text.encode("utf-8")).hexdigest() != self.body_sha256:
+            raise ValueError("REPORT_SOURCE_EVIDENCE_HASH_MISMATCH")
+
+
+@dataclass(frozen=True, slots=True)
 class EligibleSource:
     document_version_id: uuid.UUID
     document_name: str
@@ -120,6 +152,7 @@ class EligibleSource:
     source_sha256: str
     scope_kind: str
     page_number: int
+    evidence_units: tuple[EvidenceUnit, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,8 +201,8 @@ class HealthScoreContext:
 
 
 class HealthScorerPort(Protocol):
-    def score(self, context: HealthScoreContext) -> dict[str, object]:
-        """Return a frozen snapshot object. Independent of the report generator."""
+    def score(self, context: HealthScoreContext) -> dict[str, object] | None:
+        """Return a defensible frozen snapshot, or ``None`` when no rubric exists."""
 
 
 __all__ = (
@@ -186,9 +219,11 @@ __all__ = (
     "TEMPLATE_TITLE",
     "SECTION_KEYS",
     "SECTION_TITLES",
+    "REVIEW_CHECKLIST_KEYS",
     "ProductRole",
     "VersionStatus",
     "JobStatus",
+    "RECOVERABLE_GENERATION_FAILURE_REASONS",
     "PROVIDER_CAPABILITIES",
     "CLIENT_CAPABILITIES",
     "FORBIDDEN_CLIENT_IDENTITY_KEYS",
@@ -201,6 +236,7 @@ __all__ = (
     "ReportTransitionInvalid",
     "GenerationDisabled",
     "GenerationFailed",
+    "EvidenceUnit",
     "EligibleSource",
     "FrozenSourceSet",
     "GeneratedSection",

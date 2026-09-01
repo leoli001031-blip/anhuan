@@ -1,8 +1,39 @@
 # A-Eco 分析报告测试环境部署命令单
 
-状态：`DEPLOYMENT_PACKAGE_INTEGRATED_LOCAL / COMMITTED_LOCAL / NOT_PUSHED / REMOTE_TARGET_PENDING / NOT_DEPLOYED / NOT_PRODUCTION`。
+状态：已提交基线为 `codex/material-report-aeco-polish@955a274990cd37797dbb6ef2c11459b288074ff8`；当前修正为 `NOT_COMMITTED / NOT_PUSHED / REMOTE_TARGET_PENDING / NOT_DEPLOYED / NOT_PRODUCTION`。
 
 本目录只提供可渲染模板、离线 preflight 和参数化命令单；不授权连接 Netlify/GitHub、改 PR、迁移远端数据库或部署。服务器规格、DNS、证书、站点 ID 与服务管理器均未知，执行者必须在另行授权后填入自己的参数并逐门留证。
+
+## 0. OCR 架构硬门
+
+当前唯一经过锁定的 F0-H OCR runtime 是 `linux/arm64`，镜像、离线 wheel、组件锁和 seccomp profile 都绑定 ARM64。完整的“上传 → OCR → 索引 → 报告”远端测试开始前，先在目标服务器只读确认：
+
+```bash
+uname -m
+docker version --format '{{.Server.Arch}}'
+```
+
+两项都必须对应 `arm64/aarch64`。若目标是 `amd64/x86_64`，立即停止 OCR 部署；不得依赖未取证的 QEMU 模拟，也不得只改 Compose 的 `platform`。必须先另建并锁定 AMD64 runtime、wheel/hash、模型身份和 `SCMP_ARCH_X86_64` profile，再把新镜像作为独立候选验收。未完成前可以部署不含 OCR 的普通文本 PDF 测试环境，但不得声称扫描 PDF 全自动链路可用。
+
+仓库为这种 amd64 测试机提供显式的无 OCR 候选模式：
+
+```bash
+export A_ECO_ANALYSIS_REPORT_OCR_MODE=disabled
+python -B deploy/analysis-report/local_candidate.py start
+```
+
+该模式会追加 `infra/f1/docker-compose.analysis-report-no-ocr.yml`，把 OCR 服务移入未启用 profile，并让 API、dispatcher、普通 worker 与 ingestion worker 以 `F1_MATERIAL_OCR_ENABLED=false` 启动。它仍然保留 ClamAV、MinIO、Redis、PostgreSQL、Keycloak、入库调度和 native-text PDF 处理；扫描件或图片 PDF 必须 fail-closed 为 `OCR_REQUIRED`。默认未设置该变量时仍执行 ARM64 OCR 硬门，二者使用不同的 compose project/control identity，不得混用。
+
+服务器已经存在旧 demo 时，不得把新代码覆盖到旧 checkout 后直接执行 `start`。应把当前候选解包到新的版本目录，由不同 project/volume 启动；受内存约束时只 `stop` 旧容器而不 `down`，新候选失败后重新启动旧 project。删除旧 volume、原地迁移旧数据库或覆盖旧目录都需要另行授权和备份证据。
+
+架构正确也不等于镜像已就绪。Compose 只接受锁定的本地内容 ID `sha256:02e6300f52463818de7ceaf447bfb0765e5f8466251177006131dec4e55a27f5`，并且 `pull_policy: never`。仓库不包含可直接在新机器上构建的 F0-E 基础镜像或最终镜像 tar；因此必须由授权发布人通过受保护的交付通道转移并 `docker load` 该 ARM64 镜像，然后精确核验：
+
+```bash
+test "$(docker image inspect --format '{{.Id}}' sha256:02e6300f52463818de7ceaf447bfb0765e5f8466251177006131dec4e55a27f5)" = \
+  "sha256:02e6300f52463818de7ceaf447bfb0765e5f8466251177006131dec4e55a27f5"
+```
+
+未完成该镜像交付时，本地 demo/UAT 入口会在启动容器前以 `LOCAL_ANALYSIS_REPORT_OCR_IMAGE_MISSING` 失败关闭；非 ARM64 Docker Server 会以 `LOCAL_ANALYSIS_REPORT_OCR_ARCH_UNSUPPORTED` 失败关闭。
 
 ## 1. 候选层与固定拓扑
 
@@ -13,6 +44,24 @@
 - edge 再把 API、Keycloak realm/resources 代理到私网服务。PostgreSQL、Keycloak 管理口、内部 API/worker 端口不得直接暴露公网。
 
 Netlify origin 与 edge origin 必须是两个不同的 HTTPS DNS origin；HTTP、loopback、裸 IP、单标签主机、路径/query/fragment、同源循环与残留占位都会被 preflight 拒绝。仓库根不得出现 `netlify.toml`。
+
+候选包的三个真源分工固定为：
+
+- 迁移：`infra/f1/analysis-reports/migrate.py`，且成功后必须精确核验 `f1_0023`。
+- 本地启停：`scripts/localctl analysis-report-demo-*`；`deploy/analysis-report/local_candidate.py` 是不绑定 checkout 绝对路径的薄入口。
+- 就绪：`/api/readyz` 的 HTTP 200、`Cache-Control: no-store`、`status=ready` 与精确组件闭集。只有容器存在不算 ready。
+
+仅支持上方专属 migrator：直接运行 Alembic 会绕过数据库 owner finalizer，单独执行 `infra/f1/roles.sql` 也不构成受支持的角色供应流程；两者都不得用于候选或远端迁移。`downgrade` 同样不受支持，回退只允许使用迁移前备份恢复。
+
+本地候选入口必须使用已安装本仓运行依赖的 Python；未激活时可用 `A_ECO_PYTHON` 显式指定解释器，不得把某台开发机的 venv/check-out 绝对路径写入仓库：
+
+```bash
+python -B deploy/analysis-report/local_candidate.py start
+python -B deploy/analysis-report/local_candidate.py check --origin http://127.0.0.1:<port>
+python -B deploy/analysis-report/local_candidate.py stop
+```
+
+`start` 已包含专属迁移、fixture、闭集 status 和 HTTP readiness；不要在共享默认栈上单独执行 `migrate`。
 
 ## 2. 仓外 0600 参数文件
 
@@ -29,7 +78,6 @@ chmod 600 "<OUTSIDE_REPO_RELEASE_DIR>/release.env"
 `release.env` 的参数闭集：
 
 ```text
-REPO_DIR=<ABSOLUTE_CANDIDATE_CHECKOUT>
 NETLIFY_ORIGIN=<NETLIFY_HTTPS_ORIGIN>
 EDGE_ORIGIN=<EDGE_HTTPS_ORIGIN>
 ENVIRONMENT_NAME=<TEST_ENVIRONMENT_NAME>
@@ -52,13 +100,22 @@ test "$(stat -c '%a' "$F1_SECRETS_DIR")" = "700"
 test "$(stat -c '%a' "$PGPASSFILE")" = "600"
 ```
 
+所有后续命令都从当前 Git checkout 自定位仓库根，不再要求手工填写候选 checkout 绝对路径：
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+test -f "$REPO_ROOT/deploy/analysis-report/preflight.py"
+test -f "$REPO_ROOT/infra/f1/analysis-reports/migrate.py"
+cd "$REPO_ROOT"
+```
+
 ## 3. 渲染 Netlify 配置
 
 渲染只允许写仓外。生成文件会原子写入并强制为普通 `0600` 文件。
 
 ```bash
-cd "$REPO_DIR"
-export PYTHONPATH="$REPO_DIR/src:$REPO_DIR"
+cd "$REPO_ROOT"
+export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT"
 python3 -B deploy/analysis-report/preflight.py \
   --netlify-origin "$NETLIFY_ORIGIN" \
   --edge-origin "$EDGE_ORIGIN" \
@@ -117,7 +174,7 @@ env -u VITE_MATERIAL_RAG_REPORT_MOCK \
   npm --prefix src/web run build
 ```
 
-后端若为本轮测试 edge 开启 `F1_MATERIAL_ANALYSIS_REPORT_LOCAL=1` 与 `F1_LOCAL_ENGINEERING=1`，同时必须保持 `F1_EXTERNAL_PIPELINES_ENABLED=false`；这会使用 `deterministic_local` 报告/健康度测试能力。页面与远端 smoke 必须显著显示/输出该测试标识，且 `ark_calls=0 / mock_data=0`。它不是正式评分器、Ark、生产 worker 或真实客户能力。
+后端若为本轮测试 edge 开启 `F1_MATERIAL_ANALYSIS_REPORT_LOCAL=1` 与 `F1_LOCAL_ENGINEERING=1`，同时必须保持 `F1_EXTERNAL_PIPELINES_ENABLED=false`；这只会开启 `evidence_local` 报告测试生成能力，且必须保持 `ark_calls=0 / mock_data=0`。当前健康度评分器拒绝根据文档数量或关键词制造分数，HTTP 合同应为 `snapshot=null`，页面显示“暂不评分”。该本地证据生成器不是正式评分器、Ark、生产 worker 或真实客户能力。
 
 ## 7. 密钥注入
 
@@ -126,7 +183,7 @@ env -u VITE_MATERIAL_RAG_REPORT_MOCK \
 - 浏览器 token 只允许进入 `REMOTE_SMOKE.md` 创建的 0600 临时文件；curl 通过 header 文件读取，禁止 `Authorization: Bearer ...` 出现在进程参数。
 - 本轮不注入生产 Ark key、真实客户凭证或客户数据；外部 pipeline 保持关闭。
 
-## 8. PostgreSQL 备份点与前向迁移 `0017 → 0018`
+## 8. PostgreSQL 备份点与线性前向迁移 `0017 → 0023`
 
 进入维护窗口并停止业务写入后执行。若当前 head 不是精确 `f1_0017`，停止，不猜测、不跳版。
 
@@ -136,7 +193,7 @@ export PGUSER=f0d_bootstrap PGPASSFILE
 head_before="$(psql -X -A -t -v ON_ERROR_STOP=1 -c 'SELECT version_num FROM f1.alembic_version')"
 test "$head_before" = "f1_0017"
 
-BACKUP_ID="pre-f1-0018-$(date -u +%Y%m%dT%H%M%SZ)"
+BACKUP_ID="pre-f1-0023-$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="$BACKUP_ROOT/$BACKUP_ID"
 install -d -m 700 "$BACKUP_DIR"
 pg_dump --format=custom --file="$BACKUP_DIR/database.dump"
@@ -146,14 +203,14 @@ chmod 600 "$BACKUP_DIR/database.list"
 sha256sum "$BACKUP_DIR/database.dump" > "$BACKUP_DIR/SHA256SUMS"
 chmod 600 "$BACKUP_DIR/SHA256SUMS"
 
-cd "$REPO_DIR"
-export PYTHONPATH="$REPO_DIR/src:$REPO_DIR"
+cd "$REPO_ROOT"
+export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT"
 python3 -B infra/f1/analysis-reports/migrate.py
 head_after="$(psql -X -A -t -v ON_ERROR_STOP=1 -c 'SELECT version_num FROM f1.alembic_version')"
-test "$head_after" = "f1_0018"
+test "$head_after" = "f1_0023"
 ```
 
-专属 migrator 成功 stdout 应为 `LOCAL_ANALYSIS_REPORT_MIGRATE_OK`。默认工程仍锁 `f1_0014`，material-RAG 专属目标仍为 `f1_0016`；不得改默认 seed/verify/backup 目标。若失败或应用回退，执行 `ROLLBACK.md` 的恢复式回滚，禁止直接 downgrade。
+专属 migrator 成功 stdout 应为 `LOCAL_ANALYSIS_REPORT_MIGRATE_OK`。默认工程仍锁 `f1_0014`，material-RAG 专属目标仍为 `f1_0016`；不得改默认 seed/verify/backup 目标。从 `f1_0017` 到 `f1_0023` 必须线性经过 0018–0022；若失败或应用回退，执行 `ROLLBACK.md` 的恢复式回滚，禁止直接 downgrade。
 
 ## 9. 后续授权的静态交付与门禁
 

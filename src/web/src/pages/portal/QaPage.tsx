@@ -1,16 +1,15 @@
-// 客户端智能问答：mock 走查保留五态；HTTP 模式问答未开放，
-// 直达本页只给简洁说明与「查看分析报告」下一步，不渲染残废表单。
+// 客户端资料问答：mock/HTTP 共用一套五态表单；
+// HTTP adapter 只接受有引用的回答、明确拒答或 202 处理中。
 import { useState } from "react";
 import { Button, Input, Skeleton, Typography } from "antd";
-import { Link } from "react-router-dom";
-import { isMockData, useApi } from "../../adapters";
+import { useApi } from "../../adapters";
 import type { QaAnswer } from "../../adapters/types";
 import ErrorState from "../../components/ErrorState";
 
 type Phase =
   | { kind: "idle" }
   | { kind: "loading"; question: string }
-  | { kind: "done"; result: QaAnswer }
+  | { kind: "done"; result: QaAnswer; question: string }
   | { kind: "error"; error: unknown; question: string };
 
 export default function QaPage() {
@@ -18,29 +17,13 @@ export default function QaPage() {
   const [question, setQuestion] = useState("");
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
 
-  if (!isMockData) {
-    return (
-      <div className="reading-column">
-        <Typography.Title level={4} style={{ marginTop: 0 }}>
-          智能问答
-        </Typography.Title>
-        <Typography.Paragraph type="secondary">
-          问答能力正在接入，暂未开放。你可以先查看已发布的分析报告。
-        </Typography.Paragraph>
-        <Link to="/portal/reports">
-          <Button type="primary">查看分析报告</Button>
-        </Link>
-      </div>
-    );
-  }
-
   const ask = async (text: string) => {
     const trimmed = text.trim();
     if (!trimmed) return;
     setPhase({ kind: "loading", question: trimmed });
     try {
       const result = await api.ask(trimmed);
-      setPhase({ kind: "done", result });
+      setPhase({ kind: "done", result, question: trimmed });
     } catch (error) {
       setPhase({ kind: "error", error, question: trimmed });
     }
@@ -92,7 +75,7 @@ export default function QaPage() {
             <Typography.Paragraph type="secondary">
               问题正在处理中，请稍后重试。
             </Typography.Paragraph>
-            <Button onClick={() => void ask(question)}>重试</Button>
+            <Button onClick={() => void ask(phase.question)}>重试</Button>
           </div>
         )}
 

@@ -4775,7 +4775,9 @@ async function clickButtonText(page, textValue, code, timeout = 30_000) {
 
 function reviewCheckPointLocator(label) {
   return `(() => {
-    const row = document.querySelector(${JSON.stringify(`[data-review-check=${JSON.stringify(label)}]`)});
+    const row = Array.from(document.querySelectorAll("[data-review-check]")).find(
+      (candidate) => (candidate.textContent ?? "").trim() === ${JSON.stringify(label)},
+    );
     if (!(row instanceof HTMLElement)) return null;
     const input = row.querySelector("input[type=checkbox]");
     if (!(input instanceof HTMLInputElement) || input.disabled) return null;
@@ -4809,7 +4811,9 @@ async function clickReviewCheck(page, label) {
   await dispatchClick(page, point);
   await page.waitForExpression(
     `(() => {
-      const row = document.querySelector(${JSON.stringify(`[data-review-check=${JSON.stringify(label)}]`)});
+      const row = Array.from(document.querySelectorAll("[data-review-check]")).find(
+        (candidate) => (candidate.textContent ?? "").trim() === ${JSON.stringify(label)},
+      );
       return row instanceof HTMLElement && row.getAttribute("data-checked") === "1";
     })()`,
     "REVIEW_CHECK_CLICK_FAILED",
@@ -5060,12 +5064,13 @@ function publishedTitleVisibleExpression() {
   return `Array.from(document.querySelectorAll("a")).some((item) => (item.textContent ?? "").includes(${JSON.stringify(ANALYSIS_REPORT_TITLE)}))`;
 }
 
-async function verifyPublishedHealthSnapshot(page, reportId) {
+async function verifyPublishedHealthUnscored(page) {
   await navigateLoggedInPath(page, "/portal", "CLIENT_HEALTH_HOME_NAV_FAILED");
   await page.waitForExpression(
-    `document.querySelector(".health-score-line strong")?.textContent?.trim() === "60"
-      && document.querySelectorAll(".health-mini-dimension").length === 6
-      && (document.body?.innerText ?? "").includes("测试环境·确定性评分")`,
+    `document.querySelector(".health-empty__status")?.textContent?.trim() === "暂不评分"
+      && !document.querySelector(".health-score-line")
+      && !(document.body?.innerText ?? "").includes("测试环境·本地证据评分")
+      && !(document.body?.innerText ?? "").includes("视觉 Mock·固定示例分")`,
     "CLIENT_HEALTH_HOME_MISSING",
     30_000,
   );
@@ -5082,35 +5087,26 @@ async function verifyPublishedHealthSnapshot(page, reportId) {
   } catch {
     fail("CLIENT_HEALTH_JSON_INVALID");
   }
-  const snapshot = payload?.snapshot;
   if (
     payload?.schema !== "anhuan-analysis-report-health-v1"
-    || snapshot?.report_id !== reportId
-    || snapshot?.score !== 60
-    || snapshot?.max_score !== 100
-    || snapshot?.evidence_mode !== "deterministic_local"
-    || !Array.isArray(snapshot?.dimensions)
-    || snapshot.dimensions.length !== 6
+    || payload?.snapshot !== null
   ) {
     fail("CLIENT_HEALTH_PAYLOAD_INVALID");
   }
   await spaGoto(page, "/portal/health", "CLIENT_HEALTH_DETAIL_NAV_FAILED");
   await page.waitForExpression(
     `location.pathname === "/portal/health"
-      && document.querySelector(".health-score-line strong")?.textContent?.trim() === "60"
-      && document.querySelectorAll(".health-dimension").length === 6
-      && (document.body?.innerText ?? "").includes("测试环境·确定性评分")
-      && Array.from(document.querySelectorAll("a")).some((item) => item.getAttribute("href") === ${JSON.stringify(`/portal/reports/${reportId}`)})`,
+      && (document.querySelector(".health-unavailable")?.textContent ?? "").includes("暂不评分")
+      && !document.querySelector(".health-score-line")
+      && !(document.body?.innerText ?? "").includes("测试环境·本地证据评分")
+      && !(document.body?.innerText ?? "").includes("视觉 Mock·固定示例分")`,
     "CLIENT_HEALTH_DETAIL_MISSING",
     30_000,
   );
   await page.waitForApiIdle();
   await assertAnalysisReportSurfaceClean(page);
   return {
-    health_detail_dimensions: 6,
-    health_http_max_score: 100,
-    health_http_score: 60,
-    health_test_provenance: 1,
+    health_null_after_publish: 1,
   };
 }
 
@@ -5119,7 +5115,8 @@ async function verifyHealthHiddenAfterWithdraw(page) {
   await page.waitForExpression(
     `document.querySelector(".health-empty__status")?.textContent?.trim() === "暂不评分"
       && !document.querySelector(".health-score-line")
-      && !(document.body?.innerText ?? "").includes("测试环境·确定性评分")`,
+      && !(document.body?.innerText ?? "").includes("测试环境·本地证据评分")
+      && !(document.body?.innerText ?? "").includes("视觉 Mock·固定示例分")`,
     "CLIENT_HEALTH_WITHDRAW_NOT_HIDDEN",
     30_000,
   );
@@ -5217,7 +5214,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
       } catch {
         fail("GENERATE_JSON_INVALID");
       }
-      if (generatedPayload?.status !== "draft") fail("GENERATION_NOT_DRAFT");
+      if (generatedPayload?.status !== "queued") fail("GENERATION_NOT_QUEUED");
       await assertAnalysisReportSurfaceClean(page);
       await clickButtonText(page, "提交审核", "SUBMIT_BUTTON_MISSING");
       await bindLastAnalysisRequest(page, "POST", "/submit", [200], "SUBMIT_CDP_UNBOUND");
@@ -5345,7 +5342,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
         "client_user",
         "CLIENT_SESSION_ACCESS_UNBOUND",
       );
-      const health = await verifyPublishedHealthSnapshot(page, reportId);
+      const health = await verifyPublishedHealthUnscored(page);
       await clickPortalReportsNav(page);
       await page.waitForExpression(
         `location.pathname === "/portal/reports" && ${publishedTitleVisibleExpression()}`,
@@ -5408,9 +5405,97 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
       if (!Array.isArray(detailPayload?.citations) || detailPayload.citations.length < 2) {
         fail("CLIENT_DETAIL_CITATION_PAYLOAD_INVALID");
       }
+
+      await navigateLoggedInPath(page, "/portal/services", "CLIENT_SERVICES_NAV_FAILED");
+      await page.waitForExpression(
+        `location.pathname === "/portal/services" && (document.body?.innerText ?? "").includes("Local client service case")`,
+        "CLIENT_SERVICES_ITEM_MISSING",
+        30_000,
+      );
+      const services = await bindLastAnalysisRequest(
+        page,
+        "GET",
+        "/api/v1/service-cases/portal",
+        [200],
+        "CLIENT_SERVICES_CDP_UNBOUND",
+      );
+      let servicesPayload;
+      try {
+        servicesPayload = JSON.parse(services.body);
+      } catch {
+        fail("CLIENT_SERVICES_JSON_INVALID");
+      }
+      const serviceItem = servicesPayload?.items?.find(
+        (item) => item?.title === "Local client service case",
+      );
+      const safeServiceKeys = [
+        "assigned", "id", "planned_end_at", "planned_start_at",
+        "service_type", "status", "title", "updated_at",
+      ];
+      if (
+        !serviceItem
+        || serviceItem.id !== "90403144-21d3-518b-bb41-1f52cca4e268"
+        || JSON.stringify(Object.keys(serviceItem).sort()) !== JSON.stringify(safeServiceKeys)
+      ) {
+        fail("CLIENT_SERVICES_DTO_INVALID");
+      }
+
+      await navigateLoggedInPath(page, "/portal/qa", "CLIENT_QA_NAV_FAILED");
+      await page.waitForExpression(
+        `location.pathname === "/portal/qa" && document.querySelector("textarea") instanceof HTMLTextAreaElement`,
+        "CLIENT_QA_INPUT_MISSING",
+        30_000,
+      );
+      const question = "我们的废气治理采用什么方案？";
+      const populated = await page.evaluate(`(() => {
+        const input = document.querySelector("textarea");
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+        if (!(input instanceof HTMLTextAreaElement) || !setter) return false;
+        setter.call(input, ${JSON.stringify("我们的废气治理采用什么方案？")});
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      })()`);
+      if (!populated) fail("CLIENT_QA_INPUT_FAILED");
+      await clickButtonText(page, "提问", "CLIENT_QA_SUBMIT_MISSING");
+      await page.waitForExpression(
+        `(document.body?.innerText ?? "").includes("活性炭吸附装置") && document.querySelectorAll(".citation-ref").length >= 1`,
+        "CLIENT_QA_ANSWER_MISSING",
+        30_000,
+      );
+      const qa = await bindLastAnalysisRequest(
+        page,
+        "POST",
+        "/api/v1/material-qa",
+        [200],
+        "CLIENT_QA_CDP_UNBOUND",
+      );
+      let qaPayload;
+      try {
+        qaPayload = JSON.parse(qa.body);
+      } catch {
+        fail("CLIENT_QA_JSON_INVALID");
+      }
+      if (
+        typeof qaPayload?.answer !== "string"
+        || !qaPayload.answer.includes("活性炭吸附装置")
+        || !Array.isArray(qaPayload?.citations)
+        || qaPayload.citations.length < 1
+        || qaPayload.refusal_reason !== null
+      ) {
+        fail("CLIENT_QA_PAYLOAD_INVALID");
+      }
+      const qaCitationCount = qaPayload.citations.length;
+      void question;
       await assertAnalysisReportSurfaceClean(page);
       arkCalls += page.arkCalls;
-      return { sectionCount, citationCount, ...health };
+      return {
+        sectionCount,
+        citationCount,
+        clientQa: 1,
+        clientServices: 1,
+        qaCitationCount,
+        ...health,
+      };
     },
   );
 
@@ -5554,19 +5639,19 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
     citation_count: clientVisible.citationCount,
     client_detail: 1,
     client_list: 1,
+    client_qa: clientVisible.clientQa,
+    client_services: clientVisible.clientServices,
     create_idempotent: 1,
     generation_draft: 1,
     generation_idempotent: 1,
-    health_detail_dimensions: clientVisible.health_detail_dimensions,
-    health_http_max_score: clientVisible.health_http_max_score,
-    health_http_score: clientVisible.health_http_score,
+    health_null_after_publish: clientVisible.health_null_after_publish,
     health_null_after_withdraw: hidden,
-    health_snapshot_count: 1,
-    health_test_provenance: clientVisible.health_test_provenance,
+    health_snapshot_count: 0,
     hidden_after_withdraw: 1,
     mock_data: 0,
     provider_create: 1,
     publish: 1,
+    qa_citation_count: clientVisible.qaCitationCount,
     section_count: clientVisible.sectionCount,
     skipped: 0,
     submit: 1,

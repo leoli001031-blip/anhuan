@@ -1,9 +1,10 @@
 // 客户端报告详情：白纸黑字的阅读页，锚点目录带当前章节态。
 // 窄屏（<768px）：目录转为顶部横向滚动条；未发布/已撤回/他企业 → 后端统一 404。
 import { useEffect, useState } from "react";
-import { Col, Row, Spin, Typography } from "antd";
+import { Button, Col, Row, Spin, Typography, message } from "antd";
 import { useParams } from "react-router-dom";
 import { useApi } from "../../adapters";
+import { saveHtmlReportArtifact } from "../../adapters/AnalysisReportApi";
 import type { PublishedReportDetailV1 } from "../../adapters/types";
 import { SECTION_ORDER } from "../../adapters/types";
 import ErrorState from "../../components/ErrorState";
@@ -16,6 +17,7 @@ export default function ReportDetailPage() {
   const [error, setError] = useState<unknown>(null);
   const [nonce, setNonce] = useState(0);
   const [currentSection, setCurrentSection] = useState<string>(SECTION_ORDER[0].key);
+  const [downloading, setDownloading] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -53,6 +55,19 @@ export default function ReportDetailPage() {
     }
     return () => observer.disconnect();
   }, [report]);
+
+  const downloadHtml = async () => {
+    setDownloading(true);
+    try {
+      const artifact = await api.getPublishedHtmlArtifact(reportId);
+      saveHtmlReportArtifact(artifact);
+      message.success("HTML 报告已开始下载");
+    } catch {
+      message.error("HTML 报告下载失败，请稍后重试");
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   if (error) {
     return (
@@ -92,6 +107,14 @@ export default function ReportDetailPage() {
                 <Typography.Text type="secondary">
                   {formatDateTime(report.published_at)} · 第 {report.version_number} 版
                 </Typography.Text>
+                <Button
+                  size="small"
+                  data-report-action="download-html"
+                  loading={downloading}
+                  onClick={() => void downloadHtml()}
+                >
+                  下载 HTML 报告
+                </Button>
               </div>
             </div>
             <ReportDocument sections={report.sections} citations={report.citations} serif />

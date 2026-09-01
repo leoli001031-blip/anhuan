@@ -102,7 +102,9 @@ export default function HealthScorePage() {
     );
   }
 
-  const isDeterministic = snapshot.evidenceMode === "deterministic_local";
+  const isSyntheticMock = snapshot.evidenceMode === "deterministic_local";
+  const isLocalEvidence = snapshot.evidenceMode === "evidence_local";
+  const isLocalTest = isSyntheticMock || isLocalEvidence;
 
   return (
     <main className="portal-page health-page">
@@ -115,10 +117,14 @@ export default function HealthScorePage() {
       <Typography.Paragraph type="secondary" className="portal-page__subtitle">
         基于已发布材料与本次分析报告形成的管理参考
       </Typography.Paragraph>
-      <div className={`health-environment-grid${isDeterministic ? "" : " health-environment-grid--single"}`}>
+      <div className={`health-environment-grid${isLocalTest ? "" : " health-environment-grid--single"}`}>
         <section className="health-detail-hero health-detail-hero--scored">
           <span className="health-environment-label">
-            {isDeterministic ? "测试环境·确定性评分" : "正式环境评分"}
+            {isSyntheticMock
+              ? "视觉 Mock·固定示例分"
+              : isLocalEvidence
+                ? "测试环境·本地证据评分"
+                : "正式环境评分"}
           </span>
           <div className="health-detail-hero__content">
             <div className="health-score-line health-score-line--detail">
@@ -135,7 +141,7 @@ export default function HealthScorePage() {
             查看本期分析报告&nbsp;›
           </Link>
         </section>
-        {isDeterministic ? (
+        {isLocalTest ? (
           <section className="health-formal-pending" aria-labelledby="formal-health-heading">
             <span className="health-environment-label health-environment-label--formal">
               正式环境评分

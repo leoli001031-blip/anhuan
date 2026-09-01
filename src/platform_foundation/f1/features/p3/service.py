@@ -64,6 +64,29 @@ def _material_rag_orchestration_enabled() -> bool:
         and os.environ.get("F1_LOCAL_ENGINEERING") == "1"
     )
 
+
+async def _register_ingestion_delivery_if_enabled(
+    session: AsyncSession,
+    tenant: Tenant,
+    document_version_id: uuid.UUID,
+    *,
+    rearm_terminal: bool = False,
+) -> None:
+    """Atomically hand a committed source or manual retry to ingestion."""
+    from .delivery_repository import (
+        delivery_enabled,
+        register_delivery_in_session,
+    )
+
+    if not delivery_enabled():
+        return
+    await register_delivery_in_session(
+        session,
+        tenant,
+        document_version_id,
+        rearm_terminal=rearm_terminal,
+    )
+
 _VERSION_COLUMNS = (
     "version.id AS version_id, version.document_record_id, version.version_no, "
     "version.display_filename, "
@@ -73,6 +96,56 @@ _VERSION_COLUMNS = (
     "task.preview_sha256, task.attempt, task.error_reason, "
     "task.released_at, task.rejected_at, version.created_at, task.updated_at"
 )
+
+
+def _ingestion_delivery_enabled() -> bool:
+    from .delivery_repository import delivery_enabled
+
+    return delivery_enabled()
+
+
+def _version_columns() -> str:
+    if _ingestion_delivery_enabled():
+        delivery = (
+            ",ingestion_delivery.state AS ingestion_delivery_state,"
+            "ingestion_delivery.reason_code AS ingestion_delivery_reason"
+        )
+    else:
+        delivery = (
+            ",NULL::text AS ingestion_delivery_state,"
+            "NULL::text AS ingestion_delivery_reason"
+        )
+    return _VERSION_COLUMNS + delivery
+
+
+def _version_delivery_join() -> str:
+    if not _ingestion_delivery_enabled():
+        return ""
+    return (
+        "LEFT JOIN f1.material_ingestion_delivery AS ingestion_delivery ON "
+        "ingestion_delivery.enterprise_id=version.enterprise_id "
+        "AND ingestion_delivery.document_version_id=version.id "
+        "AND ingestion_delivery.delivery_kind='resume' "
+    )
+
+
+def _version_status_case() -> str:
+    if _ingestion_delivery_enabled():
+        delivery = (
+            "WHEN ingestion_delivery.state='blocked' THEN 'blocked' "
+            "WHEN ingestion_delivery.state='retry_wait' THEN 'processing' "
+        )
+    else:
+        delivery = ""
+    return (
+        "CASE "
+        + delivery
+        + "WHEN task.processing_stage IN "
+        "('received','scanning','validating','previewing') THEN 'processing' "
+        "WHEN task.processing_stage='ready' THEN 'ready' "
+        "WHEN task.processing_stage IN ('retry_wait','rejected') THEN 'blocked' "
+        "ELSE 'failed' END"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -794,6 +867,11 @@ async def finalize_quarantine(
                 "resource_id": str(reservation.version_id),
             },
         )
+        await _register_ingestion_delivery_if_enabled(
+            session,
+            tenant,
+            reservation.version_id,
+        )
         await session.commit()
 
 
@@ -922,7 +1000,45 @@ def _version_out(row: Mapping[str, Any], tenant: Tenant) -> VersionOut:
     attempt = int(row["attempt"])
     internal_reason = str(row["error_reason"]) if row.get("error_reason") else None
     reason_code = public_reason_code(internal_reason)
-    retryable = attempt < MAX_ATTEMPTS and reason_is_retryable(internal_reason)
+    retryable = reason_is_retryable(internal_reason) and (
+        reason_code == "MATERIAL_ANALYSIS_RETRY_REQUIRED" or attempt < MAX_ATTEMPTS
+    )
+    delivery_state = (
+        str(row["ingestion_delivery_state"])
+        if row.get("ingestion_delivery_state")
+        else None
+    )
+    if delivery_state == "blocked":
+        workflow_status = "blocked"
+        reason_code = (
+            str(row["ingestion_delivery_reason"])
+            if row.get("ingestion_delivery_reason")
+            else "MATERIAL_INGESTION_DELIVERY_FAILED"
+        )
+        retryable = False
+    elif delivery_state == "retry_wait":
+        workflow_status = "processing"
+        reason_code = (
+            str(row["ingestion_delivery_reason"])
+            if row.get("ingestion_delivery_reason")
+            else "MATERIAL_INGESTION_DELIVERY_FAILED"
+        )
+        retryable = True
+    allowed_actions = version_allowed_actions(
+        tenant.role,
+        workflow_status=workflow_status,
+        scan_status=scan_status,
+        preview_status=preview_status,
+        quarantine_status=quarantine_status,
+        attempt=attempt,
+        reason_code=reason_code,
+    )
+    if (
+        delivery_state == "blocked"
+        and tenant.role in MANAGER_ROLES
+        and "process" not in allowed_actions
+    ):
+        allowed_actions.append("process")
     return VersionOut(
         id=row["version_id"],
         document_id=row["document_record_id"],
@@ -938,15 +1054,7 @@ def _version_out(row: Mapping[str, Any], tenant: Tenant) -> VersionOut:
         retryable=retryable,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
-        allowed_actions=version_allowed_actions(
-            tenant.role,
-            workflow_status=workflow_status,
-            scan_status=scan_status,
-            preview_status=preview_status,
-            quarantine_status=quarantine_status,
-            attempt=attempt,
-            reason_code=reason_code,
-        ),
+        allowed_actions=allowed_actions,
     )
 
 
@@ -1032,7 +1140,7 @@ async def list_documents(
                     "AS knowledge_scope_editable,"
                     "record.latest_version_no, record.created_at AS "
                     "record_created_at, record.updated_at AS record_updated_at, "
-                    f"{_VERSION_COLUMNS} "
+                    f"{_version_columns()} "
                     "FROM f1.document_record AS record "
                     "JOIN f1.document_version AS version "
                     "ON version.enterprise_id=record.enterprise_id "
@@ -1050,6 +1158,8 @@ async def list_documents(
                     "LEFT JOIN f1.crm_account AS account "
                     "ON account.enterprise_id=scope.enterprise_id "
                     "AND account.id=scope.client_account_id "
+                    + _version_delivery_join()
+                    +
                     "WHERE record.enterprise_id=:enterprise_id "
                     "AND (CAST(:scope_kind AS text) IS NULL "
                     "OR scope.scope_kind=CAST(:scope_kind AS text)) "
@@ -1057,12 +1167,9 @@ async def list_documents(
                     "OR scope.client_account_id=CAST(:client_account_id AS uuid)) "
                     "AND (CAST(:content_type AS text) IS NULL "
                     "OR source.content_type=CAST(:content_type AS text)) "
-                    "AND (CAST(:status AS text) IS NULL OR CASE "
-                    "WHEN task.processing_stage IN "
-                    "('received','scanning','validating','previewing') THEN 'processing' "
-                    "WHEN task.processing_stage='ready' THEN 'ready' "
-                    "WHEN task.processing_stage IN ('retry_wait','rejected') THEN 'blocked' "
-                    "ELSE 'failed' END=:status) "
+                    "AND (CAST(:status AS text) IS NULL OR "
+                    + _version_status_case()
+                    + "=:status) "
                     "AND (CAST(:cursor_updated_at AS timestamptz) IS NULL OR "
                     "(record.updated_at,record.id)<("
                     "CAST(:cursor_updated_at AS timestamptz),"
@@ -1152,7 +1259,7 @@ async def get_document(tenant: Tenant, record_id: uuid.UUID) -> DocumentDetailOu
         versions = (
             await session.execute(
                 text(
-                    f"SELECT {_VERSION_COLUMNS} "
+                    f"SELECT {_version_columns()} "
                     "FROM f1.document_version AS version "
                     "JOIN f1.document AS source "
                     "ON source.enterprise_id=version.enterprise_id "
@@ -1160,6 +1267,8 @@ async def get_document(tenant: Tenant, record_id: uuid.UUID) -> DocumentDetailOu
                     "JOIN f1.upload_task AS task "
                     "ON task.enterprise_id=version.enterprise_id "
                     "AND task.id=version.upload_task_id "
+                    + _version_delivery_join()
+                    +
                     "WHERE version.document_record_id=:record_id "
                     "AND version.enterprise_id=:enterprise_id "
                     "ORDER BY version.version_no DESC"
@@ -1313,7 +1422,7 @@ async def get_version(tenant: Tenant, version_id: uuid.UUID) -> VersionOut:
         row = (
             await session.execute(
                 text(
-                    f"SELECT {_VERSION_COLUMNS} "
+                    f"SELECT {_version_columns()} "
                     "FROM f1.document_version AS version "
                     "JOIN f1.document AS source "
                     "ON source.enterprise_id=version.enterprise_id "
@@ -1321,6 +1430,8 @@ async def get_version(tenant: Tenant, version_id: uuid.UUID) -> VersionOut:
                     "JOIN f1.upload_task AS task "
                     "ON task.enterprise_id=version.enterprise_id "
                     "AND task.id=version.upload_task_id "
+                    + _version_delivery_join()
+                    +
                     "WHERE version.id=:version_id "
                     "AND version.enterprise_id=:enterprise_id"
                 ),
@@ -1508,6 +1619,14 @@ async def act_on_version(
                 },
             )
             audit_result = "retry_queued"
+
+        if action == "retry":
+            await _register_ingestion_delivery_if_enabled(
+                session,
+                tenant,
+                version_id,
+                rearm_terminal=True,
+            )
 
         if action == "release" and _material_rag_orchestration_enabled():
             from platform_foundation.f1.features.material_rag.repository import (

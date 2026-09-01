@@ -102,6 +102,12 @@ function OverviewBody({ clientId }: { clientId: string }) {
   return (
     <Row gutter={[48, 16]}>
       <Col xs={24} md={12}>
+        {client.industryNote && (
+          <OverviewBlock title="行业">{client.industryNote}</OverviewBlock>
+        )}
+        {client.regionNote && (
+          <OverviewBlock title="地区">{client.regionNote}</OverviewBlock>
+        )}
         <OverviewBlock title="服务阶段">
           {CLIENT_STAGE_LABEL[client.stage] ?? client.stage}
         </OverviewBlock>

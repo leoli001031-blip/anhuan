@@ -1,7 +1,4 @@
-"""Health-snapshot backend contracts. No Docker, no PostgreSQL.
-
-Calls the real Python validator and FakeDeterministicHealthScorer.
-"""
+"""Health-snapshot backend contracts. No Docker, no PostgreSQL."""
 from __future__ import annotations
 
 import os
@@ -29,13 +26,14 @@ REPORT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 VERSION_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 
 DIMENSION_SPECS = (
-    ("material-completeness", "资料完整性", 15, 12),
-    ("permits", "证照与批复", 20, 14),
-    ("monitoring", "监测与台账", 20, 13),
+    ("material-completeness", "资料完整性", 15, 10),
+    ("permits", "证照与批复", 20, 12),
+    ("monitoring", "监测与台账", 20, 11),
     ("remediation", "整改闭环", 25, 8),
     ("expiry", "风险与到期", 10, 6),
     ("evidence", "证据可信度", 10, 7),
 )
+VALID_SNAPSHOT_SCORE = sum(score for _key, _label, _cap, score in DIMENSION_SPECS)
 
 
 def _dimension(key: str, label: str, max_score: int, score: int) -> dict[str, object]:
@@ -59,12 +57,12 @@ def valid_snapshot() -> dict[str, object]:
         "version_id": VERSION_ID,
         "version_number": 1,
         "report_title": "企业安环资料分析报告",
-        "score": 60,
+        "score": VALID_SNAPSHOT_SCORE,
         "max_score": 100,
         "status_label": "需重点改善",
         "assessed_on": "2026-08-23T00:00:00Z",
         "basis_label": "基于已发布材料与本次分析报告",
-        "evidence_mode": "deterministic_local",
+        "evidence_mode": "evidence_local",
         "dimensions": dimensions,
         "priorities": [{"title": "补齐整改闭环材料", "level": "high"}],
         "boundary": "边界说明",
@@ -85,8 +83,8 @@ class HealthScoreContractTests(unittest.TestCase):
 
     def test_validate_snapshot_accepts_closed_set(self) -> None:
         snapshot = health.validate_snapshot(valid_snapshot())
-        self.assertEqual(snapshot["score"], 60)
-        self.assertEqual(snapshot["evidence_mode"], "deterministic_local")
+        self.assertEqual(snapshot["score"], VALID_SNAPSHOT_SCORE)
+        self.assertEqual(snapshot["evidence_mode"], "evidence_local")
 
     def test_validate_snapshot_rejects_reordered_snapshot_keys(self) -> None:
         items = list(valid_snapshot().items())
@@ -114,12 +112,12 @@ class HealthScoreContractTests(unittest.TestCase):
 
     def test_score_equals_dimension_sum_and_caps(self) -> None:
         snapshot = valid_snapshot()
-        snapshot["score"] = 59
+        snapshot["score"] = VALID_SNAPSHOT_SCORE - 1
         with self.assertRaises(HealthSnapshotUnavailable):
             health.validate_snapshot(snapshot)
         snapshot = valid_snapshot()
         snapshot["dimensions"][0]["score"] = 16  # type: ignore[index]
-        snapshot["score"] = 64
+        snapshot["score"] = VALID_SNAPSHOT_SCORE + 4
         with self.assertRaises(HealthSnapshotUnavailable):
             health.validate_snapshot(snapshot)
 
@@ -141,7 +139,7 @@ class HealthScoreContractTests(unittest.TestCase):
         with self.assertRaises(HealthSnapshotUnavailable):
             health.validate_snapshot(snapshot)
 
-    def test_fake_scorer_output_is_valid_deterministic_local_60(self) -> None:
+    def test_evidence_aware_scorer_declines_without_a_trusted_rubric(self) -> None:
         context = HealthScoreContext(
             report_id=uuid.UUID(REPORT_ID),
             version_id=uuid.UUID(VERSION_ID),
@@ -149,10 +147,9 @@ class HealthScoreContractTests(unittest.TestCase):
             report_title="t",
             assessed_on=datetime(2026, 8, 23, tzinfo=timezone.utc),
         )
-        snapshot = health.FakeDeterministicHealthScorer().score(context)
-        self.assertEqual(snapshot["score"], 60)
-        self.assertEqual(snapshot["evidence_mode"], "deterministic_local")
-        self.assertEqual(health.validate_snapshot(snapshot)["score"], 60)
+        snapshot = health.EvidenceAwareHealthScorer().score(context)
+        self.assertIsNone(snapshot)
+        self.assertEqual(health.http_envelope(snapshot), health.empty_envelope())
 
     def test_payload_sha256_is_stable_and_hex(self) -> None:
         snapshot = health.validate_snapshot(valid_snapshot())

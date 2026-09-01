@@ -42,6 +42,10 @@ DEFINER_ROLES = (
     "f1_upload_definer",
     "f1_outbox_definer",
     "f1_qa_definer",
+    "f1_aeco_read_definer",
+    "f1_material_pipeline_definer",
+    "f1_material_ingestion_definer",
+    "f1_analysis_report_definer",
 )
 DEFINER_OWNERS = {
     "f1.session_authorized(uuid)": "f1_auth_definer",
@@ -65,16 +69,103 @@ LEGACY_DEFINER_OWNERS = {
     "f1.verify_citations(uuid[],bytea,text)": "f0d_migration",
 }
 ALL_DEFINER_OWNERS = {**DEFINER_OWNERS, **LEGACY_DEFINER_OWNERS}
-F1_ALLOWED_MIGRATE_TARGETS = frozenset({"f1_0014", "f1_0015", "f1_0016", "f1_0017", "f1_0018"})
+ANALYSIS_REPORT_DEFINER_OWNERS = {
+    "f1.aeco_client_service_cases()": "f1_aeco_read_definer",
+    "f1.aeco_client_material_context()": "f1_aeco_read_definer",
+    "f1.aeco_client_material_bindings()": "f1_aeco_read_definer",
+    "f1.aeco_client_material_units(uuid[])": "f1_aeco_read_definer",
+    "f1.aeco_client_material_local_units(integer)": "f1_aeco_read_definer",
+}
+MATERIAL_PIPELINE_DEFINER_OWNERS = {
+    "f1.register_material_pipeline_delivery(uuid,uuid,text,boolean)": (
+        "f1_material_pipeline_definer"
+    ),
+    "f1.claim_material_pipeline_deliveries(integer,integer)": (
+        "f1_material_pipeline_definer"
+    ),
+    "f1.read_material_pipeline_delivery_claim(uuid,uuid)": (
+        "f1_material_pipeline_definer"
+    ),
+    "f1.finish_material_pipeline_delivery(uuid,uuid,text,text,integer)": (
+        "f1_material_pipeline_definer"
+    ),
+}
+MATERIAL_INGESTION_DEFINER_OWNERS = {
+    "f1.register_material_ingestion_delivery(uuid,uuid,text,boolean)": (
+        "f1_material_ingestion_definer"
+    ),
+    "f1.claim_material_ingestion_deliveries(integer,integer)": (
+        "f1_material_ingestion_definer"
+    ),
+    "f1.read_material_ingestion_delivery_claim(uuid,uuid)": (
+        "f1_material_ingestion_definer"
+    ),
+    "f1.finish_material_ingestion_delivery(uuid,uuid,text,text,integer)": (
+        "f1_material_ingestion_definer"
+    ),
+    "f1.purge_expired_material_ocr_checkpoints(integer)": (
+        "f1_material_ingestion_definer"
+    ),
+}
+REPORT_REVOCATION_DEFINER_OWNERS = {
+    "f1.fail_revoked_report_generation(uuid,uuid,text)": (
+        "f1_analysis_report_definer"
+    ),
+}
+REPORT_DELIVERY_DEFINER_OWNERS = {
+    "f1.register_analysis_report_generation_delivery(uuid,uuid,text,boolean)": (
+        "f1_analysis_report_definer"
+    ),
+    "f1.rebind_analysis_report_generation_delivery(uuid,uuid,text)": (
+        "f1_analysis_report_definer"
+    ),
+    "f1.claim_analysis_report_generation_deliveries(integer,integer)": (
+        "f1_analysis_report_definer"
+    ),
+    "f1.read_analysis_report_generation_delivery_claim(uuid,uuid)": (
+        "f1_analysis_report_definer"
+    ),
+    "f1.finish_analysis_report_generation_delivery(uuid,uuid,text,text,integer)": (
+        "f1_analysis_report_definer"
+    ),
+}
+F1_ALLOWED_MIGRATE_TARGETS = frozenset(
+    {
+        "f1_0014",
+        "f1_0015",
+        "f1_0016",
+        "f1_0017",
+        "f1_0018",
+        "f1_0019",
+        "f1_0020",
+        "f1_0021",
+        "f1_0022",
+        "f1_0023",
+        "f1_0024",
+    }
+)
 F1_DEFAULT_MIGRATE_TARGET = "f1_0014"
 F1_MATERIAL_RAG_MIGRATE_TARGET = "f1_0016"
-F1_ANALYSIS_REPORT_MIGRATE_TARGET = "f1_0018"
+F1_ANALYSIS_REPORT_MIGRATE_TARGET = "f1_0024"
 
 
 def _closed_f1_migrate_target(target: object) -> str:
     if type(target) is not str or target not in F1_ALLOWED_MIGRATE_TARGETS:
         raise RuntimeError("F1_MIGRATE_TARGET_INVALID")
     return target
+
+
+def _definer_owners_for_target(target: str) -> dict[str, str]:
+    owners = dict(ALL_DEFINER_OWNERS)
+    if target in {"f1_0020", "f1_0021", "f1_0022", "f1_0023", "f1_0024"}:
+        owners.update(ANALYSIS_REPORT_DEFINER_OWNERS)
+    if target in {"f1_0021", "f1_0022", "f1_0023", "f1_0024"}:
+        owners.update(MATERIAL_PIPELINE_DEFINER_OWNERS)
+    if target in {"f1_0023", "f1_0024"}:
+        owners.update(MATERIAL_INGESTION_DEFINER_OWNERS)
+        owners.update(REPORT_REVOCATION_DEFINER_OWNERS)
+        owners.update(REPORT_DELIVERY_DEFINER_OWNERS)
+    return owners
 
 
 
@@ -264,10 +355,15 @@ def _ensure_f1_version_schema(connection: psycopg.Connection) -> None:
         raise RuntimeError("F1_SCHEMA_OWNER_MISMATCH")
 
 
-def _resolved_definer_contract(connection: psycopg.Connection) -> dict[str, tuple[int, str]]:
+def _resolved_definer_contract(
+    connection: psycopg.Connection,
+    *,
+    expected_owners: dict[str, str] | None = None,
+) -> dict[str, tuple[int, str]]:
     """Resolve the exact expected function set to OIDs and validate hardening."""
+    owners = ALL_DEFINER_OWNERS if expected_owners is None else expected_owners
     resolved: dict[str, tuple[int, str]] = {}
-    for signature, expected_owner in ALL_DEFINER_OWNERS.items():
+    for signature in owners:
         row = connection.execute(
             """
             SELECT p.oid, r.rolname, p.prosecdef, p.proconfig,
@@ -327,9 +423,13 @@ def _alter_owner_by_oid(
 
 
 def _assert_owner_map(
-    connection: psycopg.Connection, resolved: dict[str, tuple[int, str]]
+    connection: psycopg.Connection,
+    resolved: dict[str, tuple[int, str]],
+    *,
+    expected_owners: dict[str, str] | None = None,
 ) -> None:
-    for signature, expected_owner in ALL_DEFINER_OWNERS.items():
+    owners = ALL_DEFINER_OWNERS if expected_owners is None else expected_owners
+    for signature, expected_owner in owners.items():
         oid = resolved[signature][0]
         actual = connection.execute(
             "SELECT r.rolname FROM pg_proc AS p "
@@ -340,7 +440,9 @@ def _assert_owner_map(
             raise RuntimeError("F1_DEFINER_OWNER_MISMATCH")
 
 
-def _finalize_definer_owners(connection: psycopg.Connection) -> None:
+def _finalize_definer_owners(
+    connection: psycopg.Connection, *, target: str = F1_DEFAULT_MIGRATE_TARGET
+) -> None:
     """Atomically move the exact function set to membership-free owners.
 
     Every function is first resolved through ``to_regprocedure`` and checked
@@ -348,17 +450,41 @@ def _finalize_definer_owners(connection: psycopg.Connection) -> None:
     exact schema-wide owner map.  Any failure rolls back every owner change;
     rerunning after an interrupted successful finalization is idempotent.
     """
-    resolved = _resolved_definer_contract(connection)
-    for signature, role in DEFINER_OWNERS.items():
+    owners = _definer_owners_for_target(target)
+    resolved = _resolved_definer_contract(connection, expected_owners=owners)
+    movable = {
+        signature: role
+        for signature, role in owners.items()
+        if role != "f0d_migration"
+    }
+    for signature, role in movable.items():
         current_owner = resolved[signature][1]
         if current_owner not in {"f0d_migration", role}:
             raise RuntimeError("F1_DEFINER_OWNER_UNEXPECTED")
-    for signature, role in DEFINER_OWNERS.items():
+    for signature, role in movable.items():
         current_owner = resolved[signature][1]
         if current_owner == role:
             continue
         _alter_owner_by_oid(connection, resolved[signature][0], role)
-    _assert_owner_map(connection, resolved)
+    if target in {"f1_0020", "f1_0021", "f1_0022", "f1_0023", "f1_0024"}:
+        # Bootstrap alone can grant a new definer access to session_authorized:
+        # that function is already owned by the isolated auth definer on replay.
+        connection.execute(
+            "GRANT EXECUTE ON FUNCTION f1.current_enterprise_id(), "
+            "f1.session_authorized(uuid) TO f1_aeco_read_definer"
+        )
+    if target in {"f1_0021", "f1_0022", "f1_0023", "f1_0024"}:
+        connection.execute(
+            "GRANT EXECUTE ON FUNCTION f1.session_authorized(uuid), "
+            "f1.resolve_current_enterprises() "
+            "TO f1_material_pipeline_definer"
+        )
+    if target in {"f1_0023", "f1_0024"}:
+        connection.execute(
+            "GRANT EXECUTE ON FUNCTION f1.session_authorized(uuid) "
+            "TO f1_material_ingestion_definer,f1_analysis_report_definer"
+        )
+    _assert_owner_map(connection, resolved, expected_owners=owners)
 
 
 def _restore_definer_owners(database_name: str) -> None:
@@ -395,7 +521,7 @@ def migrate_with_connection(
 
     ``target`` is an internal closed set: default engineering stays at
     ``f1_0014``; the dedicated material-RAG migrator may request ``f1_0016``;
-    the dedicated analysis-report migrator may request ``f1_0018``.  The
+    the dedicated analysis-report migrator may request ``f1_0024``.  The
     optional callback is intentionally Python-only and is used by the
     closeout failure-atomicity test.  Neither the target nor the callback is
     exposed through argv or an environment switch.
@@ -432,7 +558,7 @@ def migrate_with_connection(
         if not callable(after_upgrade):
             raise RuntimeError("F1_AFTER_UPGRADE_CALLBACK_INVALID")
         after_upgrade()
-    _finalize_definer_owners(raw)
+    _finalize_definer_owners(raw, target=target)
 
 
 def main() -> int:

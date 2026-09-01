@@ -12,22 +12,24 @@ from sqlalchemy.exc import SQLAlchemyError
 from ...auth import Tenant
 from ...database import session_scope
 from . import health, repository
+from .artifact import ReportArtifact, ReportArtifactInvalid, render_html_artifact
 from .contracts import (
     CLIENT_CAPABILITIES,
     ENGINEERING_FLAG,
     FORBIDDEN_RESPONSE_KEYS,
     FrozenSourceSet,
     GenerationDisabled,
-    GenerationFailed,
     HealthScoreContext,
     HealthSnapshotUnavailable,
     LOCAL_FLAG,
     PROVIDER_CAPABILITIES,
     PROVIDER_MEMBER_ROLES,
+    RECOVERABLE_GENERATION_FAILURE_REASONS,
     ProductRole,
     ReportNotFound,
     ReportTransitionInvalid,
     RequestIdConflict,
+    REVIEW_CHECKLIST_KEYS,
     SCHEMA_DRAFT,
     SCHEMA_GENERATION,
     SCHEMA_HISTORY,
@@ -39,7 +41,6 @@ from .contracts import (
     TEMPLATE_ID,
     TEMPLATE_TITLE,
 )
-from .generator import FakeDeterministicReportGenerator
 from .repository import RequestConflict
 
 _TRANSITIONS = {
@@ -50,6 +51,13 @@ _TRANSITIONS = {
     "withdraw": ("published", "withdrawn"),
 }
 _BINDING_REQUIRED_ACTIONS = frozenset({"submit", "return", "approve", "publish"})
+_REVIEW_ACTIONS = frozenset({"submit", "return", "approve"})
+_GENERATION_START_STATUSES = frozenset(
+    {None, "changes_requested", "superseded", "withdrawn"}
+)
+_FINGERPRINT_FORK_STATUSES = frozenset(
+    {"review_pending", "approved", "published", "failed"}
+)
 
 
 def generation_enabled() -> bool:
@@ -92,6 +100,41 @@ def _forbid_leaks(payload: Any) -> None:
 
 def _iso(value: datetime | None) -> str | None:
     return value.isoformat() if value is not None else None
+
+
+def _review_evidence(
+    action: str,
+    checklist: dict[str, bool] | None,
+    comment: str | None,
+) -> tuple[dict[str, bool], str | None]:
+    normalized_comment = comment.strip() if isinstance(comment, str) else None
+    if normalized_comment == "":
+        normalized_comment = None
+    if normalized_comment is not None and len(normalized_comment) > 2_000:
+        raise ReportTransitionInvalid()
+    normalized = {} if checklist is None else dict(checklist)
+    if any(
+        key not in REVIEW_CHECKLIST_KEYS or type(value) is not bool
+        for key, value in normalized.items()
+    ):
+        raise ReportTransitionInvalid()
+    if action == "submit":
+        if normalized or normalized_comment is not None:
+            raise ReportTransitionInvalid()
+        return {}, None
+    if action == "return":
+        if normalized or normalized_comment is None:
+            raise ReportTransitionInvalid()
+        return {}, normalized_comment
+    if action == "approve":
+        if set(normalized) != set(REVIEW_CHECKLIST_KEYS) or not all(
+            normalized.values()
+        ):
+            raise ReportTransitionInvalid()
+        return normalized, normalized_comment
+    if normalized or normalized_comment is not None:
+        raise ReportTransitionInvalid()
+    return {}, None
 
 
 def _summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -209,6 +252,16 @@ async def get_published(tenant: Tenant, report_id: uuid.UUID) -> dict[str, Any]:
     return payload
 
 
+async def published_artifact(
+    tenant: Tenant, report_id: uuid.UUID
+) -> ReportArtifact:
+    """Render the exact published version visible to the client session."""
+    try:
+        return render_html_artifact(await get_published(tenant, report_id))
+    except ReportArtifactInvalid:
+        raise ReportNotFound() from None
+
+
 async def list_client_reports(tenant: Tenant, client_account_id: uuid.UUID) -> dict[str, Any]:
     _require_provider(tenant)
     async with session_scope(
@@ -279,6 +332,81 @@ def _freeze(enterprise_id: uuid.UUID, client_account_id: uuid.UUID, sources) -> 
     )
 
 
+async def _resume_generation(
+    session: Any,
+    *,
+    tenant: Tenant,
+    report_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    frozen: FrozenSourceSet,
+    existing_job: dict[str, Any],
+    audit_action: str,
+) -> dict[str, Any]:
+    if existing_job["report_id"] != report_id:
+        raise RequestIdConflict()
+    rebound = False
+    if existing_job["status"] in {"queued", "generating"}:
+        # The fixed migration marker must be recoverable even when source
+        # material changed while no valid actor existed.  The worker will
+        # apply the frozen fingerprint fence after this exact rebind; ordinary
+        # active deliveries still return False and retain conflict semantics.
+        rebound = await repository.rebind_historical_delivery_in_session(
+            session,
+            enterprise_id=tenant.enterprise_id,
+            job_id=existing_job["id"],
+            actor_sub=tenant.sub,
+        )
+        if rebound:
+            await session.commit()
+    if (
+        existing_job["source_fingerprint_sha256"]
+        != frozen.fingerprint_sha256
+        and not rebound
+    ):
+        raise RequestIdConflict()
+    payload = {
+        "schema": SCHEMA_GENERATION,
+        "job_id": str(existing_job["id"]),
+        "version_id": str(existing_job["version_id"]),
+        "status": existing_job["status"],
+    }
+    failure_reason = existing_job.get("error_reason")
+    if (
+        existing_job["status"] == "failed"
+        and failure_reason in RECOVERABLE_GENERATION_FAILURE_REASONS
+    ):
+        # A fixed dispatch failure is reset only through this audited exact-job
+        # branch; deterministic evidence failures never enter it.
+        restored = await repository.requeue_failed_generation(
+            session,
+            enterprise_id=tenant.enterprise_id,
+            report_id=report_id,
+            job_id=existing_job["id"],
+            version_id=existing_job["version_id"],
+            actor_id=actor_id,
+            actor_sub=tenant.sub,
+            reason=str(failure_reason),
+            audit_action=audit_action,
+        )
+        if restored:
+            await session.commit()
+            payload["status"] = "queued"
+        else:
+            # A concurrent exact replay may have won the row lock and committed
+            # the audited reset.  Any other state remains fail-closed.
+            current = await repository.get_job(
+                session, tenant.enterprise_id, existing_job["id"]
+            )
+            if current is not None and current["status"] in {
+                "queued",
+                "generating",
+            }:
+                payload["status"] = current["status"]
+    # PostgreSQL delivery is registered/re-armed in the same transaction as
+    # the report job.  No browser request is the dispatch recovery authority.
+    return payload
+
+
 async def generate_report(
     tenant: Tenant,
     client_account_id: uuid.UUID,
@@ -288,7 +416,6 @@ async def generate_report(
     _require_provider(tenant)
     if not generation_enabled():
         raise GenerationDisabled()
-    generator = FakeDeterministicReportGenerator()
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
     ) as session:
@@ -311,94 +438,134 @@ async def generate_report(
         )
         frozen = _freeze(tenant.enterprise_id, client_account_id, sources)
         if existing_job is not None:
+            payload = await _resume_generation(
+                session,
+                tenant=tenant,
+                report_id=report_id,
+                actor_id=actor_id,
+                frozen=frozen,
+                existing_job=existing_job,
+                audit_action="redispatch",
+            )
+        else:
+            live = await repository.load_eligible_sources(
+                session, tenant.enterprise_id, client_account_id
+            )
+            live_fp = repository.fingerprint_for(
+                tenant.enterprise_id, client_account_id, live
+            )
+            if live_fp != frozen.fingerprint_sha256:
+                raise ReportNotFound()
+            locked_report = await repository.lock_report_for_generation(
+                session, tenant.enterprise_id, report_id
+            )
             if (
-                existing_job["source_fingerprint_sha256"] != frozen.fingerprint_sha256
-                or existing_job["report_id"] != report_id
+                locked_report is None
+                or locked_report["client_account_id"] != client_account_id
             ):
-                raise RequestIdConflict()
-            return {
-                "schema": SCHEMA_GENERATION,
-                "job_id": str(existing_job["id"]),
-                "version_id": str(existing_job["version_id"]),
-                "status": existing_job["status"],
-            }
-        live = await repository.load_eligible_sources(
-            session, tenant.enterprise_id, client_account_id
-        )
-        live_fp = repository.fingerprint_for(
-            tenant.enterprise_id, client_account_id, live
-        )
-        if live_fp != frozen.fingerprint_sha256:
-            raise ReportNotFound()
-        lease_owner = "ar." + uuid.uuid5(
-            uuid.UUID("7c2e1a90-9f3d-4c1b-8a6e-0123456789ab"), tenant.sub
-        ).hex
-        started = await repository.begin_generation(
-            session,
-            report=report,
-            actor_id=actor_id,
-            request_id=request_id,
-            frozen=frozen,
-            lease_owner=lease_owner,
-        )
-        claimed = await repository.claim_live_lease(
-            session,
-            enterprise_id=tenant.enterprise_id,
-            job_id=started["job_id"],
-            lease_token=started["lease_token"],
-            lease_owner=lease_owner,
-        )
-        if not claimed:
-            await session.rollback()
-            raise ReportNotFound()
-        try:
-            generated = generator.generate(frozen)
-        except GenerationFailed as exc:
-            await repository.fail_generation(
-                session,
-                enterprise_id=tenant.enterprise_id,
-                job_id=started["job_id"],
-                version_id=started["version_id"],
-                reason=exc.reason,
+                raise ReportNotFound()
+            # Recheck after taking the report lock so concurrent exact requests
+            # preserve idempotency and different request ids cannot duplicate a
+            # deterministic failure for the same source fingerprint.
+            concurrent_job = await repository.get_job_by_request(
+                session, tenant.enterprise_id, request_id
             )
-            await session.commit()
-            return {
-                "schema": SCHEMA_GENERATION,
-                "job_id": str(started["job_id"]),
-                "version_id": str(started["version_id"]),
-                "status": "failed",
-            }
-        written = await repository.persist_generated(
-            session,
-            enterprise_id=tenant.enterprise_id,
-            job_id=started["job_id"],
-            version_id=started["version_id"],
-            lease_token=started["lease_token"],
-            generated=generated,
-        )
-        if not written:
-            await repository.fail_generation(
-                session,
-                enterprise_id=tenant.enterprise_id,
-                job_id=started["job_id"],
-                version_id=started["version_id"],
-                reason="REPORT_LEASE_STALE",
-            )
-            await session.commit()
-            return {
-                "schema": SCHEMA_GENERATION,
-                "job_id": str(started["job_id"]),
-                "version_id": str(started["version_id"]),
-                "status": "failed",
-            }
-        await session.commit()
-        status = "draft"
-    payload = {
-        "schema": SCHEMA_GENERATION,
-        "job_id": str(started["job_id"]),
-        "version_id": str(started["version_id"]),
-        "status": status,
-    }
+            if concurrent_job is not None:
+                payload = await _resume_generation(
+                    session,
+                    tenant=tenant,
+                    report_id=report_id,
+                    actor_id=actor_id,
+                    frozen=frozen,
+                    existing_job=concurrent_job,
+                    audit_action="redispatch",
+                )
+            else:
+                current_version_job = await repository.get_job_for_version(
+                    session,
+                    tenant.enterprise_id,
+                    report_id,
+                    locked_report["current_version_id"],
+                )
+                if current_version_job is not None and current_version_job[
+                    "status"
+                ] in {"queued", "generating"}:
+                    # Find a migration-blocked current job independently of its
+                    # old source fingerprint.  Only the DB fixed marker can
+                    # bypass the mismatch in _resume_generation.
+                    same_source_job = current_version_job
+                else:
+                    same_source_job = await repository.get_job_by_fingerprint(
+                        session,
+                        tenant.enterprise_id,
+                        report_id,
+                        frozen.fingerprint_sha256,
+                    )
+                active_same_source = bool(
+                    same_source_job is not None
+                    and same_source_job["status"] in {"queued", "generating"}
+                    and same_source_job["version_id"]
+                    == locked_report.get("current_version_id")
+                )
+                if active_same_source:
+                    # A different request id must not fork an already-active
+                    # exact source job.  This also provides the audited entry
+                    # point for a migration-blocked actor rebind.
+                    payload = await _resume_generation(
+                        session,
+                        tenant=tenant,
+                        report_id=report_id,
+                        actor_id=actor_id,
+                        frozen=frozen,
+                        existing_job=same_source_job,
+                        audit_action="redispatch",
+                    )
+                else:
+                    recoverable_takeover = bool(
+                        same_source_job is not None
+                        and same_source_job["status"] == "failed"
+                        and same_source_job.get("error_reason")
+                        in RECOVERABLE_GENERATION_FAILURE_REASONS
+                        and same_source_job["version_id"]
+                        == locked_report.get("current_version_id")
+                        and locked_report.get("current_status") == "failed"
+                    )
+                    if (
+                        same_source_job is not None
+                        and same_source_job["status"] == "failed"
+                        and not recoverable_takeover
+                    ):
+                        # A new request may replace an availability/authority
+                        # failure, but can never bypass a deterministic evidence
+                        # or fingerprint failure for the same frozen source set.
+                        raise RequestIdConflict()
+                    current_status = locked_report["current_status"]
+                    forked_from_review = (
+                        current_status in _FINGERPRINT_FORK_STATUSES
+                        and locked_report.get("current_source_fingerprint")
+                        != frozen.fingerprint_sha256
+                    )
+                    if (
+                        current_status not in _GENERATION_START_STATUSES
+                        and not forked_from_review
+                        and not recoverable_takeover
+                    ):
+                        raise ReportTransitionInvalid()
+                    started = await repository.begin_generation(
+                        session,
+                        report=locked_report,
+                        actor_id=actor_id,
+                        actor_sub=tenant.sub,
+                        request_id=request_id,
+                        frozen=frozen,
+                    )
+                    await session.commit()
+                    payload = {
+                        "schema": SCHEMA_GENERATION,
+                        "job_id": str(started["job_id"]),
+                        "version_id": str(started["version_id"]),
+                        "status": "queued",
+                    }
     _forbid_leaks(payload)
     return payload
 
@@ -431,6 +598,11 @@ async def version_detail(tenant: Tenant, version_id: uuid.UUID) -> dict[str, Any
         if row is None:
             raise ReportNotFound()
         payload = await repository.attach_sections(session, dict(row), version_id)
+        review_events = await repository.list_review_events(
+            session,
+            enterprise_id=tenant.enterprise_id,
+            version_id=version_id,
+        )
     detail = {
         "schema": SCHEMA_DRAFT,
         "report_id": str(payload["report_id"]),
@@ -453,17 +625,45 @@ async def version_detail(tenant: Tenant, version_id: uuid.UUID) -> dict[str, Any
             }
             for item in payload.get("citations", [])
         ],
+        "review_events": [
+            {
+                "event_id": str(item["id"]),
+                "action": item["action"],
+                "checklist": item["checklist"],
+                "comment": item["comment"],
+                "created_at": _iso(item["created_at"]),
+            }
+            for item in review_events
+        ],
     }
     _forbid_leaks(detail)
     return detail
 
 
+async def version_artifact(
+    tenant: Tenant, version_id: uuid.UUID
+) -> ReportArtifact:
+    """Render a provider-visible generated version as a downloadable file."""
+    try:
+        return render_html_artifact(await version_detail(tenant, version_id))
+    except ReportArtifactInvalid:
+        raise ReportNotFound() from None
+
+
 async def apply_transition(
-    tenant: Tenant, version_id: uuid.UUID, action: str
+    tenant: Tenant,
+    version_id: uuid.UUID,
+    action: str,
+    *,
+    checklist: dict[str, bool] | None = None,
+    comment: str | None = None,
 ) -> dict[str, Any]:
     _require_provider(tenant)
     if action not in _TRANSITIONS:
         raise ReportTransitionInvalid()
+    review_checklist, review_comment = _review_evidence(
+        action, checklist, comment
+    )
     from_status, to_status = _TRANSITIONS[action]
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
@@ -478,9 +678,63 @@ async def apply_transition(
         )
         if version is None:
             raise ReportNotFound()
+        locked_report = None
+        if action != "withdraw":
+            # Serialize review/publish against a concurrent generation fork.
+            # The earlier unlocked version read is only descriptive; this
+            # report-row lock is the authority for the current-version fence.
+            locked_report = await repository.lock_report_for_generation(
+                session,
+                tenant.enterprise_id,
+                version["report_id"],
+            )
+        if (
+            action != "withdraw"
+            and (
+                locked_report is None
+                or locked_report.get("current_version_id") != version_id
+            )
+        ):
+            # Once a changed fingerprint forks a new internal work version, an
+            # older review/approval may not advance or replace the current line.
+            raise ReportTransitionInvalid()
+        if action == "publish":
+            complete = await repository.attach_sections(
+                session, dict(version), version_id
+            )
+            try:
+                render_html_artifact(
+                    {
+                        "version_number": int(complete["version_number"]),
+                        "sections": [
+                            {
+                                "key": item["section_key"],
+                                "title": item["title"],
+                                "body": item["body"],
+                            }
+                            for item in complete.get("sections", [])
+                        ],
+                        "citations": [
+                            {
+                                "document_version_id": str(
+                                    item["document_version_id"]
+                                ),
+                                "document_name": item["document_name"],
+                                "version_number": int(item["version_number"]),
+                                "page_number": int(item["page_number"]),
+                                "excerpt": item["excerpt"],
+                            }
+                            for item in complete.get("citations", [])
+                        ],
+                    }
+                )
+            except (KeyError, TypeError, ValueError, ReportArtifactInvalid):
+                raise ReportTransitionInvalid() from None
         if action in _BINDING_REQUIRED_ACTIONS:
-            report_row = await repository.get_report(
-                session, tenant.enterprise_id, version["report_id"]
+            report_row = locked_report or await repository.get_report(
+                session,
+                tenant.enterprise_id,
+                version["report_id"],
             )
             if report_row is None:
                 raise ReportNotFound()
@@ -500,6 +754,17 @@ async def apply_transition(
         )
         if not ok:
             raise ReportTransitionInvalid()
+        if action in _REVIEW_ACTIONS:
+            await repository.insert_review_event(
+                session,
+                enterprise_id=tenant.enterprise_id,
+                report_id=version["report_id"],
+                version_id=version_id,
+                actor_id=actor_id,
+                action=action,
+                checklist=review_checklist,
+                comment=review_comment,
+            )
         if action == "publish" and generation_enabled():
             published = await repository.get_version(
                 session, tenant.enterprise_id, version_id
@@ -536,6 +801,8 @@ async def _store_health_snapshot(
         assessed_on=version["published_at"],
     )
     snapshot = health.local_scorer().score(context)
+    if snapshot is None:
+        return
     snapshot = health.validate_snapshot(snapshot)
     digest = health.payload_sha256(snapshot)
     await repository.insert_health_snapshot(

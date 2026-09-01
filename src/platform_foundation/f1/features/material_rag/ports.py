@@ -57,6 +57,15 @@ class MaterialRagRepository(Protocol):
     ) -> tuple[ReleasedUnitRecord, ...]:
         """Return currently released, in-scope units for candidate ids."""
 
+    async def load_local_released_units(
+        self,
+        tenant: Tenant,
+        context: RetrievalContext,
+        *,
+        candidate_limit: int,
+    ) -> tuple[ReleasedUnitRecord, ...]:
+        """Return a bounded, DB-authorized corpus for local lexical retrieval."""
+
 
 class MaterialRagTransport(Protocol):
     async def retrieve_candidates(
@@ -65,7 +74,7 @@ class MaterialRagTransport(Protocol):
         datasets: tuple[ScopeBinding, ...],
         limit: int,
     ) -> tuple[object, ...]:
-        """Return untrusted remote candidates for already-authorized text."""
+        """Return untrusted candidates for PII-safe, scope-pinned text."""
 
 
 __all__ = (

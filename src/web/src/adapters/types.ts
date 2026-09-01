@@ -144,6 +144,24 @@ export interface VersionHistoryItemV1 {
   created_at: string;
 }
 
+export const REVIEW_CHECKLIST_KEYS = [
+  "citation_traceable",
+  "risks_complete",
+  "usage_boundary",
+] as const;
+
+export type ReviewChecklistKey = (typeof REVIEW_CHECKLIST_KEYS)[number];
+
+export type ReviewChecklistV1 = Record<ReviewChecklistKey, boolean>;
+
+export interface ReviewEventV1 {
+  event_id: string;
+  action: "submit" | "return" | "approve";
+  checklist: Partial<ReviewChecklistV1>;
+  comment: string | null;
+  created_at: string;
+}
+
 export interface VersionDetailV1 {
   schema: "anhuan-analysis-report-draft-v1";
   report_id: string;
@@ -153,6 +171,7 @@ export interface VersionDetailV1 {
   title: string;
   sections: SectionV1[];
   citations: CitationV1[];
+  review_events: ReviewEventV1[];
 }
 
 // —— 控制台业务对象（UI 视角） ——
@@ -170,6 +189,8 @@ export interface ClientAccount {
   id: string;
   name: string;
   stage: ClientStage;
+  industryNote: string | null;
+  regionNote: string | null;
   updatedAt: string;
   nextFollowUpAt: string | null;
 }

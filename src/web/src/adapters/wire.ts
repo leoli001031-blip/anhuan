@@ -10,6 +10,8 @@ import type {
   ProviderReportSummaryV1,
   PublishedReportDetailV1,
   PublishedReportSummaryV1,
+  ReviewChecklistV1,
+  ReviewEventV1,
   ReportStatus,
   SectionKey,
   SectionV1,
@@ -19,6 +21,7 @@ import type {
 } from "./types";
 import type { ManagementHealthSnapshotV1 } from "../features/managementHealth";
 import {
+  REVIEW_CHECKLIST_KEYS,
   SECTION_ORDER,
   SESSION_SCHEMA,
   TEMPLATE_TITLE,
@@ -53,6 +56,12 @@ const CAPABILITIES = new Set<Capability>([
   "read_published",
 ]);
 const ERROR_REASON_RE = /^[A-Z0-9_]{1,80}$/;
+const REVIEW_ACTIONS = new Set<ReviewEventV1["action"]>([
+  "submit",
+  "return",
+  "approve",
+]);
+const REVIEW_CHECKLIST_KEY_SET = new Set<string>(REVIEW_CHECKLIST_KEYS);
 
 function wireError(code: string): never {
   throw new ApiError(0, code, false);
@@ -266,6 +275,64 @@ export function parseVersionHistory(raw: unknown): VersionHistoryItemV1[] {
   });
 }
 
+function parseReviewEvent(raw: unknown): ReviewEventV1 {
+  const row = asRecord(raw, "CONTRACT_FIELD_MISSING");
+  const action = reqString(row, "action");
+  if (!REVIEW_ACTIONS.has(action as ReviewEventV1["action"])) {
+    wireError("CONTRACT_FIELD_MISSING");
+  }
+
+  const checklistRow = asRecord(row.checklist, "CONTRACT_FIELD_MISSING");
+  if (
+    Object.entries(checklistRow).some(
+      ([key, value]) =>
+        !REVIEW_CHECKLIST_KEY_SET.has(key) || typeof value !== "boolean",
+    )
+  ) {
+    wireError("CONTRACT_FIELD_MISSING");
+  }
+  const checklist: Partial<ReviewChecklistV1> = {
+    ...(typeof checklistRow.citation_traceable === "boolean"
+      ? { citation_traceable: checklistRow.citation_traceable }
+      : {}),
+    ...(typeof checklistRow.risks_complete === "boolean"
+      ? { risks_complete: checklistRow.risks_complete }
+      : {}),
+    ...(typeof checklistRow.usage_boundary === "boolean"
+      ? { usage_boundary: checklistRow.usage_boundary }
+      : {}),
+  };
+
+  const commentRaw = row.comment;
+  if (
+    commentRaw !== null &&
+    (typeof commentRaw !== "string" ||
+      commentRaw.trim().length === 0 ||
+      commentRaw.length > 2_000)
+  ) {
+    wireError("CONTRACT_FIELD_MISSING");
+  }
+  const comment = commentRaw as string | null;
+  const checklistKeys = Object.keys(checklist);
+  if (
+    (action === "submit" && (checklistKeys.length !== 0 || comment !== null)) ||
+    (action === "return" && comment === null) ||
+    (action === "approve" &&
+      (checklistKeys.length !== REVIEW_CHECKLIST_KEYS.length ||
+        !REVIEW_CHECKLIST_KEYS.every((key) => checklist[key] === true)))
+  ) {
+    wireError("CONTRACT_FIELD_MISSING");
+  }
+
+  return {
+    event_id: reqUuid(row, "event_id"),
+    action: action as ReviewEventV1["action"],
+    checklist,
+    comment,
+    created_at: reqString(row, "created_at"),
+  };
+}
+
 export function parseVersionDetail(raw: unknown): VersionDetailV1 {
   const row = asRecord(raw, "CONTRACT_FIELD_MISSING");
   reqConst(row, "schema", "anhuan-analysis-report-draft-v1");
@@ -278,6 +345,7 @@ export function parseVersionDetail(raw: unknown): VersionDetailV1 {
     title: reqConst(row, "title", TEMPLATE_TITLE),
     sections: reqArray(row, "sections").map(parseSection),
     citations: reqArray(row, "citations").map(parseCitation),
+    review_events: reqArray(row, "review_events").map(parseReviewEvent),
   };
 }
 
@@ -363,7 +431,7 @@ export function parseHealthEnvelope(
   const assessedOn = reqString(snapshot, "assessed_on");
   if (!isRealUtcCalendarDate(assessedOn)) wireError("CONTRACT_FIELD_MISSING");
   const evidenceMode = reqString(snapshot, "evidence_mode");
-  if (evidenceMode !== "deterministic_local") wireError("CONTRACT_FIELD_MISSING");
+  if (evidenceMode !== "evidence_local") wireError("CONTRACT_FIELD_MISSING");
   const dimensionsRaw = reqArray(snapshot, "dimensions");
   if (dimensionsRaw.length !== HEALTH_DIMENSION_SPECS.length) {
     wireError("CONTRACT_FIELD_MISSING");
@@ -414,7 +482,7 @@ export function parseHealthEnvelope(
       status_label: reqString(snapshot, "status_label"),
       assessed_on: assessedOn,
       basis_label: reqString(snapshot, "basis_label"),
-      evidence_mode: "deterministic_local",
+      evidence_mode: "evidence_local",
       dimensions,
       priorities,
       boundary: reqString(snapshot, "boundary"),

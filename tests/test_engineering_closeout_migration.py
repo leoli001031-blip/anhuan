@@ -344,10 +344,28 @@ class AlembicOrchestrationContracts(unittest.TestCase):
         self.assertNotIn("sys.argv", source)
         main_transaction = _transaction_body(F1_MIGRATOR, "main")
         self.assertIn("migrate_with_connection(connection)", main_transaction)
-        self.assertNotIn("target=", main_transaction)
+        main_calls = [
+            call
+            for call in ast.walk(_function(F1_MIGRATOR, "main"))
+            if isinstance(call, ast.Call)
+            and ast.unparse(call.func) == "migrate_with_connection"
+        ]
+        self.assertEqual(len(main_calls), 1)
+        self.assertFalse(
+            any(keyword.arg == "target" for keyword in main_calls[0].keywords)
+        )
         local_transaction = _transaction_body(LOCAL_MIGRATOR, "migrate")
         self.assertIn("migrate_with_connection", local_transaction)
-        self.assertNotIn("target=", local_transaction)
+        local_calls = [
+            call
+            for call in ast.walk(_function(LOCAL_MIGRATOR, "migrate"))
+            if isinstance(call, ast.Call)
+            and ast.unparse(call.func).endswith("migrate_with_connection")
+        ]
+        self.assertEqual(len(local_calls), 1)
+        self.assertFalse(
+            any(keyword.arg == "target" for keyword in local_calls[0].keywords)
+        )
         self.assertIn('"f1_0014"', _source(LOCAL_MIGRATOR))
         self.assertNotIn('"f1_0015"', _source(LOCAL_MIGRATOR))
         self.assertNotIn('"f1_0017"', _source(LOCAL_MIGRATOR))
@@ -358,16 +376,61 @@ class AlembicOrchestrationContracts(unittest.TestCase):
 
         self.assertEqual(
             migrate_f1.F1_ALLOWED_MIGRATE_TARGETS,
-            frozenset({"f1_0014", "f1_0015", "f1_0016", "f1_0017", "f1_0018"}),
+            frozenset(
+                {
+                    "f1_0014",
+                    "f1_0015",
+                    "f1_0016",
+                    "f1_0017",
+                    "f1_0018",
+                    "f1_0019",
+                    "f1_0020",
+                    "f1_0021",
+                    "f1_0022",
+                    "f1_0023",
+                    "f1_0024",
+                }
+            ),
         )
         self.assertEqual(migrate_f1.F1_DEFAULT_MIGRATE_TARGET, "f1_0014")
         self.assertEqual(migrate_f1.F1_MATERIAL_RAG_MIGRATE_TARGET, "f1_0016")
-        self.assertEqual(migrate_f1.F1_ANALYSIS_REPORT_MIGRATE_TARGET, "f1_0018")
+        self.assertEqual(migrate_f1.F1_ANALYSIS_REPORT_MIGRATE_TARGET, "f1_0024")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0014"), "f1_0014")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0015"), "f1_0015")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0016"), "f1_0016")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0017"), "f1_0017")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0018"), "f1_0018")
+        self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0019"), "f1_0019")
+        self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0020"), "f1_0020")
+        self.assertEqual(
+            migrate_f1._definer_owners_for_target("f1_0019"),
+            migrate_f1.ALL_DEFINER_OWNERS,
+        )
+        self.assertEqual(
+            migrate_f1._definer_owners_for_target("f1_0020"),
+            {
+                **migrate_f1.ALL_DEFINER_OWNERS,
+                **migrate_f1.ANALYSIS_REPORT_DEFINER_OWNERS,
+            },
+        )
+        self.assertEqual(
+            set(migrate_f1.ANALYSIS_REPORT_DEFINER_OWNERS),
+            {
+                "f1.aeco_client_service_cases()",
+                "f1.aeco_client_material_context()",
+                "f1.aeco_client_material_bindings()",
+                "f1.aeco_client_material_units(uuid[])",
+                "f1.aeco_client_material_local_units(integer)",
+            },
+        )
+        self.assertEqual(
+            set(migrate_f1.ANALYSIS_REPORT_DEFINER_OWNERS.values()),
+            {"f1_aeco_read_definer"},
+        )
+        self.assertNotIn(
+            "f1.aeco_guard_service_case_client_identity()",
+            migrate_f1.ANALYSIS_REPORT_DEFINER_OWNERS,
+        )
         closed_source = ast.unparse(_function(F1_MIGRATOR, "_closed_f1_migrate_target"))
         self.assertIn("type(target) is not str", closed_source)
         self.assertNotIn("isinstance(target", closed_source)
@@ -403,7 +466,7 @@ class AlembicOrchestrationContracts(unittest.TestCase):
         for illegal in (
             "head",
             "f1_0013",
-            "f1_0019",
+            "f1_0025",
             "f1_0014 ",
             "",
             None,

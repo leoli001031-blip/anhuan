@@ -1,17 +1,16 @@
-// 客户门户 · 服务事项（/portal/services）：本企业租户内的真实 P2 列表。
-// 缺 client-safe 详情 DTO：不请求、不展示 description/findings/timeline 等内部详情（见 BLOCKED-2）。
+// 客户门户 · 服务事项（/portal/services）：只消费 /service-cases/portal 安全摘要。
+// 不请求、不持有 description/assignments/findings/timeline 等 provider 详情字段。
 // 状态统一文案；未知状态显示「状态待确认」；client 无任何写操作。
 import { useEffect, useState } from "react";
 import { Spin, Typography } from "antd";
-import { isMockData } from "../../adapters";
 import ErrorState from "../../components/ErrorState";
 import StatusDot, { type StatusTone } from "../../components/StatusDot";
 import { formatDateTime } from "../../components/ReportDocument";
 import { isOverdue, itemStatusLabel } from "../../components/ServiceItemsShared";
 import type { ItemStatusLabel } from "../../components/ServiceItemsShared";
 import { useAuth } from "../../auth/OidcProvider";
-import { listServiceCases } from "../../p2Api";
-import type { ServiceCase } from "../../p2Api";
+import { listPortalServiceCases } from "../../p2Api";
+import type { PortalServiceCaseSummary } from "../../p2Api";
 
 const SERVICE_TYPE_LABEL: Record<string, string> = {
   onsite: "现场服务",
@@ -37,7 +36,7 @@ const STATUS_TONE: Record<ItemStatusLabel, StatusTone> = {
 
 export default function PortalServicesPage() {
   const { getAccessToken } = useAuth();
-  const [cases, setCases] = useState<ServiceCase[] | null>(null);
+  const [cases, setCases] = useState<PortalServiceCaseSummary[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [nonce, setNonce] = useState(0);
 
@@ -45,12 +44,7 @@ export default function PortalServicesPage() {
     let active = true;
     setCases(null);
     setError(null);
-    if (isMockData) {
-      // 演示环境无 P2 合成数据：呈现真实空态而非编造。
-      setCases([]);
-      return;
-    }
-    listServiceCases(getAccessToken(), "all")
+    listPortalServiceCases(getAccessToken())
       .then((collection) => {
         if (active) setCases(collection.items);
       })
@@ -98,8 +92,7 @@ export default function PortalServicesPage() {
                   label={itemStatusLabel(item.status)}
                 />
                 <Typography.Text type="secondary">
-                  {" "}
-                  · {item.assignments && item.assignments.length > 0 ? "已指派" : "待指派"}
+                  {" "}· {item.assigned ? "已指派" : "待指派"}
                   {item.planned_end_at
                     ? ` · 期限 ${formatDateTime(item.planned_end_at)}`
                     : ""}
@@ -113,7 +106,7 @@ export default function PortalServicesPage() {
         </div>
       )}
       <Typography.Paragraph type="secondary" style={{ marginTop: 24, fontSize: 13 }}>
-        事项详情由服务商在服务过程中同步；如有疑问请联系服务商。
+        此处仅展示已安全开放的服务摘要；如有疑问请联系服务商。
       </Typography.Paragraph>
     </div>
   );

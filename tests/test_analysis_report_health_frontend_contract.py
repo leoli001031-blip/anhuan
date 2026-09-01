@@ -48,7 +48,7 @@ function validSnapshot() {
     status_label: "需重点改善",
     assessed_on: "2026-08-23T00:00:00Z",
     basis_label: "基于已发布材料与本次分析报告",
-    evidence_mode: "deterministic_local",
+    evidence_mode: "evidence_local",
     dimensions: DIMS.map(([k, l, m, s]) => dim(k, l, m, s)),
     priorities: [{ title: "补齐整改闭环材料", level: "high" }],
     boundary: "边界说明",
@@ -83,7 +83,8 @@ results.sumCaps = catchCode(() => {
 });
 
 results.httpNullNotSixty = parseHealthEnvelope(envelope(null)).snapshot === null
-  && healthMod.SYNTHETIC_MANAGEMENT_HEALTH.score === 60;
+  && healthMod.SYNTHETIC_MANAGEMENT_HEALTH.score === 60
+  && healthMod.SYNTHETIC_MANAGEMENT_HEALTH.evidenceMode === "deterministic_local";
 
 let mapper503 = "missing";
 if (typeof managementHealthFromHttp === "function") {

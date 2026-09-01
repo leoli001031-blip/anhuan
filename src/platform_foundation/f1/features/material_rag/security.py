@@ -19,6 +19,7 @@ from .contracts import (
     DemoUnitManifestProof,
     MaterialRagIntegrityError,
     MaterialRagJobClaim,
+    SHA256_RE,
     SensitiveText,
 )
 
@@ -207,8 +208,6 @@ def _ordered_manifest_units(
     for unit in materialized:
         if unit.id != _canonical_unit_identity(unit):
             raise MaterialRagIntegrityError("MATERIAL_RAG_UNIT_IDENTITY_INVALID")
-        if unit.source_sha256 not in AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256:
-            raise MaterialRagIntegrityError("MATERIAL_RAG_SOURCE_NOT_AUTHORIZED")
         body = unit.body.reveal()
         if len(body) > MAX_UNIT_CHARACTERS:
             raise MaterialRagIntegrityError("MATERIAL_RAG_UNIT_BODY_TOO_LARGE")
@@ -433,6 +432,56 @@ def create_synthetic_unit_manifest_proof(
     )
 
 
+def create_released_unit_manifest_proof(
+    *,
+    claim: MaterialRagJobClaim,
+    units: Iterable[CanonicalUnit],
+    ttl_seconds: int = 300,
+) -> DemoUnitManifestProof:
+    """Attest units parsed from the exact released source bound to ``claim``.
+
+    The caller must first open the source through the identity-checking P3
+    storage reader.  The worker subsequently re-proves the live released state
+    under the same lease before persistence and every remote mutation.
+    """
+    if not 30 <= ttl_seconds <= 900:
+        raise ValueError("MATERIAL_RAG_MANIFEST_TTL_INVALID")
+    issued = int(time.time())
+    expires = issued + ttl_seconds
+    payload, ordered = _manifest_payload(
+        claim=claim,
+        issued_at_epoch=issued,
+        expires_at_epoch=expires,
+        units=units,
+    )
+    first = ordered[0]
+    if (
+        claim.action not in {"index", "rebuild"}
+        or first.enterprise_id != claim.enterprise_id
+        or first.knowledge_scope_id != claim.knowledge_scope_id
+        or first.document_record_id != claim.document_record_id
+        or first.document_version_id != claim.document_version_id
+        or first.source_sha256 != claim.source_sha256
+        or any(unit.source_sha256 != claim.source_sha256 for unit in ordered)
+    ):
+        raise MaterialRagIntegrityError("MATERIAL_RAG_SOURCE_MANIFEST_MISMATCH")
+    manifest_sha = hashlib.sha256(payload).hexdigest()
+    signature = hmac.new(
+        _manifest_key_bytes(), _MANIFEST_DOMAIN + payload, hashlib.sha256
+    ).hexdigest()
+    return DemoUnitManifestProof(
+        schema_version=1,
+        job_id=claim.id,
+        action=claim.action,
+        attempt=claim.attempt,
+        source_sha256=claim.source_sha256,
+        issued_at_epoch=issued,
+        expires_at_epoch=expires,
+        manifest_sha256=manifest_sha,
+        signature_hex=signature,
+    )
+
+
 def verify_demo_unit_manifest_proof(
     claim: MaterialRagJobClaim,
     units: Iterable[CanonicalUnit],
@@ -475,6 +524,11 @@ def verify_demo_unit_manifest_proof(
     ):
         raise MaterialRagIntegrityError("MATERIAL_RAG_MANIFEST_INVALID")
     return ordered
+
+
+# Compatibility name retained for verifier callers while the production
+# worker uses the source-neutral name.
+verify_unit_manifest_proof = verify_demo_unit_manifest_proof
 
 
 def normalize_text(value: str) -> str:
@@ -621,21 +675,31 @@ def canonical_page_units(
     )
 
 
-def remote_document_name(source_sha256: str) -> str:
-    """Return the only externally embeddable opaque title for a source.
+def remote_document_name(
+    source_sha256: str,
+    document_version_id: uuid.UUID | None = None,
+) -> str:
+    """Return an externally embeddable opaque title for a source.
 
-    RAGFlow v0.26.4 embeds the remote document name together with every
-    chunk body.  The mapping is therefore source-hash based and frozen: it
-    contains neither an original filename nor a record/version/scope id, and
-    every value is included in the authorizer's body-SHA manifest.
+    RAGFlow embeds the remote document name together with every chunk body, so
+    the value contains no original filename.  Historical verifier sources keep
+    their frozen names.  Ordinary sources include a hash of the source/version
+    identity so equal files in the same scope cannot alias one remote document.
     """
 
-    try:
-        return _REMOTE_DOCUMENT_NAME_BY_SOURCE_SHA256[source_sha256]
-    except KeyError:
-        raise MaterialRagIntegrityError(
-            "MATERIAL_RAG_SOURCE_NOT_AUTHORIZED"
-        ) from None
+    if not isinstance(source_sha256, str) or not SHA256_RE.fullmatch(source_sha256):
+        raise MaterialRagIntegrityError("MATERIAL_SOURCE_SHA_INVALID")
+    frozen = _REMOTE_DOCUMENT_NAME_BY_SOURCE_SHA256.get(source_sha256)
+    if frozen is not None:
+        return frozen
+    identity = source_sha256
+    if document_version_id is not None:
+        if not isinstance(document_version_id, uuid.UUID):
+            raise MaterialRagIntegrityError("MATERIAL_VERSION_ID_INVALID")
+        identity = hashlib.sha256(
+            f"{source_sha256}\x00{document_version_id}".encode("ascii")
+        ).hexdigest()
+    return f"MATERIAL_RAG_SOURCE_{identity}"
 
 
 def unit_aad(unit: CanonicalUnit) -> bytes:
@@ -721,6 +785,7 @@ __all__ = (
     "canonical_unit",
     "canonical_page_units",
     "create_demo_unit_manifest_proof",
+    "create_released_unit_manifest_proof",
     "create_synthetic_unit_manifest_proof",
     "dataset_ref_aad",
     "decrypt_text",
@@ -730,4 +795,5 @@ __all__ = (
     "unit_aad",
     "unit_aad_for_identity",
     "verify_demo_unit_manifest_proof",
+    "verify_unit_manifest_proof",
 )

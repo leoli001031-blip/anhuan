@@ -15,6 +15,7 @@ import Login from "./pages/Login";
 import LegacyProviderGate from "./shells/LegacyProviderGate";
 import ConsoleLayout from "./shells/ConsoleLayout";
 import QaPage from "./pages/portal/QaPage";
+import PortalServicesPage from "./pages/portal/PortalServicesPage";
 import PortalHomePage from "./pages/portal/PortalHomePage";
 import PortalReportListPage from "./pages/portal/ReportListPage";
 import PortalReportDetailPage from "./pages/portal/ReportDetailPage";
@@ -22,6 +23,9 @@ import HealthScorePage from "./pages/portal/HealthScorePage";
 import ClientsPage from "./pages/console/ClientsPage";
 import ClientOverviewPage from "./pages/console/ClientOverviewPage";
 import ClientMaterialsPage from "./pages/console/ClientMaterialsPage";
+import ClientServicesPage from "./pages/console/ClientServicesPage";
+import ClientServiceCalendarPage from "./pages/console/ClientServiceCalendarPage";
+import ClientRectificationPage from "./pages/console/ClientRectificationPage";
 import ClientReportsPage from "./pages/console/ClientReportsPage";
 import ReportWorkbenchPage from "./pages/console/ReportWorkbenchPage";
 import ExceptionsPage from "./pages/console/ExceptionsPage";
@@ -123,9 +127,9 @@ function AppRoutes() {
           </Protected>
         }
       >
-        {/* 客户门户：首页 / 服务事项 / 分析报告（问答仅演示环境） */}
+        {/* 客户门户：首页 / 服务事项 / 资料问答 / 分析报告 */}
         <Route index element={<PortalHomePage />} />
-        <Route path="services" element={<Navigate to="/portal" replace />} />
+        <Route path="services" element={<PortalServicesPage />} />
         <Route path="qa" element={<QaPage />} />
         <Route path="reports" element={<PortalReportListPage />} />
         <Route path="reports/:reportId" element={<PortalReportDetailPage />} />
@@ -144,6 +148,9 @@ function AppRoutes() {
         <Route path="clients" element={<ClientsPage />} />
         <Route path="clients/:clientId" element={<ClientOverviewPage />} />
         <Route path="clients/:clientId/materials" element={<ClientMaterialsPage />} />
+        <Route path="clients/:clientId/services" element={<ClientServicesPage />} />
+        <Route path="clients/:clientId/calendar" element={<ClientServiceCalendarPage />} />
+        <Route path="clients/:clientId/rectification" element={<ClientRectificationPage />} />
         <Route path="clients/:clientId/reports" element={<ClientReportsPage />} />
         <Route
           path="clients/:clientId/reports/:reportId"

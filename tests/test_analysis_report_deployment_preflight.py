@@ -266,7 +266,8 @@ class AnalysisReportDeploymentPreflightTests(unittest.TestCase):
         handoff = HANDOFF_PATH.read_text(encoding="utf-8")
         for needle in (
             "f1_0017",
-            "f1_0018",
+            "f1_0020",
+            "pre-f1-0020",
             "pg_dump",
             "F1_SECRETS_DIR",
             "F1_KEYCLOAK_ISSUER_URL",
@@ -276,7 +277,16 @@ class AnalysisReportDeploymentPreflightTests(unittest.TestCase):
         self.assertIn("恢复式回滚", rollback)
         self.assertIn("禁止执行 Alembic downgrade", rollback)
         self.assertIn("人工二次确认", rollback)
-        self.assertIn("DEPLOYMENT_PACKAGE_INTEGRATED_LOCAL", handoff)
+        for boundary in (
+            "TARGETED_TEST_PASSED",
+            "WORKFLOW_UAT_PASSED",
+            "NOT_COMMITTED",
+            "NOT_PUSHED",
+            "NOT_DEPLOYED",
+            "NOT_PRODUCTION",
+            "NOT_PART_OF_THIS_RUN",
+        ):
+            self.assertIn(boundary, handoff)
 
     def test_remote_smoke_locks_dual_identity_health_and_test_mode(self) -> None:
         text = REMOTE_SMOKE_PATH.read_text(encoding="utf-8")
@@ -284,7 +294,7 @@ class AnalysisReportDeploymentPreflightTests(unittest.TestCase):
             "provider_admin",
             "client_user",
             "/api/v1/analysis-reports/health/latest",
-            "deterministic_local",
+            "evidence_local",
             "ark_calls=0",
             "mock_data=0",
         ):

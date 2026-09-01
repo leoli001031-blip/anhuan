@@ -1,4 +1,4 @@
-// 客户门户壳：顶部白条，导航按可用能力呈现（HTTP 问答未开放时隐藏）。
+// 客户门户壳：导航只呈现已接入真实合同的客户能力。
 // 窄屏（<768px）：品牌+退出一行、导航整行等分 tab，邮箱隐藏，无逐字断行。
 // 无侧边栏、无企业切换器——客户身份完全由会话推导。
 import { MenuOutlined } from "@ant-design/icons";
@@ -51,13 +51,18 @@ export default function PortalLayout() {
           <NavLink to="/portal" end className={({ isActive }) => navLinkClass(isActive)}>
             总览
           </NavLink>
+          <NavLink to="/portal/services" className={({ isActive }) => navLinkClass(isActive)}>
+            服务事项
+          </NavLink>
+          <NavLink to="/portal/qa" className={({ isActive }) => navLinkClass(isActive)}>
+            资料问答
+          </NavLink>
           <NavLink to="/portal/reports" className={({ isActive }) => navLinkClass(isActive)}>
             分析报告
           </NavLink>
           <NavLink to="/portal/health" className={({ isActive }) => navLinkClass(isActive)}>
-            安环管理健康度
+            健康度
           </NavLink>
-          {/* 问答保留兼容路由，但在正式客户导航与视觉预览中均不展示。 */}
         </nav>
         <Typography.Text className="portal-email">
           {enterpriseLabel}
@@ -69,8 +74,10 @@ export default function PortalLayout() {
           <summary aria-label="打开导航"><MenuOutlined aria-hidden="true" /></summary>
           <div>
             <NavLink to="/portal" end className={({ isActive }) => navLinkClass(isActive)}>总览</NavLink>
+            <NavLink to="/portal/services" className={({ isActive }) => navLinkClass(isActive)}>服务事项</NavLink>
+            <NavLink to="/portal/qa" className={({ isActive }) => navLinkClass(isActive)}>资料问答</NavLink>
             <NavLink to="/portal/reports" className={({ isActive }) => navLinkClass(isActive)}>分析报告</NavLink>
-            <NavLink to="/portal/health" className={({ isActive }) => navLinkClass(isActive)}>安环管理健康度</NavLink>
+            <NavLink to="/portal/health" className={({ isActive }) => navLinkClass(isActive)}>健康度</NavLink>
             <button type="button" onClick={() => void logout()}>退出登录</button>
           </div>
         </details>

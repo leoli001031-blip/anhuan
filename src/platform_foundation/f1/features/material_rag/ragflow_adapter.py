@@ -15,9 +15,13 @@ from typing import Callable, Iterable
 from platform_foundation.f0j1.ragflow_client import RagFlowClient, RagFlowProbeError
 
 from ...ragflow_provision import RAGFLOW_BASE, ragflow_lock, ragflow_token
-from .contracts import CanonicalUnit, MaterialRagIntegrityError, MaterialRagLeaseLost
+from .contracts import (
+    CanonicalUnit,
+    MaterialRagIntegrityError,
+    MaterialRagLeaseLost,
+    SHA256_RE,
+)
 from .security import (
-    AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256,
     assert_external_text_safe,
     remote_document_name,
 )
@@ -340,7 +344,6 @@ def reconcile_version(
     if any(
         unit.knowledge_scope_id != knowledge_scope_id
         or unit.document_version_id != document_version_id
-        or unit.source_sha256 not in AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256
         for unit in units
     ):
         raise MaterialRagIntegrityError("MATERIAL_RAG_UNIT_SCOPE_MISMATCH")
@@ -351,7 +354,7 @@ def reconcile_version(
     source_sha256_values = {unit.source_sha256 for unit in units}
     if len(source_sha256_values) != 1:
         raise MaterialRagIntegrityError("MATERIAL_RAG_UNIT_SCOPE_MISMATCH")
-    name = remote_document_name(source_sha256_values.pop())
+    name = remote_document_name(source_sha256_values.pop(), document_version_id)
     with ragflow_lock(f"material-scope-{knowledge_scope_id.hex}"):
         _guard(lease_guard)
         matches = [
@@ -448,10 +451,10 @@ def delete_version(
     """Delete only the version document from one already-resolved scope."""
     if not _DATASET_ID_RE.fullmatch(dataset_id):
         raise MaterialRagIntegrityError("MATERIAL_RAG_DATASET_BINDING_INVALID")
-    if source_sha256 not in AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256:
-        raise MaterialRagIntegrityError("MATERIAL_RAG_SOURCE_NOT_AUTHORIZED")
+    if not isinstance(source_sha256, str) or not SHA256_RE.fullmatch(source_sha256):
+        raise MaterialRagIntegrityError("MATERIAL_SOURCE_SHA_INVALID")
     client, token = _client()
-    name = remote_document_name(source_sha256)
+    name = remote_document_name(source_sha256, document_version_id)
     with ragflow_lock(f"material-scope-{knowledge_scope_id.hex}"):
         _guard(lease_guard)
         expected_dataset_name = f"f1-material-{knowledge_scope_id.hex}"

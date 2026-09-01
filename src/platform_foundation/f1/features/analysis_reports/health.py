@@ -1,4 +1,4 @@
-"""Health snapshot contract, hasher, and local deterministic scorer.
+"""Health snapshot contract, hasher, and evidence-safe local scorer.
 
 Independent of the report generator. HTTP never includes payload_sha256.
 """
@@ -15,7 +15,6 @@ from .contracts import (
     HealthScoreContext,
     HealthScorerPort,
     HealthSnapshotUnavailable,
-    TEMPLATE_TITLE,
 )
 
 ENVELOPE_KEYS = ("schema", "snapshot")
@@ -46,7 +45,7 @@ DIMENSION_SPECS: tuple[tuple[str, str, int], ...] = (
 )
 TONES = frozenset({"positive", "attention", "priority"})
 PRIORITY_LEVELS = frozenset({"high", "medium"})
-EVIDENCE_MODES = frozenset({"deterministic_local"})
+EVIDENCE_MODES = frozenset({"evidence_local"})
 HEALTH_BOUNDARY = (
     "该健康度用于资料管理与改善优先级参考，不替代法定合规评价、执法结论或生产放行。"
 )
@@ -252,88 +251,28 @@ def http_envelope(snapshot: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def as_iso(value: datetime) -> str:
+    """Return the UTC form used in persisted snapshot identity checks."""
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-class FakeDeterministicHealthScorer:
-    """Local dual-flag demo scorer. Closed set is fixed; independent of generator."""
+class EvidenceAwareHealthScorer:
+    """Decline to score until an evidence-backed rubric exists.
 
-    def score(self, context: HealthScoreContext) -> dict[str, object]:
-        dimensions: list[dict[str, object]] = [
-            {
-                "key": "material-completeness",
-                "label": "资料完整性",
-                "score": 12,
-                "max_score": 15,
-                "summary": "核心资料已覆盖，仍有少量待补充",
-                "tone": "positive",
-            },
-            {
-                "key": "permits",
-                "label": "证照与批复",
-                "score": 14,
-                "max_score": 20,
-                "summary": "需核对部分证照的有效期与适用范围",
-                "tone": "attention",
-            },
-            {
-                "key": "monitoring",
-                "label": "监测与台账",
-                "score": 13,
-                "max_score": 20,
-                "summary": "连续性资料仍需补齐",
-                "tone": "attention",
-            },
-            {
-                "key": "remediation",
-                "label": "整改闭环",
-                "score": 8,
-                "max_score": 25,
-                "summary": "整改证明与闭环记录不足",
-                "tone": "priority",
-            },
-            {
-                "key": "expiry",
-                "label": "风险与到期",
-                "score": 6,
-                "max_score": 10,
-                "summary": "近期到期事项需跟进",
-                "tone": "attention",
-            },
-            {
-                "key": "evidence",
-                "label": "证据可信度",
-                "score": 7,
-                "max_score": 10,
-                "summary": "部分结论仍需更强佐证",
-                "tone": "attention",
-            },
-        ]
-        snapshot: dict[str, object] = {
-            "report_id": str(context.report_id),
-            "version_id": str(context.version_id),
-            "version_number": int(context.version_number),
-            "report_title": context.report_title or TEMPLATE_TITLE,
-            "score": 60,
-            "max_score": 100,
-            "status_label": "需重点改善",
-            "assessed_on": as_iso(context.assessed_on),
-            "basis_label": "基于已发布材料与本次分析报告",
-            "evidence_mode": "deterministic_local",
-            "dimensions": dimensions,
-            "priorities": [
-                {"title": "补齐整改闭环材料", "level": "high"},
-                {"title": "更新连续监测与运行台账", "level": "medium"},
-                {"title": "核对证照有效期与适用范围", "level": "medium"},
-            ],
-            "boundary": HEALTH_BOUNDARY,
-        }
-        return validate_snapshot(snapshot)
+    A list of released documents or keyword matches cannot establish a legal,
+    operational, or safety health score. Returning ``None`` makes the public
+    health envelope explicitly unscored instead of manufacturing a number.
+    ``context`` is accepted for the stable port but does not contain enough
+    evidence to make a score defensible.
+    """
+
+    def score(self, context: HealthScoreContext) -> dict[str, object] | None:
+        _ = context
+        return None
 
 
-_LOCAL_SCORER: HealthScorerPort = FakeDeterministicHealthScorer()
+_LOCAL_SCORER: HealthScorerPort = EvidenceAwareHealthScorer()
 
 
 def local_scorer() -> HealthScorerPort:
@@ -342,4 +281,4 @@ def local_scorer() -> HealthScorerPort:
 
 def set_local_scorer(scorer: HealthScorerPort | None) -> None:
     global _LOCAL_SCORER
-    _LOCAL_SCORER = scorer or FakeDeterministicHealthScorer()
+    _LOCAL_SCORER = scorer or EvidenceAwareHealthScorer()

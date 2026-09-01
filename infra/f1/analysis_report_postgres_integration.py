@@ -132,9 +132,9 @@ def _run(
         raise HarnessError("PROCESS_FAILED") from exc
 
 
-def canonical_shared_fingerprint() -> bytes:
+def canonical_shared_fingerprint(docker: Path = DOCKER) -> bytes:
     def capture(args: list[str]) -> list[str]:
-        raw = subprocess.check_output([str(DOCKER), *args], text=True).strip()
+        raw = subprocess.check_output([str(docker), *args], text=True).strip()
         return [line for line in raw.splitlines() if line]
 
     containers = []
@@ -149,7 +149,7 @@ def canonical_shared_fingerprint() -> bytes:
         ]
     ):
         payload = json.loads(
-            subprocess.check_output([str(DOCKER), "inspect", cid], text=True)
+            subprocess.check_output([str(docker), "inspect", cid], text=True)
         )[0]
         containers.append(
             {
@@ -176,7 +176,7 @@ def canonical_shared_fingerprint() -> bytes:
     ):
         payload = json.loads(
             subprocess.check_output(
-                [str(DOCKER), "volume", "inspect", name], text=True
+                [str(docker), "volume", "inspect", name], text=True
             )
         )[0]
         volumes.append(
@@ -200,7 +200,7 @@ def canonical_shared_fingerprint() -> bytes:
     ):
         payload = json.loads(
             subprocess.check_output(
-                [str(DOCKER), "network", "inspect", nid], text=True
+                [str(docker), "network", "inspect", nid], text=True
             )
         )[0]
         networks.append(
@@ -532,7 +532,7 @@ class PostgresIntegrationStack:
                 "SELECT string_agg(version_num, ',' ORDER BY version_num) "
                 "FROM f1.alembic_version"
             ).fetchone()
-            if head is None or head[0] != "f1_0018":
+            if head is None or head[0] != "f1_0024":
                 self.stop()
                 raise HarnessError("SEED_HEAD_MISMATCH")
             local_seed._ensure_enterprise(

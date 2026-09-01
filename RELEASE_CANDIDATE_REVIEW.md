@@ -1,5 +1,7 @@
 # A-Eco 分析报告发布候选审查
 
+> 2026-09-01 现役覆盖：本文下方 `f1_0018`、视觉 pending 与已提交状态是 2026-08-24 的冻结取证，不再是当前真源。现役单一 head 为 `f1_0023`，当前自动化差异为限定范围 `TARGETED_TEST_PASSED / HUMAN_VISUAL_ACCEPTANCE=NOT_PART_OF_THIS_RUN / NOT_COMMITTED / NOT_PUSHED / NOT_DEPLOYED / NOT_PRODUCTION`；以 [PROJECT_STATUS.md](./PROJECT_STATUS.md) 与 [RELEASE_CANDIDATE_PROGRESS.md](./RELEASE_CANDIDATE_PROGRESS.md) 末尾为准。
+
 ## 1. 冻结结论
 
 - 合并顺序固定为：PR #3 先合入 `main`，PR #4 后合。

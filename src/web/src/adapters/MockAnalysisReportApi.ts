@@ -2,7 +2,13 @@
 // 仅在 import.meta.env.DEV && VITE_MATERIAL_RAG_REPORT_MOCK === "1" 时由工厂启用（见 index.ts），
 // 组件不直接引用本文件；启用时所有页面显示“本地合成数据”标记。
 import { ApiError } from "./errors";
-import type { AnalysisReportApi, TransitionAction } from "./AnalysisReportApi";
+import type {
+  AnalysisReportApi,
+  HtmlReportArtifact,
+  TransitionAction,
+  TransitionEvidence,
+} from "./AnalysisReportApi";
+import { normalizeTransitionEvidence } from "./AnalysisReportApi";
 import type {
   ClientAccount,
   ClientStage,
@@ -14,6 +20,7 @@ import type {
   PublishedReportDetailV1,
   PublishedReportSummaryV1,
   QaAnswer,
+  ReviewEventV1,
   ReportStatus,
   SessionAccessV1,
   VersionDetailV1,
@@ -35,6 +42,7 @@ interface MockVersion {
   versionNumber: number;
   status: ReportStatus;
   createdAt: string;
+  reviewEvents: ReviewEventV1[];
 }
 
 interface MockReport {
@@ -81,6 +89,49 @@ const SYNTHETIC_CITATIONS = [
   },
 ];
 
+function escapeHtml(value: string | number): string {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function mockHtmlArtifact(
+  report: Pick<
+    PublishedReportDetailV1 | VersionDetailV1,
+    "title" | "version_number" | "sections" | "citations"
+  >,
+  filename: string,
+): HtmlReportArtifact {
+  const sections = report.sections
+    .map(
+      (section) =>
+        `<section><h2>${escapeHtml(section.title)}</h2><div class="body">${escapeHtml(section.body)}</div></section>`,
+    )
+    .join("");
+  const citations = report.citations
+    .map(
+      (citation, index) =>
+        `<li>[${index + 1}] ${escapeHtml(citation.documentName)} v${citation.versionNumber} ` +
+        `第${citation.pageNumber}页：${escapeHtml(citation.excerpt)}</li>`,
+    )
+    .join("");
+  const html = `<!doctype html>
+<html lang="zh-CN" data-aeco-data-mode="mock-synthetic">
+<head><meta charset="utf-8"><meta name="aeco-data-mode" content="mock-synthetic">
+<title>[本地合成数据] ${escapeHtml(report.title)}</title>
+<style>body{max-width:900px;margin:40px auto;padding:0 28px;color:#20342c;font:16px/1.75 system-ui,sans-serif}.mock{padding:14px 18px;background:#fff1cc;border:2px solid #b66a00;font-weight:700}h1,h2{color:#164c3b}.body{white-space:pre-wrap}section{margin-top:32px}li{margin:10px 0}</style></head>
+<body><p class="mock">本地合成数据 · 非真实客户报告 · 仅供界面走查</p>
+<h1>${escapeHtml(report.title)}</h1><p>第 ${report.version_number} 版</p>
+${sections}<section><h2>引用</h2><ol>${citations}</ol></section></body></html>`;
+  return {
+    blob: new Blob([html], { type: "text/html;charset=utf-8" }),
+    filename,
+  };
+}
+
 export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
   private readonly role: "provider_admin" | "client_user";
   private clients: ClientAccount[];
@@ -100,8 +151,8 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
         : "provider_admin";
     const now = new Date().toISOString();
     this.clients = [
-      { id: CLIENT_A_ID, name: "蓝海化工有限公司", stage: "active", updatedAt: now, nextFollowUpAt: "2026-09-05T09:00:00+00:00" },
-      { id: CLIENT_B_ID, name: "青松电子科技有限公司", stage: "lead", updatedAt: now, nextFollowUpAt: null },
+      { id: CLIENT_A_ID, name: "蓝海化工有限公司", stage: "active", industryNote: null, regionNote: null, updatedAt: now, nextFollowUpAt: "2026-09-05T09:00:00+00:00" },
+      { id: CLIENT_B_ID, name: "青松电子科技有限公司", stage: "lead", industryNote: null, regionNote: null, updatedAt: now, nextFollowUpAt: null },
     ];
     this.sharedMaterials = [
       { id: "m-sh-1", name: "安全生产管理制度（共享模板）", status: "ready", versionCount: 2, updatedAt: now },
@@ -125,8 +176,20 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
         clientId: CLIENT_A_ID,
         updatedAt: now,
         versions: [
-          { versionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", versionNumber: 1, status: "superseded", createdAt: "2026-07-30T09:00:00+00:00" },
-          { versionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2", versionNumber: 2, status: "published", createdAt: "2026-08-21T10:00:00+00:00" },
+          {
+            versionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            versionNumber: 1,
+            status: "superseded",
+            createdAt: "2026-07-30T09:00:00+00:00",
+            reviewEvents: [],
+          },
+          {
+            versionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb2",
+            versionNumber: 2,
+            status: "published",
+            createdAt: "2026-08-21T10:00:00+00:00",
+            reviewEvents: [],
+          },
         ],
       },
       {
@@ -134,7 +197,21 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
         clientId: CLIENT_A_ID,
         updatedAt: now,
         versions: [
-          { versionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3", versionNumber: 1, status: "review_pending", createdAt: "2026-08-21T12:30:00+00:00" },
+          {
+            versionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3",
+            versionNumber: 1,
+            status: "review_pending",
+            createdAt: "2026-08-21T12:30:00+00:00",
+            reviewEvents: [
+              {
+                event_id: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                action: "submit",
+                checklist: {},
+                comment: null,
+                created_at: "2026-08-21T12:35:00+00:00",
+              },
+            ],
+          },
         ],
       },
     ];
@@ -234,6 +311,14 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     };
   }
 
+  async getPublishedHtmlArtifact(reportId: string): Promise<HtmlReportArtifact> {
+    const report = await this.getPublishedReport(reportId);
+    return mockHtmlArtifact(
+      report,
+      `MOCK-aeco-published-report-v${report.version_number}.html`,
+    );
+  }
+
   async getLatestManagementHealth(): Promise<ManagementHealthSnapshot | null> {
     await delay();
     return SYNTHETIC_MANAGEMENT_HEALTH;
@@ -259,6 +344,8 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
       id: this.newId("client"),
       name: input.name,
       stage: input.stage,
+      industryNote: null,
+      regionNote: null,
       updatedAt: new Date().toISOString(),
       nextFollowUpAt: null,
     };
@@ -370,6 +457,7 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
       versionNumber: report.versions.length + 1,
       status: "generating",
       createdAt: new Date().toISOString(),
+      reviewEvents: [],
     };
     report.versions.push(version);
     report.updatedAt = version.createdAt;
@@ -423,6 +511,10 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
         title: "企业安环资料分析报告",
         sections: [],
         citations: [],
+        review_events: version.reviewEvents.map((event) => ({
+          ...event,
+          checklist: { ...event.checklist },
+        })),
       };
     }
     return {
@@ -434,7 +526,22 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
       title: "企业安环资料分析报告",
       sections: SYNTHETIC_SECTIONS.map((s) => ({ ...s })),
       citations: SYNTHETIC_CITATIONS.map((c) => ({ ...c })),
+      review_events: version.reviewEvents.map((event) => ({
+        ...event,
+        checklist: { ...event.checklist },
+      })),
     };
+  }
+
+  async getVersionHtmlArtifact(versionId: string): Promise<HtmlReportArtifact> {
+    const report = await this.getVersion(versionId);
+    if (report.sections.length === 0) {
+      throw new ApiError(409, "MOCK_REPORT_ARTIFACT_NOT_READY", false);
+    }
+    return mockHtmlArtifact(
+      report,
+      `MOCK-aeco-analysis-report-v${report.version_number}.html`,
+    );
   }
 
   async listVersions(reportId: string): Promise<VersionHistoryItemV1[]> {
@@ -451,8 +558,10 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
   async transition(
     versionId: string,
     action: TransitionAction,
+    evidence?: TransitionEvidence,
   ): Promise<ProviderReportSummaryV1> {
     await delay();
+    const reviewEvidence = normalizeTransitionEvidence(action, evidence);
     const { report, version } = this.findVersion(versionId);
     const legal: Record<TransitionAction, ReportStatus[]> = {
       submit: ["draft"],
@@ -478,6 +587,15 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     }
     version.status = next[action];
     report.updatedAt = new Date().toISOString();
+    if (action === "submit" || action === "return" || action === "approve") {
+      version.reviewEvents.push({
+        event_id: crypto.randomUUID(),
+        action,
+        checklist: { ...(reviewEvidence?.checklist ?? {}) },
+        comment: reviewEvidence?.comment ?? null,
+        created_at: report.updatedAt,
+      });
+    }
     return this.toSummary(report);
   }
 

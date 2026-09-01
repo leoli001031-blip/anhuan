@@ -32,11 +32,16 @@ export default function ManagementHealthSummary({
     );
   }
 
+  const isSyntheticMock = snapshot.evidenceMode === "deterministic_local";
+  const isLocalEvidence = snapshot.evidenceMode === "evidence_local";
+
   return (
     <section className="health-summary" aria-labelledby="health-heading">
       <div className="health-summary__score">
-        {snapshot.evidenceMode === "deterministic_local" ? (
-          <span className="health-environment-label">测试环境·确定性评分</span>
+        {isSyntheticMock || isLocalEvidence ? (
+          <span className="health-environment-label">
+            {isSyntheticMock ? "视觉 Mock·固定示例分" : "测试环境·本地证据评分"}
+          </span>
         ) : null}
         <Typography.Title id="health-heading" level={4} className="health-summary__title">
           安环管理健康度
@@ -72,7 +77,7 @@ export default function ManagementHealthSummary({
         <Link to="/portal/health">查看健康度详情&nbsp;›</Link>
       </div>
       <div className="health-summary__boundary">
-        {snapshot.evidenceMode === "deterministic_local" ? (
+        {isSyntheticMock || isLocalEvidence ? (
           <strong>正式环境：暂不评分</strong>
         ) : null}
         <Typography.Text type="secondary">{MANAGEMENT_HEALTH_BOUNDARY}</Typography.Text>

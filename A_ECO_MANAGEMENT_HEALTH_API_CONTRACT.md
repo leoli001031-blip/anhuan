@@ -40,7 +40,7 @@ boundary
 - `max_score`：必须为 `100`
 - `status_label` / `basis_label` / `boundary`：非空字符串
 - `assessed_on`：ISO-8601
-- `evidence_mode`：本轮仅 `deterministic_local`（本地双开关演示）。正式环境无评分器时不得发明其他 mode，只能 `snapshot=null`
+- `evidence_mode`：现役 HTTP 合同仅接受 `evidence_local`。显式前端视觉 mock 可保留历史 `deterministic_local` 令牌，但不得通过 HTTP 传输；无可信评分器时只能 `snapshot=null`
 
 ## dimensions（长度 6，顺序与闭集固定）
 

@@ -5,27 +5,39 @@ import type { ClientAccount } from "../../adapters/types";
 
 export function useClient(clientId: string) {
   const api = useApi();
-  const [client, setClient] = useState<ClientAccount | null>(null);
-  const [error, setError] = useState<unknown>(null);
+  const [state, setState] = useState<{
+    contextId: string;
+    client: ClientAccount | null;
+    error: unknown;
+  }>(() => ({ contextId: clientId, client: null, error: null }));
   const [nonce, setNonce] = useState(0);
 
   useEffect(() => {
     let active = true;
-    // 路由客户变化：先清旧状态再加载，避免串客户残留。
-    setClient(null);
-    setError(null);
+    const requestClientId = clientId;
+    setState({ contextId: requestClientId, client: null, error: null });
     api
-      .getClient(clientId)
+      .getClient(requestClientId)
       .then((c) => {
-        if (active) setClient(c);
+        if (active) {
+          setState({ contextId: requestClientId, client: c, error: null });
+        }
       })
       .catch((e) => {
-        if (active) setError(e);
+        if (active) {
+          setState({ contextId: requestClientId, client: null, error: e });
+        }
       });
     return () => {
       active = false;
     };
   }, [api, clientId, nonce]);
 
-  return { client, error, reload: () => setNonce((n) => n + 1) };
+  const inCurrentContext = state.contextId === clientId;
+  return {
+    contextId: state.contextId,
+    client: inCurrentContext ? state.client : null,
+    error: inCurrentContext ? state.error : null,
+    reload: () => setNonce((n) => n + 1),
+  };
 }

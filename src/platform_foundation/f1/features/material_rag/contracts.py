@@ -119,6 +119,7 @@ class RetrievalContext:
         "client_account_id",
         "context_sha256",
         "_scope_ids",
+        "_audience_bound",
     )
 
     def __init__(
@@ -128,6 +129,7 @@ class RetrievalContext:
         kind: ScopeKind,
         client_account_id: uuid.UUID | None,
         scope_ids: tuple[uuid.UUID, ...],
+        audience_bound: bool = False,
     ) -> None:
         if kind == "service_provider" and client_account_id is not None:
             raise ValueError("MATERIAL_CONTEXT_INVALID")
@@ -140,14 +142,19 @@ class RetrievalContext:
         self.kind = kind
         self.client_account_id = client_account_id
         self._scope_ids = scope_ids
-        payload = json.dumps(
-            {
+        self._audience_bound = audience_bound is True
+        identity = {
                 "client_account_id": str(client_account_id) if client_account_id else None,
                 "enterprise_id": str(enterprise_id),
                 "kind": kind,
                 "scope_ids": [str(value) for value in scope_ids],
                 "version": 1,
-            },
+            }
+        if self._audience_bound:
+            identity["audience_bound"] = True
+            identity["version"] = 2
+        payload = json.dumps(
+            identity,
             sort_keys=True,
             separators=(",", ":"),
         )
@@ -201,6 +208,20 @@ class MaterialEvidence:
             "snippet=<redacted>)"
         )
 
+    def to_citation_dict(self) -> dict[str, object]:
+        """Return the public, vendor-neutral citation fields."""
+        return {
+            "canonical_unit_id": str(self.canonical_unit_id),
+            "document_record_id": str(self.document_record_id),
+            "document_version_id": str(self.document_version_id),
+            "document_name": self.document_name,
+            "version_number": self.version_number,
+            "source_sha256": self.source_sha256,
+            "page_number": self.page_number,
+            "body_sha256": self.body_sha256,
+            "snippet": self.snippet,
+        }
+
 
 @dataclass(frozen=True, slots=True)
 class MaterialRetrievalResult:
@@ -210,6 +231,34 @@ class MaterialRetrievalResult:
     def __post_init__(self) -> None:
         if bool(self.evidence) == bool(self.refusal_reason):
             raise ValueError("MATERIAL_RETRIEVAL_OUTCOME_INVALID")
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class MaterialExtractiveAnswer:
+    """A local-only answer copied from verified canonical evidence."""
+
+    answer: str | None
+    evidence: tuple[MaterialEvidence, ...]
+    refusal_reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.refusal_reason:
+            if self.answer is not None or self.evidence:
+                raise ValueError("MATERIAL_ANSWER_OUTCOME_INVALID")
+            return
+        if not self.answer or not self.evidence:
+            raise ValueError("MATERIAL_ANSWER_OUTCOME_INVALID")
+
+    def citation_dicts(self) -> list[dict[str, object]]:
+        return [item.to_citation_dict() for item in self.evidence]
+
+    def __repr__(self) -> str:
+        return (
+            "MaterialExtractiveAnswer("
+            f"answer={'<redacted>' if self.answer is not None else None}, "
+            f"evidence_count={len(self.evidence)}, "
+            f"refusal_reason={self.refusal_reason!r})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +329,7 @@ __all__ = (
     "JobAction",
     "JobStatus",
     "MaterialEvidence",
+    "MaterialExtractiveAnswer",
     "MaterialRagContextNotFound",
     "MaterialRagError",
     "MaterialRagForbidden",
