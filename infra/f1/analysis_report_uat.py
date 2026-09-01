@@ -421,6 +421,20 @@ def _write_env(state: dict[str, object], paths: dict[str, Path]) -> None:
     }
     if pip_index_url:
         values["LOCAL_PIP_INDEX_URL"] = pip_index_url.rstrip("/")
+    # Compose interpolation reads the env file, not the driver's process
+    # environment; the cloud OCR overlay variables must be persisted here or
+    # the layered compose files fail closed on interpolation.
+    cloud_key_file = os.environ.get("A_ECO_CLOUD_OCR_KEY_FILE", "").strip()
+    if cloud_key_file:
+        values["A_ECO_CLOUD_OCR_KEY_FILE"] = cloud_key_file
+    for name in (
+        "A_ECO_CLOUD_OCR_PROVIDER",
+        "A_ECO_CLOUD_OCR_DIALECT",
+        "A_ECO_CLOUD_OCR_MODEL",
+    ):
+        cloud_value = os.environ.get(name, "").strip()
+        if cloud_value:
+            values[name] = cloud_value
     data = "".join(f"{key}={values[key]}\n" for key in sorted(values)).encode("utf-8")
     if paths["env"].exists():
         LC._atomic_replace(paths["env"], data)
