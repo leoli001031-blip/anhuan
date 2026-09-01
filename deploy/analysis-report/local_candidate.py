@@ -2,7 +2,7 @@
 
 Lifecycle ownership stays in ``scripts/localctl``.  The analysis-report
 migrator remains ``infra/f1/analysis-reports/migrate.py`` and must finish at
-``f1_0023``.  This wrapper adds the missing HTTP readiness gate: a running
+``f1_0024``.  This wrapper adds the missing HTTP readiness gate: a running
 container inventory is not accepted as readiness without the exact
 ``/api/readyz`` response.
 
@@ -34,7 +34,7 @@ EXPECTED_COMPONENTS = {
 EXPECTED_STATUS = {
     "ark_calls": 0,
     "client_login_ready": 1,
-    "f1_head": "f1_0023",
+    "f1_head": "f1_0024",
     "generator": "evidence_local",
     "mock_data": 0,
     "provider_login_ready": 1,
