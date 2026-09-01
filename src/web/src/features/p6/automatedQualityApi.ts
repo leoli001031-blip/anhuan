@@ -1,9 +1,8 @@
-import { API, getSelectedEnterprise } from "../../api";
+import { tenantFetch, ApiError } from "../../api";
 import { p6ReasonCopy } from "./reasonCopy";
 import type {
   CreateQualityScenarioInput,
   CreateQualitySuiteInput,
-  P6ErrorEnvelope,
   QualityDashboard,
   QualityDisagreement,
   QualityDisagreementCollection,
@@ -45,71 +44,30 @@ function assertP6Path(path: string): void {
   }
 }
 
-function requestHeaders(options: RequestOptions): Headers {
-  const headers = new Headers();
-  if (options.token) headers.set("Authorization", "Bearer " + options.token);
-  const enterpriseId = getSelectedEnterprise();
-  if (enterpriseId) headers.set("X-Enterprise-Id", enterpriseId);
-  if (options.body !== undefined) headers.set("Content-Type", "application/json");
-  return headers;
-}
-
-function normalizeErrorEnvelope(value: unknown): P6ErrorEnvelope {
-  if (!value || typeof value !== "object") return {};
-  return value as P6ErrorEnvelope;
-}
-
-async function responseError(response: Response): Promise<AutomatedQualityApiError> {
-  let envelope: P6ErrorEnvelope = {};
-  try {
-    envelope = normalizeErrorEnvelope(await response.json());
-  } catch {
-    envelope = {};
+function mapTransportError(error: unknown): AutomatedQualityApiError {
+  if (error instanceof AutomatedQualityApiError) return error;
+  if (error instanceof ApiError) {
+    if (error.code === "TENANT_SNAPSHOT_UNREADY") {
+      return new AutomatedQualityApiError(0, "TENANT_CONTEXT_REQUIRED", false);
+    }
+    return new AutomatedQualityApiError(error.status, error.code, error.retryable);
   }
-  const detail = envelope.detail;
-  const code =
-    typeof detail === "string" && /^[A-Z0-9_]{1,96}$/.test(detail)
-      ? detail
-      : detail && typeof detail !== "string" && typeof detail.code === "string" && /^[A-Z0-9_]{1,96}$/.test(detail.code)
-        ? detail.code
-        : response.status === 404
-          ? "NOT_FOUND"
-          : "HTTP_" + response.status;
-  return new AutomatedQualityApiError(
-    response.status,
-    code,
-    Boolean(detail && typeof detail !== "string" && detail.retryable),
-  );
+  return new AutomatedQualityApiError(0, "NETWORK_ERROR", true);
 }
 
 async function requestJson<T>(path: string, options: RequestOptions): Promise<T> {
   assertP6Path(path);
-  if (!getSelectedEnterprise()) {
-    throw new AutomatedQualityApiError(0, "TENANT_CONTEXT_REQUIRED", false);
-  }
-  let response: Response;
   try {
-    response = await fetch(API + path, {
-      method: options.method ?? "GET",
-      headers: requestHeaders(options),
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    const result = await tenantFetch<T>(path, {
+      method: options.method,
+      token: options.token,
+      body: options.body,
       signal: options.signal,
+      parse: "json",
     });
+    return result.payload;
   } catch (error) {
-    if (
-      options.signal?.aborted ||
-      (error instanceof DOMException && error.name === "AbortError")
-    ) {
-      throw new AutomatedQualityApiError(0, "REQUEST_ABORTED", false);
-    }
-    throw new AutomatedQualityApiError(0, "NETWORK_ERROR", true);
-  }
-  if (!response.ok) throw await responseError(response);
-  if (response.status === 204) return undefined as T;
-  try {
-    return (await response.json()) as T;
-  } catch {
-    throw new AutomatedQualityApiError(response.status, "INVALID_RESPONSE", true);
+    throw mapTransportError(error);
   }
 }
 

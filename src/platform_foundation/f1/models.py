@@ -2696,6 +2696,345 @@ class RehearsalCheckResult(Base):
     )
 
 
+ANALYSIS_REPORT_TEMPLATE_ID = "enterprise-ehs-material-analysis-v1"
+ANALYSIS_REPORT_VERSION_STATUSES = (
+    "queued",
+    "generating",
+    "draft",
+    "review_pending",
+    "changes_requested",
+    "approved",
+    "published",
+    "superseded",
+    "withdrawn",
+    "failed",
+)
+ANALYSIS_REPORT_JOB_STATUSES = ("queued", "generating", "draft", "failed")
+ANALYSIS_REPORT_AUDIENCE_STATUSES = ("active", "revoked")
+ANALYSIS_REPORT_SECTION_KEYS = (
+    "source_scope",
+    "status_summary",
+    "key_findings",
+    "risks_and_gaps",
+    "remediation",
+    "citations",
+    "usage_boundary",
+)
+
+
+class AnalysisReportClientAudience(Base):
+    __tablename__ = "analysis_report_client_audience"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id",
+            "id",
+            name="analysis_report_audience_enterprise_id_id_uq",
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "client_account_id",
+            name="analysis_report_audience_provider_client_uq",
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "audience_enterprise_id",
+            name="analysis_report_audience_provider_audience_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "client_account_id"),
+            ("f1.crm_account.enterprise_id", "f1.crm_account.id"),
+            name="analysis_report_audience_account_fk",
+        ),
+        CheckConstraint(
+            "status IN ('active','revoked')",
+            name="analysis_report_audience_status_ck",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
+    client_account_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    audience_enterprise_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("f1.enterprise.id")
+    )
+    status: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
+class AnalysisReport(Base):
+    __tablename__ = "analysis_report"
+    __table_args__ = (
+        UniqueConstraint("enterprise_id", "id", name="analysis_report_enterprise_id_id_uq"),
+        UniqueConstraint(
+            "enterprise_id",
+            "id",
+            "client_account_id",
+            name="analysis_report_enterprise_id_id_client_uq",
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "create_request_id",
+            name="analysis_report_create_request_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "client_account_id"),
+            ("f1.crm_account.enterprise_id", "f1.crm_account.id"),
+            name="analysis_report_client_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "created_by_user_id"),
+            ("f1.enterprise_user.enterprise_id", "f1.enterprise_user.user_id"),
+            name="analysis_report_actor_fk",
+        ),
+        CheckConstraint(
+            "template_id = 'enterprise-ehs-material-analysis-v1'",
+            name="analysis_report_template_ck",
+        ),
+        CheckConstraint("current_version_no >= 0", name="analysis_report_version_no_ck"),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
+    client_account_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    template_id: Mapped[str] = mapped_column(String)
+    title: Mapped[str] = mapped_column(String)
+    current_version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    current_version_no: Mapped[int] = mapped_column(Integer, default=0)
+    client_visible: Mapped[bool] = mapped_column(Boolean, default=False)
+    create_request_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
+class AnalysisReportVersion(Base):
+    __tablename__ = "analysis_report_version"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="analysis_report_version_enterprise_id_id_uq"
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "report_id",
+            "id",
+            name="analysis_report_version_enterprise_report_id_uq",
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "report_id",
+            "version_number",
+            name="analysis_report_version_number_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "report_id"),
+            ("f1.analysis_report.enterprise_id", "f1.analysis_report.id"),
+            name="analysis_report_version_report_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "client_account_id"),
+            ("f1.crm_account.enterprise_id", "f1.crm_account.id"),
+            name="analysis_report_version_client_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "report_id", "client_account_id"),
+            (
+                "f1.analysis_report.enterprise_id",
+                "f1.analysis_report.id",
+                "f1.analysis_report.client_account_id",
+            ),
+            name="analysis_report_version_report_client_fk",
+        ),
+        CheckConstraint("version_number > 0", name="analysis_report_version_number_ck"),
+        CheckConstraint(
+            "status IN ('queued','generating','draft','review_pending',"
+            "'changes_requested','approved','published','superseded',"
+            "'withdrawn','failed')",
+            name="analysis_report_version_status_ck",
+        ),
+        CheckConstraint(
+            "source_fingerprint_sha256 ~ '^[0-9a-f]{64}$'",
+            name="analysis_report_version_fp_ck",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
+    report_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    client_account_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    version_number: Mapped[int] = mapped_column(Integer)
+    status: Mapped[str] = mapped_column(String)
+    source_fingerprint_sha256: Mapped[str] = mapped_column(String(64))
+    artifact_ready: Mapped[bool] = mapped_column(Boolean, default=False)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by_user_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
+class AnalysisReportSection(Base):
+    __tablename__ = "analysis_report_section"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="analysis_report_section_enterprise_id_id_uq"
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "version_id",
+            "section_key",
+            name="analysis_report_section_key_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "version_id"),
+            ("f1.analysis_report_version.enterprise_id", "f1.analysis_report_version.id"),
+            name="analysis_report_section_version_fk",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
+    version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    section_key: Mapped[str] = mapped_column(String)
+    title: Mapped[str] = mapped_column(String)
+    body: Mapped[str] = mapped_column(Text)
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class AnalysisReportCitation(Base):
+    __tablename__ = "analysis_report_citation"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="analysis_report_citation_enterprise_id_id_uq"
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "version_id"),
+            ("f1.analysis_report_version.enterprise_id", "f1.analysis_report_version.id"),
+            name="analysis_report_citation_version_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "document_version_id"),
+            ("f1.document_version.enterprise_id", "f1.document_version.id"),
+            name="analysis_report_citation_doc_fk",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
+    version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    document_version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    document_name: Mapped[str] = mapped_column(String)
+    version_number: Mapped[int] = mapped_column(Integer)
+    page_number: Mapped[int] = mapped_column(Integer)
+    excerpt: Mapped[str] = mapped_column(Text)
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class AnalysisReportGenerationJob(Base):
+    __tablename__ = "analysis_report_generation_job"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="analysis_report_job_enterprise_id_id_uq"
+        ),
+        UniqueConstraint(
+            "enterprise_id", "request_id", name="analysis_report_job_request_uq"
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "report_id"),
+            ("f1.analysis_report.enterprise_id", "f1.analysis_report.id"),
+            name="analysis_report_job_report_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "report_id", "version_id"),
+            (
+                "f1.analysis_report_version.enterprise_id",
+                "f1.analysis_report_version.report_id",
+                "f1.analysis_report_version.id",
+            ),
+            name="analysis_report_job_version_belongs_fk",
+        ),
+        CheckConstraint(
+            "status IN ('queued','generating','draft','failed')",
+            name="analysis_report_job_status_ck",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
+    report_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    request_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    status: Mapped[str] = mapped_column(String)
+    source_fingerprint_sha256: Mapped[str] = mapped_column(String(64))
+    lease_token: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_reason: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
+class AnalysisReportAuditEvent(Base):
+    __tablename__ = "analysis_report_audit_event"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="analysis_report_audit_enterprise_id_id_uq"
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "report_id"),
+            ("f1.analysis_report.enterprise_id", "f1.analysis_report.id"),
+            name="analysis_report_audit_report_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "report_id", "version_id"),
+            (
+                "f1.analysis_report_version.enterprise_id",
+                "f1.analysis_report_version.report_id",
+                "f1.analysis_report_version.id",
+            ),
+            name="analysis_report_audit_version_belongs_fk",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
+    report_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    version_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    actor_user_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    action: Mapped[str] = mapped_column(String)
+    from_status: Mapped[str] = mapped_column(String)
+    to_status: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
 __all__ = (
     "Enterprise",
     "Plant",
@@ -2728,6 +3067,13 @@ __all__ = (
     "BusinessReport",
     "BusinessReportVersion",
     "BusinessReportArtifact",
+    "AnalysisReportClientAudience",
+    "AnalysisReport",
+    "AnalysisReportVersion",
+    "AnalysisReportSection",
+    "AnalysisReportCitation",
+    "AnalysisReportGenerationJob",
+    "AnalysisReportAuditEvent",
     "PolicySource",
     "PolicyVersion",
     "MaterialAnalysis",

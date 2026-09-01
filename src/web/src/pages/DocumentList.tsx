@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Table, Typography, Upload, Button, message } from "antd";
 import { UploadOutlined } from "@ant-design/icons";
 import { useAuth } from "../auth/OidcProvider";
-import { api, getSelectedEnterprise } from "../api";
+import { api, tenantFetch } from "../api";
 
 interface Doc {
   id: string;
@@ -24,27 +24,30 @@ export default function DocumentList() {
 
   useEffect(refresh, [getAccessToken]);
 
-  const uploadProps = {
-    name: "file",
-    action: "/api/v1/documents/upload",
-    headers: {
-      Authorization: `Bearer ${getAccessToken()}`,
-      "X-Enterprise-Id": getSelectedEnterprise() ?? "",
-    },
-    onChange(info: any) {
-      if (info.file.status === "done") {
-        message.success("上传成功");
-        refresh();
-      } else if (info.file.status === "error") {
-        message.error("上传失败");
-      }
-    },
-  };
-
   return (
     <div>
       <Typography.Title level={4}>文档</Typography.Title>
-      <Upload {...uploadProps}>
+      <Upload
+        name="file"
+        customRequest={async ({ file, onSuccess, onError }) => {
+          const form = new FormData();
+          form.set("file", file as File);
+          try {
+            await tenantFetch("/v1/documents/upload", {
+              method: "POST",
+              token: getAccessToken(),
+              form,
+              parse: "json",
+            });
+            onSuccess?.({});
+            message.success("上传成功");
+            refresh();
+          } catch (error) {
+            onError?.(error as Error);
+            message.error("上传失败");
+          }
+        }}
+      >
         <Button icon={<UploadOutlined />}>上传文件</Button>
       </Upload>
       <Table<Doc>

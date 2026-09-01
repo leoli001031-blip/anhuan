@@ -1,0 +1,30 @@
+{
+  "schema": "anhuan-analysis-report-api-v1",
+  "frozen_at": "2026-08-21",
+  "template_id": "enterprise-ehs-material-analysis-v1",
+  "endpoints": {
+    "session_access": "GET /api/v1/session/access",
+    "client_list": "GET /api/v1/analysis-reports/published",
+    "client_detail": "GET /api/v1/analysis-reports/published/{report_id}",
+    "provider_list": "GET /api/v1/analysis-reports/clients/{client_account_id}/reports",
+    "provider_create": "POST /api/v1/analysis-reports/clients/{client_account_id}/reports",
+    "provider_generate": "POST /api/v1/analysis-reports/clients/{client_account_id}/reports/{report_id}/generations",
+    "provider_job": "GET /api/v1/analysis-reports/jobs/{job_id}",
+    "provider_draft": "GET /api/v1/analysis-reports/versions/{version_id}",
+    "provider_submit": "POST /api/v1/analysis-reports/versions/{version_id}/submit",
+    "provider_return": "POST /api/v1/analysis-reports/versions/{version_id}/return",
+    "provider_approve": "POST /api/v1/analysis-reports/versions/{version_id}/approve",
+    "provider_publish": "POST /api/v1/analysis-reports/versions/{version_id}/publish",
+    "provider_withdraw": "POST /api/v1/analysis-reports/versions/{version_id}/withdraw",
+    "provider_history": "GET /api/v1/analysis-reports/{report_id}/versions"
+  },
+  "forbidden_response_keys": [
+    "dataset_id",
+    "chunk_id",
+    "knowledge_scope_id",
+    "lease_token",
+    "object_key",
+    "ragflow_dataset_id",
+    "ragflow_document_id"
+  ]
+}

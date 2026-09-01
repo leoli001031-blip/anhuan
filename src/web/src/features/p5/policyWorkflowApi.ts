@@ -1,4 +1,4 @@
-import { API, getSelectedEnterprise } from "../../api";
+import { tenantFetch, ApiError } from "../../api";
 import { p5ReasonCopy } from "./reasonCopy";
 import type {
   CreateImpactTaskInput,
@@ -7,7 +7,6 @@ import type {
   CreatePolicyVersionInput,
   ConfirmMaterialPolicyDraftInput,
   ConfirmMaterialPolicyDraftResult,
-  P5ErrorEnvelope,
   PolicyImpact,
   PolicyImpactCollection,
   PolicyImpactDetail,
@@ -55,72 +54,33 @@ function assertP5Path(path: string): void {
   }
 }
 
-function requestHeaders(options: RequestOptions): Headers {
-  const headers = new Headers();
-  if (options.token) headers.set("Authorization", "Bearer " + options.token);
-  const enterpriseId = getSelectedEnterprise();
-  if (enterpriseId) headers.set("X-Enterprise-Id", enterpriseId);
-  if (options.body !== undefined) headers.set("Content-Type", "application/json");
-  if (options.idempotencyKey) headers.set("Idempotency-Key", options.idempotencyKey);
-  return headers;
-}
-
-function normalizeErrorEnvelope(value: unknown): P5ErrorEnvelope {
-  if (!value || typeof value !== "object") return {};
-  return value as P5ErrorEnvelope;
-}
-
-async function responseError(response: Response): Promise<PolicyWorkflowApiError> {
-  let envelope: P5ErrorEnvelope = {};
-  try {
-    envelope = normalizeErrorEnvelope(await response.json());
-  } catch {
-    envelope = {};
+function mapTransportError(error: unknown): PolicyWorkflowApiError {
+  if (error instanceof PolicyWorkflowApiError) return error;
+  if (error instanceof ApiError) {
+    if (error.code === "TENANT_SNAPSHOT_UNREADY") {
+      return new PolicyWorkflowApiError(0, "TENANT_CONTEXT_REQUIRED", false);
+    }
+    return new PolicyWorkflowApiError(error.status, error.code, error.retryable);
   }
-  const detail = envelope.detail;
-  const code =
-    typeof detail === "string" && /^[A-Z0-9_]{1,80}$/.test(detail)
-      ? detail
-      : detail && typeof detail !== "string" && typeof detail.code === "string" && /^[A-Z0-9_]{1,80}$/.test(detail.code)
-        ? detail.code
-        : response.status === 404
-          ? "NOT_FOUND"
-          : "HTTP_" + response.status;
-  return new PolicyWorkflowApiError(
-    response.status,
-    code,
-    Boolean(detail && typeof detail !== "string" && detail.retryable),
-  );
+  return new PolicyWorkflowApiError(0, "NETWORK_ERROR", true);
 }
 
 async function requestJson<T>(path: string, options: RequestOptions): Promise<T> {
   assertP5Path(path);
-  if (!getSelectedEnterprise()) {
-    throw new PolicyWorkflowApiError(0, "TENANT_CONTEXT_REQUIRED", false);
-  }
-  let response: Response;
   try {
-    response = await fetch(API + path, {
-      method: options.method ?? "GET",
-      headers: requestHeaders(options),
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+    const result = await tenantFetch<T>(path, {
+      method: options.method,
+      token: options.token,
+      body: options.body,
+      extraHeaders: options.idempotencyKey
+        ? { "Idempotency-Key": options.idempotencyKey }
+        : undefined,
       signal: options.signal,
+      parse: "json",
     });
+    return result.payload;
   } catch (error) {
-    if (
-      options.signal?.aborted ||
-      (error instanceof DOMException && error.name === "AbortError")
-    ) {
-      throw new PolicyWorkflowApiError(0, "REQUEST_ABORTED", false);
-    }
-    throw new PolicyWorkflowApiError(0, "NETWORK_ERROR", true);
-  }
-  if (!response.ok) throw await responseError(response);
-  if (response.status === 204) return undefined as T;
-  try {
-    return (await response.json()) as T;
-  } catch {
-    throw new PolicyWorkflowApiError(response.status, "INVALID_RESPONSE", true);
+    throw mapTransportError(error);
   }
 }
 

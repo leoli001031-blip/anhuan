@@ -1,0 +1,7 @@
+# MATERIAL RAG Analysis Report Blocked
+
+无
+
+当前状态：`ANALYSIS_REPORT_WORKFLOW_BROWSER_UAT_PASSED / LOCAL_TEST_ENVIRONMENT_HANDOFF_READY / CHECKPOINT_COMMITTED / DRAFT_PR_UPDATED / REMOTE_STAGING_TARGET_NOT_AUTHORIZED / HUMAN_ACCEPTANCE_PENDING / NOT_PRODUCTION`
+
+说明：历史 commit 中冻结合同 Markdown 行尾空格使 `git diff HEAD^ HEAD --check` 仍可能为 2；不得写成已修。前端 mock 关闭不等于后端未写入合成材料。本栈不是生产，也不是已授权的远端预发。

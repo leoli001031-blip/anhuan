@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "anhuan-analysis-report-session-v1",
+  "title": "SessionAccessV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "product_role", "enterprise_id", "template_id", "template_title", "capabilities"],
+  "properties": {
+    "schema": { "const": "anhuan-analysis-report-session-v1" },
+    "product_role": { "enum": ["provider_admin", "client_user"] },
+    "enterprise_id": { "type": "string", "format": "uuid" },
+    "template_id": { "const": "enterprise-ehs-material-analysis-v1" },
+    "template_title": { "const": "企业安环资料分析报告" },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "list_client_reports",
+          "create_report",
+          "generate",
+          "review",
+          "publish",
+          "withdraw",
+          "list_published",
+          "read_published"
+        ]
+      },
+      "uniqueItems": true
+    }
+  }
+}

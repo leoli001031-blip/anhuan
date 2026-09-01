@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "anhuan-analysis-report-job-status-v1",
+  "title": "JobStatusV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "job_id", "version_id", "status", "error_reason"],
+  "properties": {
+    "schema": { "const": "anhuan-analysis-report-job-v1" },
+    "job_id": { "type": "string", "format": "uuid" },
+    "version_id": { "type": "string", "format": "uuid" },
+    "status": {
+      "enum": ["queued", "generating", "draft", "failed"]
+    },
+    "error_reason": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z0-9_]{1,80}$"
+    }
+  }
+}

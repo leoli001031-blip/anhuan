@@ -1,4 +1,4 @@
-import { API, getSelectedEnterprise } from "../../api";
+import { tenantFetch, ApiError } from "../../api";
 import { reasonCopy } from "./reasonCopy";
 import type {
   DocumentCollection,
@@ -46,16 +46,15 @@ function assertP3Path(path: string): void {
   }
 }
 
-function requestHeaders(options: RequestOptions): Headers {
-  const headers = new Headers();
-  if (options.token) headers.set("Authorization", "Bearer " + options.token);
-  const enterpriseId = getSelectedEnterprise();
-  if (enterpriseId) headers.set("X-Enterprise-Id", enterpriseId);
-  if (options.idempotencyKey) {
-    headers.set("Idempotency-Key", options.idempotencyKey);
+function mapTransportError(error: unknown): IngestionApiError {
+  if (error instanceof IngestionApiError) return error;
+  if (error instanceof ApiError) {
+    if (error.code === "TENANT_SNAPSHOT_UNREADY") {
+      return new IngestionApiError(0, "TENANT_CONTEXT_REQUIRED", false);
+    }
+    return new IngestionApiError(error.status, error.code, error.retryable);
   }
-  if (options.contentType) headers.set("Content-Type", options.contentType);
-  return headers;
+  return new IngestionApiError(0, "NETWORK_ERROR", true);
 }
 
 function normalizeErrorEnvelope(value: unknown): IngestionErrorEnvelope {
@@ -86,25 +85,26 @@ async function responseError(response: Response): Promise<IngestionApiError> {
 
 async function request(path: string, options: RequestOptions): Promise<Response> {
   assertP3Path(path);
-  if (!getSelectedEnterprise()) {
-    throw new IngestionApiError(0, "TENANT_CONTEXT_REQUIRED", false);
-  }
-  let response: Response;
   try {
-    response = await fetch(API + path, {
-      method: options.method ?? "GET",
-      headers: requestHeaders(options),
-      body: options.body,
+    const result = await tenantFetch(path, {
+      method: options.method,
+      token: options.token,
+      form: options.body instanceof FormData ? options.body : undefined,
+      rawBody: typeof options.body === "string" ? options.body : undefined,
+      contentType: options.contentType,
+      extraHeaders: options.idempotencyKey
+        ? { "Idempotency-Key": options.idempotencyKey }
+        : undefined,
       signal: options.signal,
+      parse: "response",
     });
+    const response = result.response;
+    if (!response) throw new IngestionApiError(0, "NETWORK_ERROR", true);
+    if (!response.ok) throw await responseError(response);
+    return response;
   } catch (error) {
-    if (options.signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) {
-      throw new IngestionApiError(0, "REQUEST_ABORTED", false);
-    }
-    throw new IngestionApiError(0, "NETWORK_ERROR", true);
+    throw mapTransportError(error);
   }
-  if (!response.ok) throw await responseError(response);
-  return response;
 }
 
 async function requestJson<T>(path: string, options: RequestOptions): Promise<T> {

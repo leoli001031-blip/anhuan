@@ -1,11 +1,31 @@
-import { useEffect, useRef, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router-dom";
+// 路由结构：
+//   新双壳：客户门户 /portal/*、甲方运营台 /console/*（新导航只暴露这些入口）
+//   旧工程界面：原路径全部保留兼容，由 LegacyProviderGate 包住（仅 provider_admin 进入 Layout）
+//   login/callback/portal/console 不受该门包裹；角色门只控制体验，权限以后端为准。
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom";
 import { Alert, ConfigProvider, Spin } from "antd";
+import zhCN from "antd/locale/zh_CN";
+import { antdTheme } from "./theme";
 import { OidcProvider, useAuth } from "./auth/OidcProvider";
+import { ApiProvider, useSessionAccess } from "./adapters";
+import { homePathFor } from "./adapters/SessionAccess";
+import ErrorState from "./components/ErrorState";
 import Login from "./pages/Login";
-import Layout from "./pages/Layout";
+import LegacyProviderGate from "./shells/LegacyProviderGate";
+import ConsoleLayout from "./shells/ConsoleLayout";
+import QaPage from "./pages/portal/QaPage";
+import PortalReportListPage from "./pages/portal/ReportListPage";
+import PortalReportDetailPage from "./pages/portal/ReportDetailPage";
+import ClientsPage from "./pages/console/ClientsPage";
+import ClientMaterialsPage from "./pages/console/ClientMaterialsPage";
+import ClientReportsPage from "./pages/console/ClientReportsPage";
+import ReportWorkbenchPage from "./pages/console/ReportWorkbenchPage";
+import ExceptionsPage from "./pages/console/ExceptionsPage";
+import SharedMaterialsPage from "./pages/console/SharedMaterialsPage";
+import PortalLayout from "./shells/PortalLayout";
 import EnterpriseList from "./pages/EnterpriseList";
-import QAPage from "./pages/QAPage";
+import LegacyQAPage from "./pages/QAPage";
 import AuditPage from "./pages/AuditPage";
 import AdminPage from "./pages/AdminPage";
 import InvitePage from "./pages/InvitePage";
@@ -59,35 +79,83 @@ function Callback() {
     if (started.current) return;
     started.current = true;
     completeSigninCallback()
-      .then(() => navigate("/workbench", { replace: true }))
-      .catch(() => setError("OIDC_CALLBACK_FAILED"));
+      .then(() => navigate("/", { replace: true }))
+      .catch(() => setError("登录回调失败，请重试。"));
   }, [completeSigninCallback, navigate]);
-  if (error) return <Alert type="error" message="登录回调失败" description={error} />;
+  if (error) return <Alert type="error" message="登录失败" description={error} />;
   return <Spin fullscreen tip="正在完成登录" />;
 }
 
-function Protected({ children }: { children: React.ReactNode }) {
+function Protected({ children }: { children: ReactNode }) {
   const { isAuthenticated, isInitializing } = useAuth();
   if (isInitializing) return <Spin fullscreen tip="正在检查登录状态" />;
   if (!isAuthenticated) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
 
+// 根路径按会话角色分流：客户 → 门户，服务商 → 运营台。
+function RoleHome() {
+  const { isAuthenticated } = useAuth();
+  const { session, loading, error, reload } = useSessionAccess();
+  if (loading) return <Spin fullscreen tip="正在加载" />;
+  if (error) return <ErrorState error={error} onRetry={reload} />;
+  if (!session) {
+    return isAuthenticated ? <Spin fullscreen tip="正在加载" /> : <Navigate to="/login" replace />;
+  }
+  return <Navigate to={homePathFor(session.product_role)} replace />;
+}
+
 function AppRoutes() {
   const { isAuthenticated } = useAuth();
   return (
     <Routes>
-      <Route path="/login" element={<Login />} />
+      <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <Login />} />
       <Route path="/callback" element={<Callback />} />
+      {/* 新 · 客户门户 */}
+      <Route
+        path="/portal"
+        element={
+          <Protected>
+            <PortalLayout />
+          </Protected>
+        }
+      >
+        <Route index element={<Navigate to="/portal/qa" replace />} />
+        <Route path="qa" element={<QaPage />} />
+        <Route path="reports" element={<PortalReportListPage />} />
+        <Route path="reports/:reportId" element={<PortalReportDetailPage />} />
+      </Route>
+      {/* 新 · 甲方运营台 */}
+      <Route
+        path="/console"
+        element={
+          <Protected>
+            <ConsoleLayout />
+          </Protected>
+        }
+      >
+        <Route index element={<Navigate to="/console/clients" replace />} />
+        <Route path="clients" element={<ClientsPage />} />
+        <Route path="clients/:clientId/materials" element={<ClientMaterialsPage />} />
+        <Route path="clients/:clientId/reports" element={<ClientReportsPage />} />
+        <Route
+          path="clients/:clientId/reports/:reportId"
+          element={<ReportWorkbenchPage />}
+        />
+        <Route path="exceptions" element={<ExceptionsPage />} />
+        <Route path="shared-materials" element={<SharedMaterialsPage />} />
+      </Route>
+      {/* 旧 · 工程界面（原路径保留兼容） */}
       <Route
         path="/"
         element={
           <Protected>
-            <Layout />
+            <Outlet />
           </Protected>
         }
       >
-        <Route index element={<Navigate to="/workbench" replace />} />
+        <Route index element={<RoleHome />} />
+        <Route element={<LegacyProviderGate />}>
         <Route path="workbench" element={<WorkbenchPage />} />
         <Route path="calendar" element={<ServiceCalendarPage />} />
         <Route path="notifications" element={<NotificationsPage />} />
@@ -156,10 +224,11 @@ function AppRoutes() {
           path="controlled-documents/:documentId"
           element={<ControlledDocumentDetailPage />}
         />
-        <Route path="qa" element={<QAPage />} />
+        <Route path="qa" element={<LegacyQAPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="invite" element={<InvitePage />} />
         <Route path="admin" element={<AdminPage />} />
+        </Route>
       </Route>
       <Route path="*" element={<Navigate to={isAuthenticated ? "/" : "/login"} replace />} />
     </Routes>
@@ -168,10 +237,12 @@ function AppRoutes() {
 
 export default function App() {
   return (
-    <ConfigProvider>
+    <ConfigProvider theme={antdTheme} locale={zhCN}>
       <OidcProvider>
         <BrowserRouter>
-          <AppRoutes />
+          <ApiProvider>
+            <AppRoutes />
+          </ApiProvider>
         </BrowserRouter>
       </OidcProvider>
     </ConfigProvider>

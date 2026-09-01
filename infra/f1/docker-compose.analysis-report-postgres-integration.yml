@@ -1,0 +1,64 @@
+# Narrow analysis-report PostgreSQL integration stack.
+# Closed service set: secret-init + postgres. Host migrator/unittest stay outside.
+x-pgint-labels: &pgint-labels
+  io.anhuan.scope: analysis-report-postgres-integration
+  io.anhuan.project-id: ${LOCAL_ANALYSIS_REPORT_PGINT_PROJECT_ID:?LOCAL_ANALYSIS_REPORT_PGINT_PROJECT_ID_REQUIRED}
+
+services:
+  secret-init:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    pull_policy: never
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        umask 077;
+        mkdir -p /postgres;
+        chown 999:999 /postgres;
+        chmod 0700 /postgres;
+        for name in f0d_bootstrap_password f0d_migration_password f0d_runtime_password f0d_worker_password;
+        do cp "/source/$${name}" "/postgres/$${name}"; done;
+        chown 999:999 /postgres/*;
+        chmod 0600 /postgres/*
+    volumes:
+      - ${LOCAL_ANALYSIS_REPORT_PGINT_SECRETS_DIR:?LOCAL_ANALYSIS_REPORT_PGINT_SECRETS_DIR_REQUIRED}:/source:ro
+      - pgint_postgres_secrets:/postgres
+    network_mode: none
+    labels: *pgint-labels
+    restart: "no"
+
+  postgres:
+    image: postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba
+    pull_policy: never
+    environment:
+      POSTGRES_USER: f0d_bootstrap
+      POSTGRES_DB: ${LOCAL_ANALYSIS_REPORT_PGINT_DATABASE:?LOCAL_ANALYSIS_REPORT_PGINT_DATABASE_REQUIRED}
+      POSTGRES_PASSWORD_FILE: /run/secrets/f1/f0d_bootstrap_password
+      PGDATA: /var/lib/postgresql/18/docker
+    ports:
+      - "127.0.0.1:${LOCAL_ANALYSIS_REPORT_PGINT_HOST_PORT:?LOCAL_ANALYSIS_REPORT_PGINT_HOST_PORT_REQUIRED}:5432"
+    volumes:
+      - pgint_postgres_data:/var/lib/postgresql
+      - pgint_postgres_secrets:/run/secrets/f1:ro
+      - ./local/00_roles.sql:/docker-entrypoint-initdb.d/00_roles.sql:ro
+    networks: [pgint_internal]
+    labels: *pgint-labels
+    depends_on:
+      secret-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -U f0d_bootstrap -d '$${POSTGRES_DB}'"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+    restart: "no"
+
+networks:
+  pgint_internal:
+    labels: *pgint-labels
+
+volumes:
+  pgint_postgres_secrets:
+    labels: *pgint-labels
+  pgint_postgres_data:
+    labels: *pgint-labels
