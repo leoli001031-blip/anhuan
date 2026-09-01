@@ -20,10 +20,12 @@ from .service import (
     list_client_reports,
     list_published,
     published_artifact,
+    published_artifact_pdf,
     product_role_for,
     session_access,
     version_detail,
     version_artifact,
+    version_artifact_pdf,
     version_history,
 )
 
@@ -45,9 +47,11 @@ __all__ = (
     "list_client_reports",
     "list_published",
     "published_artifact",
+    "published_artifact_pdf",
     "product_role_for",
     "session_access",
     "version_detail",
     "version_artifact",
+    "version_artifact_pdf",
     "version_history",
 )
