@@ -100,7 +100,7 @@ OcrPageStatus = Literal[
     "insufficient_text",
     "applied",
 ]
-PdfTextSource = Literal["pypdf", "f0h", "none"]
+PdfTextSource = Literal["pypdf", "f0h", "cloud", "none"]
 
 
 class LocalOcrError(RuntimeError):
@@ -994,6 +994,7 @@ def extract_pdf_text_pages(
     expected_sha256: str | None = None,
     config: LocalOcrConfig | None = None,
     ocr_threshold_characters: int = 40,
+    ocr_pages: Callable[..., tuple[OcrPageResult, ...]] | None = None,
 ) -> tuple[PdfPageTextResult, ...]:
     """Return bounded effective text for every PDF page.
 
@@ -1039,7 +1040,7 @@ def extract_pdf_text_pages(
         try:
             ocr_by_page = {
                 item.page_number: item
-                for item in ocr_pdf_pages(
+                for item in (ocr_pages or ocr_pdf_pages)(
                     body,
                     page_numbers=targets,
                     expected_sha256=source_sha256,
@@ -1071,7 +1072,11 @@ def extract_pdf_text_pages(
                 PdfPageTextResult(
                     page_number=page_number,
                     text=ocr.text,
-                    text_source="f0h",
+                    text_source=(
+                        "f0h"
+                        if ocr.parser_backend == OCR_PARSER_BACKEND
+                        else "cloud"
+                    ),
                     embedded_character_count=embedded_count,
                     ocr_applied=True,
                     ocr_required=False,

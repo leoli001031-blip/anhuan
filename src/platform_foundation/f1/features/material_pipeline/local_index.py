@@ -17,11 +17,15 @@ from dataclasses import dataclass
 from typing import AsyncIterator, BinaryIO
 
 from sqlalchemy import text
+from collections.abc import Callable
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...database import session_scope
+from ..material_intake.cloud_ocr import resolve_ocr_engine
 from ..material_intake.ocr import (
     LocalOcrError,
+    OcrPageResult,
     RETRYABLE_OCR_REASON_CODES,
     extract_pdf_text_pages,
 )
@@ -175,7 +179,10 @@ def _open_source(claim: MaterialRagJobClaim, source: _ReleasedPdf) -> BinaryIO:
 
 
 def _parse_pdf(
-    claim: MaterialRagJobClaim, source: _ReleasedPdf
+    claim: MaterialRagJobClaim,
+    source: _ReleasedPdf,
+    *,
+    ocr_pages: Callable[..., tuple[OcrPageResult, ...]] | None = None,
 ) -> tuple[CanonicalUnit, ...]:
     source_file = _open_source(claim, source)
     try:
@@ -193,6 +200,7 @@ def _parse_pdf(
                 raw,
                 expected_sha256=claim.source_sha256,
                 ocr_threshold_characters=40,
+                ocr_pages=ocr_pages,
             )
         except LocalOcrError as error:
             raise _LocalIndexFailure(
@@ -345,7 +353,8 @@ async def run_local_index_job(
         if not await renew_job_lease(claim, lease_seconds=900):
             raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
         source = await _released_pdf(claim)
-        units = await asyncio.to_thread(_parse_pdf, claim, source)
+        engine = resolve_ocr_engine()
+        units = await asyncio.to_thread(_parse_pdf, claim, source, ocr_pages=engine.pages)
         _validate_units(claim, units)
         # Re-prove the exact released source under this live job lease while
         # writing encrypted canonical units.  No remote mutation occurs.
