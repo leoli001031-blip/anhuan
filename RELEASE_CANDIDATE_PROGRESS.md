@@ -147,3 +147,11 @@
 - 过程修复：本地索引阶段原先硬编码 FIFO（`extract_pdf_text_pages` 直呼 `ocr_pdf_pages`），扫描页必然 `OCR_DISABLED`；改为 `ocr_pages` 可注入 + worker 每任务 `resolve_ocr_engine()`（`PdfTextSource` 增加 `cloud`，`parser_version` 携带 `cloud-vision-chat-1`，匹配既有正则、无 DB 约束）。投递 `advance` 在 retry_wait 第 10 次尝试自愈为 done——同时验证了持久投递的恢复语义。worker 镜像经 runtime tag 手工重建后 `--force-recreate` 生效。
 - 已知边界：预览页文本对扫描页仍为空（预览在摄取期以 pypdf 原生文本构建，OCR 文本只在分析/索引/报告中生效）——产品待决项；单页合成印刷体、`OCR_ACCURACY_NOT_EVALUATED`；服务器仍无公网入口/DNS/TLS；GLM key 为个人 Coding Plan 额度，交付甲方前应换其自有 key。
 - 现役整体：`CLOUD_OCR_OFFLINE_CONTRACT_PASSED / CLOUD_OCR_LIVE_SMOKE_PASSED(glm-5.3-flash) / REMOTE_SCANNED_E2E_PASSED / TEST_SERVER_DEPLOYED_LOOPBACK / OCR_ACCURACY_NOT_EVALUATED / NOT_PRODUCTION`（本地 commit 已按授权 push；未合并 PR、未生产）。
+
+## 2026-09-02 报告真实化：GLM 生成器 + 远端浏览器全流程 UAT
+
+- **远端浏览器全流程 UAT 通过**：仓库自带 `engineering-browser-verify.mjs`（系统 Chrome/CDP）经 SSH 隧道（同端口 60063 对齐 loopback issuer）直打远端栈，`--stage analysis-report-workflow` exit 0、stderr 空、`LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_OK`：真实 UI 完成 创建幂等/生成幂等/7 节/提交/三项清单/批准/发布/客户列表+详情+服务摘要+材料问答(3 引用)/健康度空态/撤回后隐藏/越权不可见，`ark_calls=0 / mock_data=0 / skipped=0`。此前后所有「远端浏览器 E2E 未验证」项闭合（UI 上传除外，扫描件为 API 上传）。前置：先以 API 把扫描件报告走完 submit→approve→publish→客户可见→withdraw→客户不可见（`WITHDRAW_ASSERT=PASSED`）以还原 runner 的空基线。
+- **GLM 报告生成器（opt-in）**：`F1_MATERIAL_ANALYSIS_REPORT_LLM=1` 时 report-worker 用 `LlmReportGenerator` 替换 extractive 生成器：证据仅来自冻结单元（编号证据块 prompt）、五节模型正文（各≤1200 字、严格 JSON）、citations 仅可引用白名单编号并由服务端确定性重建、usage_boundary 固定为模型辅助边界声明、请求缓冲用后清零；配置/传输/解析/白名单四类失败均为固定 reason 且无本地回退。9 项离线合同 OK；分析报告回归 44/44。
+- **远端真实生成验证**：服务器 report-worker 启用后（修复：cloud-ocr override 此前漏挂 report-worker 的 key 卷，曾致 `REPORT_LLM_CONFIGURATION_INVALID` 正确 fail-closed），真实 GLM 生成 38s 完成：7 节草稿 + 3 条白名单引用；内容质量显著优于 extractive 模板——将扫描件 OCR 文本（环氧丙烷储罐区/重大危险源/每日研判公示）综合进发现/风险缺口（“制度有、执行证据缺”类推断）/整改建议。生成投递 `done`；此前缺 key 的一次尝试留 failed 版本（终态正确）。
+- 状态令牌诚实化：`_api_generator_flags` 探测 report-worker 的 LLM 开关报 `glm_chat`；`local_candidate` 期望值随 `A_ECO_REPORT_LLM` 环境推导（本地默认仍 `evidence_local`）。
+- 边界：生成质量未做人工评审与准确率评估；GLM 额度为个人 Coding Plan（交付前换甲方 key）；`failed` 历史版本保留为正确终态；LLM 报告亦受 usage_boundary 约束（非合规结论）。现役新增：`REMOTE_BROWSER_WORKFLOW_UAT_PASSED / LLM_REPORT_GENERATION_LIVE_PASSED / CONTENT_QUALITY_NOT_HUMAN_REVIEWED / NOT_PRODUCTION`。

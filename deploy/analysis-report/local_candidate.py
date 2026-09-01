@@ -31,11 +31,16 @@ EXPECTED_COMPONENTS = {
     "oidc": True,
     "redis": True,
 }
+_EXPECTED_GENERATOR = (
+    "glm_chat"
+    if os.environ.get("A_ECO_REPORT_LLM", "").strip() in {"1", "true", "on"}
+    else "evidence_local"
+)
 EXPECTED_STATUS = {
     "ark_calls": 0,
     "client_login_ready": 1,
     "f1_head": "f1_0024",
-    "generator": "evidence_local",
+    "generator": _EXPECTED_GENERATOR,
     "mock_data": 0,
     "provider_login_ready": 1,
     "ready": 1,

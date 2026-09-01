@@ -467,9 +467,44 @@ def _api_generator_flags(state: dict[str, object], paths: dict[str, Path]) -> tu
     engineering = "F1_LOCAL_ENGINEERING=1" in blob.splitlines()
     local_qa = "F1_MATERIAL_QA_LOCAL_EXTRACTIVE=1" in blob.splitlines()
     ark = any("ARK" in line and line.split("=", 1)[-1] not in {"", "0", "false", "False"} for line in blob.splitlines())
-    if local and engineering and local_qa and not ark:
-        return "evidence_local", 0
-    return "", 1
+    if not (local and engineering and local_qa and not ark):
+        return "", 1
+    report_worker = _run(
+        [
+            LC._docker(),
+            "ps",
+            "-a",
+            "--filter",
+            f"label=com.docker.compose.project={state['compose_project']}",
+            "--filter",
+            "label=com.docker.compose.service=report-worker",
+            "--format",
+            "{{.ID}}",
+        ],
+        paths=paths,
+        timeout=30,
+        check=False,
+    )
+    worker_ids = (report_worker.stdout or "").strip().splitlines()
+    if report_worker.returncode == 0 and len(worker_ids) == 1:
+        worker_inspect = _run(
+            [
+                LC._docker(),
+                "inspect",
+                "-f",
+                "{{range .Config.Env}}{{println .}}{{end}}",
+                worker_ids[0],
+            ],
+            paths=paths,
+            timeout=30,
+            check=False,
+        )
+        if (
+            "F1_MATERIAL_ANALYSIS_REPORT_LLM=1"
+            in (worker_inspect.stdout or "").splitlines()
+        ):
+            return "glm_chat", 0
+    return "evidence_local", 0
 
 
 def run_start() -> dict[str, str]:

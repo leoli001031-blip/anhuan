@@ -50,3 +50,6 @@ services:
       F1_MATERIAL_CLOUD_OCR_API_KEY_FILE: /run/secrets/cloud-ocr/api_key
       F1_MATERIAL_CLOUD_OCR_MODEL: ${A_ECO_CLOUD_OCR_MODEL:-glm-5.3-flash}
       F1_MATERIAL_ANALYSIS_REPORT_LLM: ${A_ECO_REPORT_LLM:-0}
+    volumes: !override
+      - report_worker_secrets:/run/secrets/f1:ro
+      - ${A_ECO_CLOUD_OCR_KEY_FILE:?A_ECO_CLOUD_OCR_KEY_FILE_REQUIRED}:/run/secrets/cloud-ocr/api_key:ro
