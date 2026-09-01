@@ -427,6 +427,9 @@ def _write_env(state: dict[str, object], paths: dict[str, Path]) -> None:
     cloud_key_file = os.environ.get("A_ECO_CLOUD_OCR_KEY_FILE", "").strip()
     if cloud_key_file:
         values["A_ECO_CLOUD_OCR_KEY_FILE"] = cloud_key_file
+    report_llm = os.environ.get("A_ECO_REPORT_LLM", "").strip()
+    if report_llm:
+        values["A_ECO_REPORT_LLM"] = report_llm
     for name in (
         "A_ECO_CLOUD_OCR_PROVIDER",
         "A_ECO_CLOUD_OCR_DIALECT",

@@ -22,6 +22,7 @@ from .contracts import (
     TEMPLATE_ID,
 )
 from .generator import EvidenceDrivenReportGenerator
+from .llm_generator import LlmReportGenerator, llm_generation_enabled
 from . import delivery_repository
 from .queue import QUEUE_NAME, REDIS_URL, mark_current_dispatch_failure
 
@@ -219,7 +220,10 @@ async def _process_generation_job(
             frozen = _freeze_claimed(enterprise_id, client_account_id, sources)
             if frozen.fingerprint_sha256 != claimed["source_fingerprint_sha256"]:
                 raise GenerationFailed("REPORT_SOURCE_FINGERPRINT_CHANGED")
-            generated = EvidenceDrivenReportGenerator().generate(frozen)
+            if llm_generation_enabled():
+                generated = LlmReportGenerator().generate(frozen)
+            else:
+                generated = EvidenceDrivenReportGenerator().generate(frozen)
             written = await repository.persist_generated(
                 session,
                 enterprise_id=enterprise_id,
