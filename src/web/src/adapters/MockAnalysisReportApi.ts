@@ -541,6 +541,10 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     };
   }
 
+  async getVersionPdfArtifact(versionId: string): Promise<HtmlReportArtifact> {
+    return this.getVersionHtmlArtifact(versionId);
+  }
+
   async getVersionHtmlArtifact(versionId: string): Promise<HtmlReportArtifact> {
     const report = await this.getVersion(versionId);
     if (report.sections.length === 0) {

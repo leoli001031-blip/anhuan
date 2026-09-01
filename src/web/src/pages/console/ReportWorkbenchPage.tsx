@@ -409,6 +409,20 @@ export default function ReportWorkbenchPage() {
     }
   };
 
+  const downloadPdf = async () => {
+    if (!selectedId) return;
+    setDownloading(true);
+    try {
+      const artifact = await api.getVersionPdfArtifact(selectedId);
+      saveHtmlReportArtifact(artifact);
+      message.success("PDF 报告已开始下载");
+    } catch {
+      message.error("PDF 报告下载失败，请稍后重试");
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   if (listError) {
     return <ErrorState error={listError} onRetry={refresh} />;
   }
