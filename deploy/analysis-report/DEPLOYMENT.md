@@ -207,7 +207,7 @@ cd "$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT"
 python3 -B infra/f1/analysis-reports/migrate.py
 head_after="$(psql -X -A -t -v ON_ERROR_STOP=1 -c 'SELECT version_num FROM f1.alembic_version')"
-test "$head_after" = "f1_0023"
+test "$head_after" = "f1_0024"
 ```
 
 专属 migrator 成功 stdout 应为 `LOCAL_ANALYSIS_REPORT_MIGRATE_OK`。默认工程仍锁 `f1_0014`，material-RAG 专属目标仍为 `f1_0016`；不得改默认 seed/verify/backup 目标。从 `f1_0017` 到 `f1_0023` 必须线性经过 0018–0022；若失败或应用回退，执行 `ROLLBACK.md` 的恢复式回滚，禁止直接 downgrade。

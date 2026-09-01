@@ -624,7 +624,7 @@ def _seed_database(
         head = connection.execute(
             "SELECT string_agg(version_num, ',' ORDER BY version_num) FROM f1.alembic_version"
         ).fetchone()
-        if head is None or head[0] != "f1_0023":
+        if head is None or head[0] != "f1_0024":
             raise RuntimeError("DONGSHENG_DEMO_HEAD_MISMATCH")
         _set_context(connection, fixture.TENANT_A_SUB)
         actor_id = local_seed._stable_id("profile", fixture.TENANT_A_SUB)
