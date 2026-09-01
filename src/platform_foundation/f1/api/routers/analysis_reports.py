@@ -91,20 +91,33 @@ def _artifact_response(artifact: object) -> Response:
     if (
         not isinstance(body, bytes)
         or not isinstance(filename, str)
-        or not filename.endswith(".html")
+        or filename.endswith("/") is False
+        and filename.rsplit(".", 1)[-1] not in {"html", "pdf"}
         or not isinstance(digest, str)
         or len(digest) != 64
     ):
         raise HTTPException(status_code=404, detail="REPORT_NOT_FOUND")
+    suffix = filename.rsplit(".", 1)[-1]
+    headers = {
+        "Cache-Control": "private, no-store",
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "ETag": f'"{digest}"',
+        "X-Content-Type-Options": "nosniff",
+    }
+    if suffix == "pdf":
+        if not body.startswith(b"%PDF-"):
+            raise HTTPException(status_code=404, detail="REPORT_NOT_FOUND")
+        return Response(
+            content=body,
+            media_type="application/pdf",
+            headers=headers,
+        )
     return Response(
         content=body,
         media_type="text/html; charset=utf-8",
         headers={
-            "Cache-Control": "private, no-store",
-            "Content-Disposition": f'attachment; filename="{filename}"',
+            **headers,
             "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'",
-            "ETag": f'"{digest}"',
-            "X-Content-Type-Options": "nosniff",
         },
     )
 
