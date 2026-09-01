@@ -1308,13 +1308,13 @@ class MaterialRagStaticBoundaryTests(unittest.TestCase):
         self.assertNotEqual(last_copy, -1)
         after_copy = dockerfile[last_copy:]
         self.assertIn(
-            "chmod -R a+rX /app/src /app/migrations /app/infra /app/scripts",
+            "chmod -R a+rX /app/src /app/assets /app/migrations /app/infra /app/scripts",
             after_copy,
         )
         self.assertIn("chmod a+r /app/alembic.ini", after_copy)
         self.assertGreater(
             dockerfile.find(
-                "chmod -R a+rX /app/src /app/migrations /app/infra /app/scripts"
+                "chmod -R a+rX /app/src /app/assets /app/migrations /app/infra /app/scripts"
             ),
             last_copy,
         )
@@ -1870,9 +1870,14 @@ class MaterialRagStaticBoundaryTests(unittest.TestCase):
         self.assertIn("--disable-pip-version-check", dockerfile)
         self.assertIn("--timeout 60", dockerfile)
         self.assertIn("--retries 5", dockerfile)
-        self.assertNotIn("--index-url", dockerfile)
+        # The index is configurable per host via ARG but defaults to
+        # PyPI and never weakens verification with a trusted host or a
+        # hardcoded third-party mirror.
+        self.assertIn("ARG PIP_INDEX_URL=https://pypi.org/simple", dockerfile)
+        self.assertIn('--index-url "$PIP_INDEX_URL"', dockerfile)
         self.assertNotIn("trusted-host", dockerfile)
         self.assertNotIn("PIP_TRUSTED_HOST", dockerfile)
+        self.assertNotIn("mirrors.tencentyun", dockerfile)
 
         build_secret = "leak-token-must-not-print"
         build_url = "https://files.pythonhosted.org/packages/cryptography.whl"

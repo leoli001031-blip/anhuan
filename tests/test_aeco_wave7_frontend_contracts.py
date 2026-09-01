@@ -95,7 +95,10 @@ class ProviderClientServiceFrontendContracts(unittest.TestCase):
         )
         self.assertIn("item.client_account_id !== clientAccountId", request)
         self.assertIn("SERVICE_CASE_CLIENT_SCOPE_MISMATCH", request)
-        self.assertIn("listClientServiceCases(getAccessToken(), clientId)", page)
+        self.assertIn("const requestClientId = clientId;", page)
+        self.assertIn(
+            "listClientServiceCases(getAccessToken(), requestClientId)", page
+        )
 
         shell = _source(CLIENT_SHELL)
         app = _source(APP)
