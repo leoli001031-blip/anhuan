@@ -234,6 +234,28 @@ def _candidate_for(unit: FakeUnit, **overrides: object):
     return RemoteCandidate(**payload)  # type: ignore[arg-type]
 
 
+def _ordinary_extractive_answer():
+    from platform_foundation.f1.features.material_rag.contracts import (
+        MaterialEvidence,
+        MaterialExtractiveAnswer,
+    )
+
+    snippet = "普通发布材料要求作业前复核应急职责。"
+    evidence = MaterialEvidence(
+        canonical_unit_id=uuid.UUID("62000000-0000-4000-8000-000000000005"),
+        document_record_id=uuid.UUID("62000000-0000-4000-8000-000000000006"),
+        document_version_id=uuid.UUID("62000000-0000-4000-8000-000000000007"),
+        document_name="普通发布材料.pdf",
+        version_number=1,
+        source_sha256=_sha("ordinary-released-pdf"),
+        page_number=2,
+        body_sha256=hashlib.sha256(snippet.encode("utf-8")).hexdigest(),
+        snippet=snippet,
+        scope_kind="service_provider",
+    )
+    return MaterialExtractiveAnswer(snippet, (evidence,))
+
+
 class OfflineWorld:
     def __init__(self) -> None:
         from platform_foundation.f1.auth import Tenant
@@ -464,33 +486,49 @@ class MaterialRagServiceOfflineTests(unittest.TestCase):
             world.repo.calls["load_released_units"], before[1]["load_released_units"]
         )
 
-    def test_freeform_unknown_query_and_invalid_context_reject_before_io(self) -> None:
+    def test_safe_freeform_query_retrieves_and_invalid_context_rejects_before_io(
+        self,
+    ) -> None:
         from platform_foundation.f1.features.material_rag.contracts import (
-            MaterialRagUnavailable,
             RetrievalContext,
-        )
-        from platform_foundation.f1.features.material_rag.security import (
-            PROVIDER_RETRIEVAL_QUERY_TEXT,
         )
 
         world = OfflineWorld()
         world.transport.candidates = (_candidate_for(world.provider_unit),)
         request_id = uuid.UUID("61000000-0000-4000-8000-000000000803")
+        query = "普通材料有哪些作业前要求？"
+        result = _run(
+            world.service.retrieve(
+                query,
+                world.tenant_a,
+                world.provider_context,
+                request_id=request_id,
+            )
+        )
+        self.assertIsNone(result.refusal_reason)
+        self.assertEqual(
+            [item.canonical_unit_id for item in result.evidence],
+            [world.provider_unit.canonical_unit_id],
+        )
+        self.assertEqual(
+            result.evidence[0].source_sha256, world.provider_unit.source_sha256
+        )
+        self.assertEqual(world.transport.queries[0][0], query)
+
         cases = [
-            ("arbitrary free text", world.provider_context, world.tenant_a),
             ("", world.provider_context, world.tenant_a),
-            (PROVIDER_RETRIEVAL_QUERY_TEXT, world.provider_context, world.tenant_b),
+            (query, world.provider_context, world.tenant_b),
         ]
-        for query, context, tenant in cases:
-            with self.subTest(query=query, tenant=tenant.sub):
+        for invalid_query, context, tenant in cases:
+            with self.subTest(query=invalid_query, tenant=tenant.sub):
                 before = world.snapshot_io()
                 with self.assertRaisesRegex(
-                    MaterialRagUnavailable,
-                    "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
+                    ValueError,
+                    "MATERIAL_CONTEXT_INVALID",
                 ):
                     _run(
-                        world.service.retrieve_registered(
-                            query, tenant, context, request_id=request_id
+                        world.service.retrieve(
+                            invalid_query, tenant, context, request_id=request_id
                         )
                     )
                 self.assertEqual(world.snapshot_io(), before)
@@ -503,12 +541,12 @@ class MaterialRagServiceOfflineTests(unittest.TestCase):
         )
         before = world.snapshot_io()
         with self.assertRaisesRegex(
-            MaterialRagUnavailable,
-            "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
+            ValueError,
+            "MATERIAL_CONTEXT_INVALID",
         ):
             _run(
-                world.service.retrieve_registered(
-                    PROVIDER_RETRIEVAL_QUERY_TEXT,
+                world.service.retrieve(
+                    query,
                     world.tenant_a,
                     invalid,
                     request_id=request_id,
@@ -517,12 +555,12 @@ class MaterialRagServiceOfflineTests(unittest.TestCase):
         self.assertEqual(world.snapshot_io(), before)
         before = world.snapshot_io()
         with self.assertRaisesRegex(
-            MaterialRagUnavailable,
-            "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
+            ValueError,
+            "MATERIAL_CONTEXT_INVALID",
         ):
             _run(
-                world.service.retrieve_registered(
-                    PROVIDER_RETRIEVAL_QUERY_TEXT,
+                world.service.retrieve(
+                    query,
                     world.tenant_a,
                     object(),  # type: ignore[arg-type]
                     request_id=request_id,
@@ -879,13 +917,13 @@ class MaterialRagServiceOfflineTests(unittest.TestCase):
 
 
 class PublicMaterialQaBackendGateTests(unittest.TestCase):
-    def test_any_question_is_refused_before_retrieval_ports(self) -> None:
+    def test_safe_question_persists_extractive_answer_and_citations(self) -> None:
         from platform_foundation.f1 import qa_service
         from platform_foundation.f1.auth import Tenant
         from platform_foundation.f1.features.material_rag.contracts import (
             RetrievalContext,
         )
-        from platform_foundation.f1.features.material_rag import service as rag_service
+        from platform_foundation.f1.features import material_rag
 
         enterprise = uuid.UUID("62000000-0000-4000-8000-000000000001")
         request_id = uuid.UUID("62000000-0000-4000-8000-000000000002")
@@ -903,30 +941,26 @@ class PublicMaterialQaBackendGateTests(unittest.TestCase):
             owner_token=owner_token,
             attempt=1,
         )
-        retrieval = AsyncMock(side_effect=AssertionError("retrieval_must_not_run"))
-        registered = AsyncMock(side_effect=AssertionError("registered_must_not_run"))
+        extracted = _ordinary_extractive_answer()
+        extractive = AsyncMock(return_value=extracted)
+        question = "普通材料有哪些作业前要求？"
         with (
             patch.object(
                 qa_service, "reserve_request", AsyncMock(return_value=reservation)
             ) as reserve,
             patch.object(qa_service, "complete_request", AsyncMock()) as complete,
-            patch.object(rag_service, "run_verified_retrieval", retrieval),
-            patch.object(rag_service, "retrieve_registered_verifier_query", registered),
+            patch.object(material_rag, "run_extractive_answer", extractive),
         ):
             outcome = _run(
                 qa_service.ask_material_question(
-                    "任意自由问题不得外发", request_id, tenant, context
+                    question, request_id, tenant, context
                 )
             )
-        self.assertIsNone(outcome.answer)
-        self.assertEqual(outcome.citations, [])
-        self.assertEqual(
-            outcome.refusal_reason,
-            "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
-        )
+        self.assertEqual(outcome.answer, extracted.answer)
+        self.assertEqual(outcome.citations, extracted.citation_dicts())
+        self.assertIsNone(outcome.refusal_reason)
         _walk_forbidden(outcome.to_dict())
-        retrieval.assert_not_awaited()
-        registered.assert_not_awaited()
+        extractive.assert_awaited_once_with(question, tenant, context)
         reserve.assert_awaited_once()
         complete.assert_awaited_once()
         self.assertEqual(
@@ -960,9 +994,14 @@ class PublicMaterialQaBackendGateTests(unittest.TestCase):
         )
         store = _FakeQaClaimStore()
         question = "同一问题换客户必须冲突"
+        extracted = _ordinary_extractive_answer()
+        extractive = AsyncMock(return_value=extracted)
+        from platform_foundation.f1.features import material_rag
+
         with (
             patch.object(qa_service, "reserve_request", store.reserve),
             patch.object(qa_service, "complete_request", store.complete),
+            patch.object(material_rag, "run_extractive_answer", extractive),
         ):
             first = _run(
                 qa_service.ask_material_question(
@@ -980,10 +1019,13 @@ class PublicMaterialQaBackendGateTests(unittest.TestCase):
                         question, request_id, tenant, client
                     )
                 )
-        self.assertEqual(first.refusal_reason, replay.refusal_reason)
+        self.assertEqual(first.answer, extracted.answer)
+        self.assertEqual(first.citations, extracted.citation_dicts())
+        self.assertIsNone(first.refusal_reason)
+        self.assertEqual(first.to_dict(), replay.to_dict())
         self.assertEqual(store.complete_calls, 1)
         self.assertEqual(store.reserve_calls, 3)
-        self.assertIsNone(replay.answer)
+        extractive.assert_awaited_once_with(question, tenant, provider)
         _walk_forbidden(replay.to_dict())
 
     def test_public_request_forbids_physical_and_actor_supplied_scope(self) -> None:
@@ -1014,7 +1056,9 @@ class PublicMaterialQaBackendGateTests(unittest.TestCase):
         source = PUBLIC_QA_ROUTER.read_text(encoding="utf-8")
         tree = ast.parse(source)
         self.assertIn("tenant_from_header", source)
-        self.assertIn("require_role", source)
+        self.assertNotIn("require_role", source)
+        self.assertIn('tenant.role in {"super_admin", "enterprise_admin"}', source)
+        self.assertIn("derive_audience_retrieval_context", source)
         self.assertIn("derive_retrieval_context", source)
         self.assertNotIn("RagFlow", source)
         self.assertNotIn("retrieve_registered", source)
@@ -1036,7 +1080,7 @@ class PublicMaterialQaBackendGateTests(unittest.TestCase):
             self.assertRegex(detail, r"^[A-Z0-9_]+$")
             self.assertNotIn("/", detail)
         qa_source = QA_SERVICE.read_text(encoding="utf-8")
-        self.assertIn("MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED", qa_source)
+        self.assertIn("run_extractive_answer(", qa_source)
         self.assertNotIn("run_verified_retrieval(", qa_source)
 
 

@@ -1,0 +1,41 @@
+# Final override for an amd64 test candidate without the locked ARM64 OCR runtime.
+# This mode still supports native-text PDFs. Scanned/image PDFs must remain
+# OCR_REQUIRED and must not be represented as an end-to-end OCR deployment.
+services:
+  material-rag-ocr-init:
+    profiles: [arm64-ocr-only]
+  material-rag-ocr:
+    profiles: [arm64-ocr-only]
+  api:
+    environment:
+      F1_MATERIAL_OCR_ENABLED: "false"
+    volumes: !override
+      - api_secrets:/run/secrets/f1:ro
+    depends_on: !override
+      postgres: {condition: service_healthy}
+      keycloak: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      clamd: {condition: service_healthy}
+  worker:
+    environment:
+      F1_MATERIAL_OCR_ENABLED: "false"
+    volumes: !override
+      - worker_secrets:/run/secrets/f1:ro
+    depends_on: !override
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
+  dispatcher:
+    environment:
+      F1_MATERIAL_OCR_ENABLED: "false"
+  ingestion-worker:
+    environment:
+      F1_MATERIAL_OCR_ENABLED: "false"
+    volumes: !override
+      - ingestion_worker_secrets:/run/secrets/f1:ro
+    depends_on: !override
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      clamd: {condition: service_healthy}

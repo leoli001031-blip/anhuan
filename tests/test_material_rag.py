@@ -117,15 +117,14 @@ class MaterialRagValueContractTests(unittest.TestCase):
                 scope_ids=(provider,),
             )
 
-    def test_public_freeform_query_fails_before_database_or_network(self) -> None:
+    def test_public_freeform_query_delegates_to_verified_retrieval(self) -> None:
         from platform_foundation.f1.auth import Tenant
         from platform_foundation.f1.features.material_rag.contracts import (
-            MaterialRagUnavailable,
+            MaterialEvidence,
+            MaterialRetrievalResult,
             RetrievalContext,
         )
-        from platform_foundation.f1.features.material_rag.service import (
-            run_verified_retrieval,
-        )
+        from platform_foundation.f1.features.material_rag import service as rag_service
 
         enterprise = uuid.UUID("30000000-0000-4000-8000-000000000001")
         context = RetrievalContext(
@@ -135,16 +134,38 @@ class MaterialRagValueContractTests(unittest.TestCase):
             scope_ids=(uuid.UUID("30000000-0000-4000-8000-000000000002"),),
         )
         tenant = Tenant(enterprise_id=enterprise, sub="contract-user", roles=())
-        with self.assertRaisesRegex(
-            MaterialRagUnavailable,
-            "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
-        ):
-            asyncio.run(run_verified_retrieval("arbitrary question", tenant, context))
+        snippet = "普通发布材料要求作业前复核应急职责。"
+        evidence = MaterialEvidence(
+            canonical_unit_id=uuid.UUID("30000000-0000-4000-8000-000000000003"),
+            document_record_id=uuid.UUID("30000000-0000-4000-8000-000000000004"),
+            document_version_id=uuid.UUID("30000000-0000-4000-8000-000000000005"),
+            document_name="普通发布材料.pdf",
+            version_number=1,
+            source_sha256=hashlib.sha256(b"ordinary-released-pdf").hexdigest(),
+            page_number=2,
+            body_sha256=hashlib.sha256(snippet.encode("utf-8")).hexdigest(),
+            snippet=snippet,
+            scope_kind="service_provider",
+        )
+        expected = MaterialRetrievalResult((evidence,))
+        production = MagicMock()
+        production.retrieve = AsyncMock(return_value=expected)
+        with patch.object(rag_service, "_production_service", return_value=production):
+            actual = asyncio.run(
+                rag_service.run_verified_retrieval(
+                    "普通材料有哪些作业前要求？", tenant, context
+                )
+            )
+        self.assertIs(actual, expected)
+        production.retrieve.assert_awaited_once_with(
+            "普通材料有哪些作业前要求？", tenant, context, limit=6
+        )
 
-    def test_registered_verifier_queries_are_closed_and_pii_free(self) -> None:
+    def test_legacy_verifier_texts_are_safe_and_wrapper_accepts_safe_query(self) -> None:
         from platform_foundation.f1.auth import Tenant
         from platform_foundation.f1.features.material_rag.contracts import (
-            MaterialRagUnavailable,
+            MaterialRetrievalResult,
+            REFUSE_NO_HITS,
             RetrievalContext,
         )
         from platform_foundation.f1.features.material_rag.security import (
@@ -152,12 +173,10 @@ class MaterialRagValueContractTests(unittest.TestCase):
             SYNTHETIC_AUTHORIZED_SOURCE_SHA256,
             assert_external_text_safe,
         )
-        from platform_foundation.f1.features.material_rag.service import (
-            retrieve_registered_verifier_query,
-        )
+        from platform_foundation.f1.features.material_rag import service as rag_service
 
-        # Two canary bodies, three fixed queries, and six opaque document
-        # aliases are the complete fixed surface outside canonical Demo bodies.
+        # Keep the historical demo verifier inventory bounded and PII-free;
+        # production retrieval is separately allowed to accept safe questions.
         self.assertEqual(len(SYNTHETIC_AUTHORIZED_EMBEDDING_TEXTS), 11)
         self.assertEqual(len(set(SYNTHETIC_AUTHORIZED_EMBEDDING_TEXTS)), 11)
         self.assertEqual(len(SYNTHETIC_AUTHORIZED_SOURCE_SHA256), 2)
@@ -172,15 +191,19 @@ class MaterialRagValueContractTests(unittest.TestCase):
             client_account_id=None,
             scope_ids=(uuid.UUID("30000000-0000-4000-8000-000000000012"),),
         )
-        with self.assertRaisesRegex(
-            MaterialRagUnavailable,
-            "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
-        ):
-            asyncio.run(
-                retrieve_registered_verifier_query(
-                    "unregistered synthetic query", tenant, context
+        expected = MaterialRetrievalResult((), REFUSE_NO_HITS)
+        production = MagicMock()
+        production.retrieve_registered = AsyncMock(return_value=expected)
+        with patch.object(rag_service, "_production_service", return_value=production):
+            actual = asyncio.run(
+                rag_service.retrieve_registered_verifier_query(
+                    "普通安全问题", tenant, context
                 )
             )
+        self.assertIs(actual, expected)
+        production.retrieve_registered.assert_awaited_once_with(
+            "普通安全问题", tenant, context, limit=6
+        )
 
     def test_material_evidence_has_no_physical_adapter_identity(self) -> None:
         from platform_foundation.f1.features.material_rag.contracts import (
@@ -223,13 +246,15 @@ class MaterialRagValueContractTests(unittest.TestCase):
             _aad(request_id, enterprise_id, question_sha, client_b),
         )
 
-    def test_public_material_claim_persists_context_bound_refusal(self) -> None:
+    def test_public_material_claim_persists_extractive_answer_and_citations(self) -> None:
         from platform_foundation.f1 import qa_service
         from platform_foundation.f1.auth import Tenant
         from platform_foundation.f1.features.material_rag.contracts import (
+            MaterialEvidence,
+            MaterialExtractiveAnswer,
             RetrievalContext,
         )
-        from platform_foundation.f1.features.material_rag import service as rag_service
+        from platform_foundation.f1.features import material_rag
 
         enterprise = uuid.UUID("31100000-0000-4000-8000-000000000001")
         request_id = uuid.UUID("31100000-0000-4000-8000-000000000002")
@@ -249,12 +274,26 @@ class MaterialRagValueContractTests(unittest.TestCase):
         )
         reserve = AsyncMock(return_value=reservation)
         complete = AsyncMock()
-        retrieval = AsyncMock()
-        question = "公开自由问题不得外发"
+        snippet = "普通发布材料要求作业前复核应急职责。"
+        evidence = MaterialEvidence(
+            canonical_unit_id=uuid.UUID("31100000-0000-4000-8000-000000000005"),
+            document_record_id=uuid.UUID("31100000-0000-4000-8000-000000000006"),
+            document_version_id=uuid.UUID("31100000-0000-4000-8000-000000000007"),
+            document_name="普通发布材料.pdf",
+            version_number=1,
+            source_sha256=hashlib.sha256(b"ordinary-qa-pdf").hexdigest(),
+            page_number=3,
+            body_sha256=hashlib.sha256(snippet.encode("utf-8")).hexdigest(),
+            snippet=snippet,
+            scope_kind="service_provider",
+        )
+        extracted = MaterialExtractiveAnswer(snippet, (evidence,))
+        extractive = AsyncMock(return_value=extracted)
+        question = "普通材料有哪些作业前要求？"
         with (
             patch.object(qa_service, "reserve_request", reserve),
             patch.object(qa_service, "complete_request", complete),
-            patch.object(rag_service, "run_verified_retrieval", retrieval),
+            patch.object(material_rag, "run_extractive_answer", extractive),
         ):
             outcome = asyncio.run(
                 qa_service.ask_material_question(
@@ -262,12 +301,9 @@ class MaterialRagValueContractTests(unittest.TestCase):
                 )
             )
 
-        self.assertIsNone(outcome.answer)
-        self.assertEqual(outcome.citations, [])
-        self.assertEqual(
-            outcome.refusal_reason,
-            "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
-        )
+        self.assertEqual(outcome.answer, snippet)
+        self.assertEqual(outcome.citations, extracted.citation_dicts())
+        self.assertIsNone(outcome.refusal_reason)
         reserve.assert_awaited_once_with(
             request_id,
             tenant,
@@ -282,7 +318,7 @@ class MaterialRagValueContractTests(unittest.TestCase):
             outcome,
             query_context_sha256=context.context_sha256,
         )
-        retrieval.assert_not_awaited()
+        extractive.assert_awaited_once_with(question, tenant, context)
 
     def test_public_material_replay_and_nonterminal_states(self) -> None:
         from platform_foundation.f1 import qa_service
@@ -305,10 +341,10 @@ class MaterialRagValueContractTests(unittest.TestCase):
                 uuid.UUID("31200000-0000-4000-8000-000000000005"),
             ),
         )
-        refusal = qa_service.QaResult(
+        completed = qa_service.QaResult(
+            "普通材料要求作业前复核。",
+            [{"canonical_unit_id": str(uuid.uuid4())}],
             None,
-            [],
-            "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
             str(request_id),
         )
         question = "相同问题"
@@ -316,7 +352,7 @@ class MaterialRagValueContractTests(unittest.TestCase):
         replay = qa_service.QaReservation(
             qa_service.ReservationState.REPLAY,
             request_id,
-            result=refusal,
+            result=completed,
             attempt=1,
         )
         with (
@@ -333,7 +369,7 @@ class MaterialRagValueContractTests(unittest.TestCase):
                         question, request_id, tenant, context
                     )
                 ),
-                refusal,
+                completed,
             )
             complete.assert_not_awaited()
 
@@ -1106,8 +1142,8 @@ class MaterialRagStaticBoundaryTests(unittest.TestCase):
         worker = (
             ROOT / "src/platform_foundation/f1/features/material_rag/worker.py"
         ).read_text(encoding="utf-8")
-        self.assertIn("verify_demo_unit_manifest_proof", worker)
-        self.assertIn("AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256", worker)
+        self.assertIn("verify_unit_manifest_proof", worker)
+        self.assertNotIn("AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256", worker)
         self.assertIn("_released_sync", worker)
         self.assertIn("prepare(claim)", worker)
         self.assertIn("MATERIAL_RAG_MANIFEST_REQUIRED", worker)

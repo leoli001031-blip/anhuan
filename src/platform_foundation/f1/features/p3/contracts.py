@@ -15,7 +15,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, BinaryIO, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 RESOURCE_POLICY_VERSION = "p3-v1"
@@ -160,6 +160,9 @@ AllowedAction = Literal[
 PreviewKind = Literal["page_text", "sheet_grid", "image"]
 DeclaredMaterialKind = Literal["policy", "report", "unknown"]
 KnowledgeScopeKind = Literal["service_provider", "client"]
+AutoPipelineStageStatus = Literal[
+    "disabled", "pending", "running", "ready", "failed", "skipped"
+]
 
 
 class KnowledgeScopeOut(BaseModel):
@@ -253,6 +256,29 @@ class DocumentListOut(BaseModel):
     items: list[DocumentSummaryOut]
     next_cursor: str | None = None
     allowed_actions: list[AllowedAction] = Field(default_factory=list)
+
+
+class AutoPipelineStageOut(BaseModel):
+    status: AutoPipelineStageStatus
+    reason_code: str | None = Field(default=None, pattern=r"^[A-Z0-9_]{1,80}$")
+
+
+class AutoPipelineOut(BaseModel):
+    """Derived, body-free status for the local automatic PDF pipeline."""
+
+    model_config = ConfigDict(serialize_by_alias=True)
+
+    schema_version: Literal["anhuan-material-auto-pipeline-v1"] = Field(
+        default="anhuan-material-auto-pipeline-v1",
+        alias="schema",
+    )
+    version_id: uuid.UUID
+    enabled: bool
+    scope_kind: KnowledgeScopeKind
+    ingestion: AutoPipelineStageOut
+    analysis: AutoPipelineStageOut
+    index: AutoPipelineStageOut
+    report: AutoPipelineStageOut
 
 
 class PreviewUnitOut(BaseModel):
@@ -450,9 +476,15 @@ def version_allowed_actions(
         workflow_status == "ready"
         and scan_status == "clean"
         and preview_status == "ready"
-        and quarantine_status == "held"
+        and quarantine_status in {"held", "released"}
     ):
-        actions.extend(("release", "reject"))
+        # ``process`` is idempotent for a ready version: it retries missing
+        # material analysis and replays the local index/report coordinator.
+        # Non-PDF versions no-op in the processor and advance to a skipped
+        # pipeline status.
+        actions.append("process")
+        if quarantine_status == "held":
+            actions.extend(("release", "reject"))
     elif workflow_status in {"blocked", "failed"} and attempt < MAX_ATTEMPTS:
         if reason_code in PUBLIC_RETRYABLE_REASON_CODES:
             actions.append("retry")
@@ -485,11 +517,20 @@ SCANNER_TRANSPORT_FAILURE_CODES = frozenset(
 RETRYABLE_REASON_CODES = frozenset(
     {
         *SCANNER_TRANSPORT_FAILURE_CODES,
+        "P3_PROCESSING_IN_PROGRESS",
         "P3_SCAN_PROTOCOL_ERROR",
         "P3_SOURCE_READ_FAILED",
         "P3_PREVIEW_TIMEOUT",
         "P3_PREVIEW_TEMPORARY_FAILURE",
         "P3_RELEASE_WRITE_FAILED",
+        "OCR_DISABLED",
+        "OCR_UNAVAILABLE",
+        "OCR_PAGE_LIMIT",
+        "OCR_OUTPUT_INSUFFICIENT",
+        "OCR_REQUIRED",
+        "MATERIAL_ANALYSIS_FAILED",
+        "MATERIAL_SOURCE_READ_FAILED",
+        "MATERIAL_ANALYSIS_PERSIST_FAILED",
     }
 )
 
@@ -525,6 +566,7 @@ PUBLIC_REASON_CODES = {
     "P3_LIMIT_INVALID": "INVALID_REQUEST",
     "P3_ILLEGAL_STATE_TRANSITION": "ILLEGAL_STATE_TRANSITION",
     "P3_QUARANTINE_FINALIZE_CONFLICT": "ILLEGAL_STATE_TRANSITION",
+    "P3_PROCESSING_IN_PROGRESS": "INGESTION_PROCESSING",
     "P3_SCANNER_UNAVAILABLE": "SCAN_ENGINE_UNAVAILABLE",
     "P3_SCANNER_DNS_FAILED": "SCAN_ENGINE_UNAVAILABLE",
     "P3_SCANNER_REFUSED": "SCAN_ENGINE_UNAVAILABLE",
@@ -576,6 +618,17 @@ PUBLIC_REASON_CODES = {
     "P3_PREVIEW_CONTENT_TYPE_INVALID": "PREVIEW_FAILED",
     "P3_PREVIEW_IDENTITY_INVALID": "PREVIEW_FAILED",
     "P3_RELEASE_WRITE_FAILED": "SOURCE_OBJECT_STAT_FAILED",
+    "OCR_DISABLED": "MATERIAL_ANALYSIS_RETRY_REQUIRED",
+    "OCR_UNAVAILABLE": "MATERIAL_ANALYSIS_RETRY_REQUIRED",
+    "OCR_PAGE_LIMIT": "MATERIAL_ANALYSIS_RETRY_REQUIRED",
+    "OCR_OUTPUT_INSUFFICIENT": "MATERIAL_ANALYSIS_RETRY_REQUIRED",
+    "OCR_REQUIRED": "MATERIAL_ANALYSIS_RETRY_REQUIRED",
+    "MATERIAL_ANALYSIS_FAILED": "MATERIAL_ANALYSIS_RETRY_REQUIRED",
+    "MATERIAL_SOURCE_READ_FAILED": "MATERIAL_ANALYSIS_RETRY_REQUIRED",
+    "MATERIAL_ANALYSIS_PERSIST_FAILED": "MATERIAL_ANALYSIS_RETRY_REQUIRED",
+    "MATERIAL_ANALYSIS_CONFIRMED_OCR_REVIEW_REQUIRED": (
+        "MATERIAL_ANALYSIS_CONFIRMED_OCR_REVIEW_REQUIRED"
+    ),
 }
 PUBLIC_REASON_CODE_ALLOWLIST = frozenset(PUBLIC_REASON_CODES.values())
 PUBLIC_RETRYABLE_REASON_CODES = frozenset(
@@ -599,6 +652,9 @@ def reason_is_retryable(code: str | None) -> bool:
 __all__ = (
     "ALLOWED_FORMATS",
     "AllowedTypeOut",
+    "AutoPipelineOut",
+    "AutoPipelineStageOut",
+    "AutoPipelineStageStatus",
     "CapabilitiesOut",
     "CapabilityLimitsOut",
     "DocumentDetailOut",

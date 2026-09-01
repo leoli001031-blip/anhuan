@@ -12,6 +12,7 @@ from typing import Annotated, Literal
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -24,6 +25,7 @@ from fastapi import (
 
 from ...auth import Tenant, tenant_from_header
 from ...features.p3.contracts import (
+    AutoPipelineOut,
     CapabilitiesOut,
     DocumentDetailOut,
     DocumentListOut,
@@ -52,7 +54,7 @@ from ...features.p3.service import (
     reserve_next_version,
     set_document_knowledge_scope,
 )
-from ...features.p3.processor import process_controlled_ingestion
+from ...features.p3.processor import resume_controlled_ingestion
 from ...features.p3.scanner import ScanFailure, scanner_version
 from ...features.material_intake.contracts import (
     MaterialAnalysisOut,
@@ -62,9 +64,51 @@ from ...features.material_intake.service import (
     get_material_analysis,
     set_material_kind,
 )
+from ...features.material_pipeline.coordinator import (
+    advance_auto_pipeline,
+    auto_pipeline_enabled,
+    auto_pipeline_status,
+)
+from ...features.p3.delivery_repository import (
+    delivery_enabled as ingestion_delivery_enabled,
+    register_delivery as register_ingestion_delivery,
+)
 
 
 router = APIRouter()
+
+
+async def _resume_and_advance_pipeline(
+    tenant: Tenant, version_id: uuid.UUID
+) -> None:
+    """Legacy-head fallback for scan/preview outside the durable candidate."""
+
+    await resume_controlled_ingestion(tenant, version_id)
+    if auto_pipeline_enabled():
+        await advance_auto_pipeline(tenant, version_id)
+
+
+async def _request_ingestion(
+    tenant: Tenant,
+    version_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
+    *,
+    rearm_terminal: bool,
+) -> None:
+    if ingestion_delivery_enabled():
+        await register_ingestion_delivery(
+            tenant,
+            version_id,
+            rearm_terminal=rearm_terminal,
+        )
+        return
+    # f1_0014/default has no delivery table and intentionally retains the
+    # original process-local scan/preview behavior.
+    background_tasks.add_task(
+        _resume_and_advance_pipeline,
+        tenant,
+        version_id,
+    )
 
 
 def _http_error(error: IngestionError) -> HTTPException:
@@ -153,6 +197,7 @@ async def document_detail(
 
 @router.post("/documents", response_model=DocumentDetailOut, status_code=202)
 async def create_document(
+    background_tasks: BackgroundTasks,
     display_name: Annotated[str, Form()],
     file: Annotated[UploadFile, File()],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
@@ -188,8 +233,13 @@ async def create_document(
             reservation.processing_stage in {"received", "retry_wait"}
         )
         await complete_upload(tenant, reservation, file.file)
-        if should_process:
-            await process_controlled_ingestion(tenant, reservation.version_id)
+        if should_process or reservation.processing_stage == "ready":
+            await _request_ingestion(
+                tenant,
+                reservation.version_id,
+                background_tasks,
+                rearm_terminal=False,
+            )
         return await get_document(tenant, reservation.document_record_id)
     except IngestionError as error:
         raise _http_error(error) from None
@@ -203,6 +253,7 @@ async def create_document(
     status_code=202,
 )
 async def append_version(
+    background_tasks: BackgroundTasks,
     document_id: uuid.UUID,
     file: Annotated[UploadFile, File()],
     idempotency_key: Annotated[str | None, Header(alias="Idempotency-Key")] = None,
@@ -226,8 +277,13 @@ async def append_version(
             reservation.processing_stage in {"received", "retry_wait"}
         )
         await complete_upload(tenant, reservation, file.file)
-        if should_process:
-            await process_controlled_ingestion(tenant, reservation.version_id)
+        if should_process or reservation.processing_stage == "ready":
+            await _request_ingestion(
+                tenant,
+                reservation.version_id,
+                background_tasks,
+                rearm_terminal=False,
+            )
         return await get_version(tenant, reservation.version_id)
     except IngestionError as error:
         raise _http_error(error) from None
@@ -242,6 +298,27 @@ async def version_detail(
 ) -> VersionOut:
     try:
         return await get_version(tenant, version_id)
+    except IngestionError as error:
+        raise _http_error(error) from None
+    except Exception:
+        raise _unavailable() from None
+
+
+@router.get(
+    "/versions/{version_id}/auto-pipeline",
+    response_model=AutoPipelineOut,
+)
+async def version_auto_pipeline(
+    version_id: uuid.UUID,
+    client_account_id: Annotated[uuid.UUID | None, Query()] = None,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> AutoPipelineOut:
+    try:
+        return await auto_pipeline_status(
+            tenant,
+            version_id,
+            client_account_id=client_account_id,
+        )
     except IngestionError as error:
         raise _http_error(error) from None
     except Exception:
@@ -322,11 +399,24 @@ async def update_document_knowledge_scope(
 @router.post("/versions/{version_id}/retry", response_model=VersionOut)
 async def retry_version(
     version_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     tenant: Tenant = Depends(tenant_from_header),
 ) -> VersionOut:
     try:
         await act_on_version(tenant, version_id, action="retry")
-        await process_controlled_ingestion(tenant, version_id)
+        await _request_ingestion(
+            tenant,
+            version_id,
+            background_tasks,
+            rearm_terminal=True,
+        )
+        if auto_pipeline_enabled():
+            # A ready legacy version can have a terminal pipeline delivery whose
+            # original provider actor was revoked.  The explicit manager replay
+            # is the authority transfer: advance_auto_pipeline rechecks tenant,
+            # provider role, source/analysis readiness, and only then re-arms the
+            # stable terminal delivery for the current administrator.
+            await advance_auto_pipeline(tenant, version_id)
         return await get_version(tenant, version_id)
     except IngestionError as error:
         raise _http_error(error) from None
@@ -337,10 +427,23 @@ async def retry_version(
 @router.post("/versions/{version_id}/process", response_model=VersionOut, status_code=202)
 async def process_version(
     version_id: uuid.UUID,
+    background_tasks: BackgroundTasks,
     tenant: Tenant = Depends(tenant_from_header),
 ) -> VersionOut:
     try:
-        await process_controlled_ingestion(tenant, version_id)
+        require_manager(tenant)
+        await _request_ingestion(
+            tenant,
+            version_id,
+            background_tasks,
+            rearm_terminal=True,
+        )
+        if auto_pipeline_enabled():
+            # For an already-ready version this explicit manager action also
+            # transfers a blocked pipeline delivery to the current provider
+            # administrator.  The coordinator rechecks scope and readiness and
+            # keeps the stable delivery identity idempotent.
+            await advance_auto_pipeline(tenant, version_id)
         return await get_version(tenant, version_id)
     except IngestionError as error:
         raise _http_error(error) from None
@@ -354,7 +457,10 @@ async def release_version(
     tenant: Tenant = Depends(tenant_from_header),
 ) -> VersionOut:
     try:
-        return await act_on_version(tenant, version_id, action="release")
+        version = await act_on_version(tenant, version_id, action="release")
+        if auto_pipeline_enabled():
+            await advance_auto_pipeline(tenant, version_id)
+        return version
     except IngestionError as error:
         raise _http_error(error) from None
     except Exception:

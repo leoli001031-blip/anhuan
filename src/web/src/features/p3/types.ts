@@ -112,6 +112,30 @@ export interface DocumentDetail extends DocumentSummary {
   versions: VersionSummary[];
 }
 
+export type AutoPipelineStageStatus =
+  | "disabled"
+  | "pending"
+  | "running"
+  | "ready"
+  | "failed"
+  | "skipped";
+
+export interface AutoPipelineStage {
+  status: AutoPipelineStageStatus;
+  reason_code: string | null;
+}
+
+export interface AutoPipelineStatus {
+  schema: "anhuan-material-auto-pipeline-v1";
+  version_id: string;
+  enabled: boolean;
+  scope_kind: KnowledgeScopeKind;
+  ingestion: AutoPipelineStage;
+  analysis: AutoPipelineStage;
+  index: AutoPipelineStage;
+  report: AutoPipelineStage;
+}
+
 export interface PreviewUnit {
   id: string;
   kind: "page_text" | "worksheet_grid" | "image";

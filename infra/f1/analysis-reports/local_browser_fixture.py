@@ -5,10 +5,13 @@ the default f1_0014 compose, never creates realm users or passwords, and
 never writes real personal data.
 
 Requires dual local flags, pgint closed-set identity, and alembic head
-exactly f1_0017. Reuses realm subjects tenant-a (provider A) and invitee
+exactly f1_0023. Reuses realm subjects tenant-a (provider A) and invitee
 (client B). employee remains enterprise A / plant_admin and is never
 rewritten. Extra memberships and wrong roles fail-closed; this fixture
 never deletes memberships or overwrites roles.
+
+Synthetic material bodies use the production material-RAG envelope and exact
+unit identity AAD; placeholder ciphertext is never persisted.
 """
 from __future__ import annotations
 
@@ -30,6 +33,11 @@ import psycopg  # noqa: E402
 from infra.f1 import local_seed  # noqa: E402
 from infra.f1.migrate_f1 import _bootstrap_dsn  # noqa: E402
 from platform_foundation.f1.config import pg_database, pg_host  # noqa: E402
+from platform_foundation.f1.features.material_rag.security import (  # noqa: E402
+    decrypt_text,
+    encrypt_text,
+    unit_aad_for_identity,
+)
 
 TENANT_A_SUB = "db906685-6906-4bc4-9d3a-9011975fd132"
 TENANT_A_EMAIL = "tenant-a@fixture.invalid"
@@ -41,6 +49,9 @@ EMPLOYEE_EMAIL = "employee@fixture.invalid"
 FIXTURE_NS = uuid.UUID("7c2a9e11-4d08-4b3e-9f1a-6e5c0b8d2a14")
 CRM_ACCOUNT_ID = uuid.uuid5(FIXTURE_NS, "crm-account:provider-a:audience-b")
 BINDING_ID = uuid.uuid5(FIXTURE_NS, "audience-binding:provider-a:audience-b")
+SYNTHETIC_SERVICE_CASE_ID = uuid.uuid5(
+    FIXTURE_NS, "service-case:provider-a:audience-b"
+)
 CLIENT_SCOPE_ID = uuid.uuid5(FIXTURE_NS, "client-scope:provider-a:audience-b")
 PROVIDER_SCOPE_FALLBACK_ID = uuid.uuid5(
     FIXTURE_NS, "provider-scope:enterprise-a"
@@ -49,6 +60,20 @@ CRM_DISPLAY_NAME = "Local analysis-report audience B"
 PARSER_VERSION = "arfix1"
 PROVIDER_MATERIAL_LABEL = "arfix-provider"
 CLIENT_MATERIAL_LABEL = "arfix-client"
+
+# 客户可见的材料展示名（内部 label / object_key / 散列保持原样）
+_DISPLAY_TITLES = {
+    PROVIDER_MATERIAL_LABEL: "服务商共享制度汇编",
+    CLIENT_MATERIAL_LABEL: "企业安环基础制度",
+}
+_MATERIAL_BODIES = {
+    PROVIDER_MATERIAL_LABEL: (
+        "服务商共享制度要求每月检查污染治理设施，并保存运行记录。"
+    ),
+    CLIENT_MATERIAL_LABEL: (
+        "企业废气治理采用活性炭吸附装置，运行台账每月归档。"
+    ),
+}
 
 PROJECT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 PROJECT_NAME_RE = re.compile(r"^anhuan-ar-pgint-([0-9a-f]{12})$")
@@ -70,6 +95,7 @@ def _require_dual_local_flags() -> None:
     if (
         os.environ.get("F1_LOCAL_ENGINEERING") != "1"
         or os.environ.get("F1_MATERIAL_ANALYSIS_REPORT_LOCAL") != "1"
+        or os.environ.get("F1_MATERIAL_QA_LOCAL_EXTRACTIVE") != "1"
     ):
         raise RuntimeError("LOCAL_REPORT_FIXTURE_ENGINEERING_REQUIRED")
 
@@ -166,7 +192,7 @@ def _preflight_target_identity(
         "SELECT string_agg(version_num, ',' ORDER BY version_num), count(*) "
         "FROM f1.alembic_version"
     ).fetchone()
-    if head is None or tuple(head) != ("f1_0017", 1):
+    if head is None or tuple(head) != ("f1_0024", 1):
         raise RuntimeError("LOCAL_REPORT_FIXTURE_HEAD_MISMATCH")
 
 
@@ -330,6 +356,45 @@ def _ensure_crm_and_binding(
         raise RuntimeError("LOCAL_REPORT_FIXTURE_BINDING_MISMATCH")
 
 
+def _ensure_synthetic_service_case(
+    connection: psycopg.Connection, creator_id: uuid.UUID
+) -> None:
+    connection.execute(
+        "INSERT INTO f1.service_case ("
+        "id,enterprise_id,plant_id,client_account_id,title,description,"
+        "service_type,status,planned_start_at,planned_end_at,created_by_user_id"
+        ") VALUES (%s,%s,NULL,%s,%s,NULL,%s,'planned',NULL,NULL,%s) "
+        "ON CONFLICT (id) DO NOTHING",
+        (
+            SYNTHETIC_SERVICE_CASE_ID,
+            local_seed.ENTERPRISE_A,
+            CRM_ACCOUNT_ID,
+            "Local client service case",
+            "engineering_check",
+            creator_id,
+        ),
+    )
+    case = connection.execute(
+        "SELECT enterprise_id,plant_id,client_account_id,title,description,"
+        "service_type,status,planned_start_at,planned_end_at,created_by_user_id "
+        "FROM f1.service_case WHERE id=%s",
+        (SYNTHETIC_SERVICE_CASE_ID,),
+    ).fetchone()
+    if case is None or tuple(case) != (
+        local_seed.ENTERPRISE_A,
+        None,
+        CRM_ACCOUNT_ID,
+        "Local client service case",
+        None,
+        "engineering_check",
+        "planned",
+        None,
+        None,
+        creator_id,
+    ):
+        raise RuntimeError("LOCAL_REPORT_FIXTURE_SERVICE_CASE_MISMATCH")
+
+
 def _stable_material_id(kind: str, label: str) -> uuid.UUID:
     return uuid.uuid5(FIXTURE_NS, f"{kind}:{label}")
 
@@ -397,11 +462,23 @@ def _insert_synthetic_unit(
     unit_id = _stable_material_id("unit", label)
     source_sha = hashlib.sha256(f"arfix|{label}|{local_seed.ENTERPRISE_A}".encode()).hexdigest()
     object_key = f"arfix/{label}"
-    title = f"{label}-current"
-    body = f"{label} 合成材料用于分析报告本地夹具。"
+    # 展示名面向客户可见，用业务化标题；内部 label/object_key/散列保持原样。
+    title = _DISPLAY_TITLES[label]
+    body = _MATERIAL_BODIES[label]
     body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
-    aad_sha = hashlib.sha256(f"arfix-aad|{label}".encode()).hexdigest()
-    ciphertext = b"ARFIX1" + bytes.fromhex(source_sha[:64])
+    aad = unit_aad_for_identity(
+        enterprise_id=local_seed.ENTERPRISE_A,
+        knowledge_scope_id=scope_id,
+        unit_id=unit_id,
+        document_record_id=record_id,
+        document_version_id=version_id,
+        source_sha256=source_sha,
+        page_number=1,
+        ordinal=1,
+        parser_version=PARSER_VERSION,
+        body_sha256=body_sha,
+    )
+    ciphertext, aad_sha = encrypt_text(body, aad)
     connection.execute(
         "INSERT INTO f1.document "
         "(id,enterprise_id,object_key,filename,size,content_type,status,"
@@ -451,7 +528,10 @@ def _insert_synthetic_unit(
         "document_version_id,source_sha256,page_number,ordinal,parser_version,"
         "body_ciphertext,body_sha256,body_aad_sha256) "
         "VALUES (%s,%s,%s,%s,%s,%s,1,1,%s,%s,%s,%s) "
-        "ON CONFLICT (id) DO NOTHING",
+        "ON CONFLICT (id) DO UPDATE SET "
+        "body_ciphertext=EXCLUDED.body_ciphertext,"
+        "body_sha256=EXCLUDED.body_sha256,"
+        "body_aad_sha256=EXCLUDED.body_aad_sha256",
         (
             unit_id,
             local_seed.ENTERPRISE_A,
@@ -465,6 +545,19 @@ def _insert_synthetic_unit(
             aad_sha,
         ),
     )
+    stored = connection.execute(
+        "SELECT body_ciphertext,body_sha256,body_aad_sha256 "
+        "FROM f1.material_rag_unit WHERE id=%s",
+        (unit_id,),
+    ).fetchone()
+    if stored is None or str(stored[1]) != body_sha:
+        raise RuntimeError("LOCAL_REPORT_FIXTURE_UNIT_MISMATCH")
+    try:
+        restored = decrypt_text(bytes(stored[0]), aad, str(stored[2]))
+    except (TypeError, ValueError) as error:
+        raise RuntimeError("LOCAL_REPORT_FIXTURE_UNIT_DECRYPT_FAILED") from error
+    if restored != body:
+        raise RuntimeError("LOCAL_REPORT_FIXTURE_UNIT_DECRYPT_FAILED")
 
 
 def _verify_eligible_materials(connection: psycopg.Connection) -> None:
@@ -565,6 +658,7 @@ def apply() -> None:
             role="plant_admin",
         )
         _ensure_crm_and_binding(connection, provider_id)
+        _ensure_synthetic_service_case(connection, provider_id)
         _ensure_synthetic_materials(connection, provider_id)
         connection.commit()
 

@@ -216,38 +216,38 @@ class MaterialRagPostgresIntegrationTests(unittest.TestCase):
         self.assertIn("session_scope", source)
         self.assertNotIn("sqlite", source.lower())
 
-    def test_public_freeform_is_refused_before_ports(self) -> None:
-        from platform_foundation.f1.features.material_rag.contracts import (
-            MaterialRagUnavailable,
+    def test_safe_freeform_returns_extractive_answer_for_ordinary_source(self) -> None:
+        from platform_foundation.f1.features.material_rag.security import (
+            AUTHORIZED_DEMO_SOURCE_SHA256,
         )
 
-        before = (self.repo.io_count(), self.transport.calls)
-        with self.assertRaisesRegex(
-            MaterialRagUnavailable, "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED"
-        ):
-            _run(
-                self.service.retrieve_registered(
-                    "任意自由文本不得进入检索端口",
-                    WORLD.tenant_a,
-                    WORLD.provider_context,
-                )
+        context = _run(
+            self.service.derive_retrieval_context(
+                WORLD.tenant_a,
+                WORLD.client_a_id,
             )
-        self.assertEqual((self.repo.io_count(), self.transport.calls), before)
-
-        from platform_foundation.f1.features.material_rag.service import (
-            run_verified_retrieval,
         )
-
-        with self.assertRaisesRegex(
-            MaterialRagUnavailable, "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED"
-        ):
-            _run(
-                run_verified_retrieval(
-                    "任意自由文本不得进入检索端口",
-                    WORLD.tenant_a,
-                    WORLD.provider_context,
-                )
+        unit = WORLD.units["client_a"]
+        self.assertNotIn(unit.source_sha256, AUTHORIZED_DEMO_SOURCE_SHA256)
+        self.transport.candidates = (self._candidate(unit),)
+        query = "普通材料有哪些作业前许可要求？"
+        answer = _run(
+            self.service.extractive_answer(
+                query,
+                WORLD.tenant_a,
+                context,
             )
+        )
+        self.assertEqual(answer.answer, " ".join(unit.body.split())[:320])
+        self.assertIsNone(answer.refusal_reason)
+        self.assertEqual(
+            [item.canonical_unit_id for item in answer.evidence],
+            [unit.canonical_unit_id],
+        )
+        self.assertEqual(
+            answer.citation_dicts()[0]["source_sha256"], unit.source_sha256
+        )
+        self.assertEqual(self.transport.calls, 1)
 
     def test_tenants_are_isolated_and_provider_is_provider_only(self) -> None:
         from platform_foundation.f1.features.material_rag.security import (

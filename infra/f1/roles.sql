@@ -19,7 +19,11 @@ BEGIN
     'f1_invite_consume_definer',
     'f1_upload_definer',
     'f1_outbox_definer',
-    'f1_qa_definer'
+    'f1_qa_definer',
+    'f1_aeco_read_definer',
+    'f1_material_pipeline_definer',
+    'f1_material_ingestion_definer',
+    'f1_analysis_report_definer'
   ] LOOP
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = definer_role) THEN
       EXECUTE format(
@@ -55,7 +59,9 @@ BEGIN
        'f1_auth_definer', 'f1_identity_read_definer',
        'f1_enterprise_create_definer', 'f1_invite_create_definer',
        'f1_invite_consume_definer', 'f1_upload_definer',
-       'f1_outbox_definer', 'f1_qa_definer'
+       'f1_outbox_definer', 'f1_qa_definer', 'f1_aeco_read_definer',
+       'f1_material_pipeline_definer', 'f1_material_ingestion_definer',
+       'f1_analysis_report_definer'
      ])
        AND (r.rolcanlogin OR r.rolsuper OR r.rolcreatedb OR r.rolcreaterole
             OR r.rolinherit OR r.rolreplication OR r.rolbypassrls)
@@ -71,13 +77,17 @@ BEGIN
        'f1_auth_definer', 'f1_identity_read_definer',
        'f1_enterprise_create_definer', 'f1_invite_create_definer',
        'f1_invite_consume_definer', 'f1_upload_definer',
-       'f1_outbox_definer', 'f1_qa_definer'
+       'f1_outbox_definer', 'f1_qa_definer', 'f1_aeco_read_definer',
+       'f1_material_pipeline_definer', 'f1_material_ingestion_definer',
+       'f1_analysis_report_definer'
      ])
         OR member.rolname = ANY (ARRAY[
        'f1_auth_definer', 'f1_identity_read_definer',
        'f1_enterprise_create_definer', 'f1_invite_create_definer',
        'f1_invite_consume_definer', 'f1_upload_definer',
-       'f1_outbox_definer', 'f1_qa_definer'
+       'f1_outbox_definer', 'f1_qa_definer', 'f1_aeco_read_definer',
+       'f1_material_pipeline_definer', 'f1_material_ingestion_definer',
+       'f1_analysis_report_definer'
      ])
   ) THEN
     RAISE EXCEPTION 'F1_DEFINER_ROLE_MEMBERSHIP_FORBIDDEN';

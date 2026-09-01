@@ -20,7 +20,7 @@ export default function LegacyProviderGate() {
     return <Navigate to="/login" replace />;
   }
   if (!canAccessLegacyProvider(session)) {
-    return <Navigate to="/portal/qa" replace />;
+    return <Navigate to="/portal" replace />;
   }
   return <Layout />;
 }

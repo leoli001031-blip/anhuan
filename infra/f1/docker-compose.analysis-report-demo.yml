@@ -33,6 +33,72 @@ services:
     labels: !override
       io.anhuan.scope: analysis-report-demo
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  material-rag-ocr-init:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    command:
+      - /bin/sh
+      - -ec
+      - >-
+        chown 65532:65532 /ocr;
+        chmod 0700 /ocr
+    network_mode: none
+    read_only: true
+    volumes:
+      - material_ocr_socket:/ocr
+    labels:
+      io.anhuan.scope: analysis-report-demo
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    restart: "no"
+  material-rag-ocr:
+    image: sha256:02e6300f52463818de7ceaf447bfb0765e5f8466251177006131dec4e55a27f5
+    pull_policy: never
+    platform: linux/arm64
+    entrypoint:
+      ["/usr/local/bin/python3", "-I", "-B", "/opt/material-rag/ocr_server.py"]
+    network_mode: none
+    ipc: none
+    read_only: true
+    user: "65532:65532"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=../f0h/seccomp.json
+    pids_limit: 64
+    mem_limit: 1073741824
+    memswap_limit: 1073741824
+    cpus: 1.0
+    shm_size: 67108864
+    ulimits:
+      core: 0
+      nofile: {soft: 64, hard: 64}
+      nproc: {soft: 64, hard: 64}
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m,uid=65532,gid=65532,mode=0700
+      - /work:rw,nosuid,nodev,noexec,size=256m,uid=65532,gid=65532,mode=0700
+    volumes:
+      - ./material-rag/ocr_server.py:/opt/material-rag/ocr_server.py:ro
+      - material_ocr_socket:/run/material-rag-ocr
+    depends_on:
+      material-rag-ocr-init: {condition: service_completed_successfully}
+    labels:
+      io.anhuan.scope: analysis-report-demo
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    stop_grace_period: 1s
+    logging: {driver: none}
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/python3",
+          "-I",
+          "-B",
+          "-c",
+          "import os,stat;paths=('/run/material-rag-ocr/request.fifo','/run/material-rag-ocr/response.fifo');ready='/run/material-rag-ocr/ready';raise SystemExit(0 if all(stat.S_ISFIFO(os.stat(p).st_mode) for p in paths) and stat.S_ISREG(os.stat(ready).st_mode) and stat.S_IMODE(os.stat(ready).st_mode)==384 else 1)",
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 40
+    restart: unless-stopped
   migrator:
     labels: !override
       io.anhuan.scope: analysis-report-demo
@@ -92,15 +158,65 @@ services:
     environment:
       F1_MATERIAL_ANALYSIS_REPORT_LOCAL: "1"
       F1_LOCAL_ENGINEERING: "1"
+      F1_MATERIAL_QA_LOCAL_EXTRACTIVE: "1"
+      F1_MATERIAL_AUTO_PIPELINE_LOCAL: "1"
+      F1_MATERIAL_INGESTION_DURABLE_LOCAL: "1"
+      F1_MATERIAL_RAG_LOCAL_INDEX: "1"
+      F1_MATERIAL_OCR_ENABLED: "1"
       F1_EXTERNAL_PIPELINES_ENABLED: "false"
+    volumes:
+      - material_ocr_socket:/run/material-rag-ocr
+    depends_on:
+      material-rag-ocr: {condition: service_healthy}
   worker:
     labels: !override
       io.anhuan.scope: analysis-report-demo
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    environment:
+      F1_LOCAL_ENGINEERING: "1"
+      F1_MATERIAL_AUTO_PIPELINE_LOCAL: "1"
+      F1_MATERIAL_RAG_LOCAL_INDEX: "1"
+      F1_MATERIAL_OCR_ENABLED: "1"
+    volumes:
+      - material_ocr_socket:/run/material-rag-ocr
+    depends_on:
+      material-rag-ocr: {condition: service_healthy}
   dispatcher:
     labels: !override
       io.anhuan.scope: analysis-report-demo
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    environment:
+      F1_MATERIAL_ANALYSIS_REPORT_LOCAL: "1"
+      F1_LOCAL_ENGINEERING: "1"
+      F1_MATERIAL_AUTO_PIPELINE_LOCAL: "1"
+      F1_MATERIAL_INGESTION_DURABLE_LOCAL: "1"
+      F1_MATERIAL_RAG_LOCAL_INDEX: "1"
+      F1_MATERIAL_OCR_ENABLED: "1"
+  ingestion-worker:
+    labels: !override
+      io.anhuan.scope: analysis-report-demo
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    environment:
+      F1_MATERIAL_ANALYSIS_REPORT_LOCAL: "1"
+      F1_LOCAL_ENGINEERING: "1"
+      F1_MATERIAL_AUTO_PIPELINE_LOCAL: "1"
+      F1_MATERIAL_INGESTION_DURABLE_LOCAL: "1"
+      F1_MATERIAL_RAG_LOCAL_INDEX: "1"
+      F1_MATERIAL_OCR_ENABLED: "1"
+    volumes:
+      - material_ocr_socket:/run/material-rag-ocr
+    depends_on:
+      material-rag-ocr: {condition: service_healthy}
+  report-worker:
+    labels: !override
+      io.anhuan.scope: analysis-report-demo
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    environment:
+      F1_MATERIAL_ANALYSIS_REPORT_LOCAL: "1"
+      F1_LOCAL_ENGINEERING: "1"
+      F1_MATERIAL_AUTO_PIPELINE_LOCAL: "1"
+      F1_MATERIAL_INGESTION_DURABLE_LOCAL: "1"
+      F1_MATERIAL_RAG_LOCAL_INDEX: "1"
   web:
     labels: !override
       io.anhuan.scope: analysis-report-demo
@@ -138,6 +254,14 @@ volumes:
     labels: !override
       io.anhuan.scope: analysis-report-demo
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  ingestion_worker_secrets:
+    labels: !override
+      io.anhuan.scope: analysis-report-demo
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  report_worker_secrets:
+    labels: !override
+      io.anhuan.scope: analysis-report-demo
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
   dispatcher_secrets:
     labels: !override
       io.anhuan.scope: analysis-report-demo
@@ -171,6 +295,10 @@ volumes:
       io.anhuan.scope: analysis-report-demo
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
   redis_data:
+    labels: !override
+      io.anhuan.scope: analysis-report-demo
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  material_ocr_socket:
     labels: !override
       io.anhuan.scope: analysis-report-demo
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"

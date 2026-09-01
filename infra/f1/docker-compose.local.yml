@@ -6,13 +6,13 @@ services:
       - -ec
       - >-
         umask 077;
-        mkdir -p /migrator /seed /provisioner /api /worker /dispatcher /postgres /keycloak /minio /backupops;
-        chown 0:0 /migrator /seed /provisioner /api /worker /dispatcher;
+        mkdir -p /migrator /seed /provisioner /api /worker /ingestion-worker /report-worker /dispatcher /postgres /keycloak /minio /backupops;
+        chown 0:0 /migrator /seed /provisioner /api /worker /ingestion-worker /report-worker /dispatcher;
         chown 999:999 /postgres;
         chown 1000:0 /keycloak;
         chown 1000:1000 /minio;
         chown "$${LOCAL_UID}:$${LOCAL_GID}" /backupops;
-        chmod 0700 /migrator /seed /provisioner /api /worker /dispatcher /postgres /keycloak /minio /backupops;
+        chmod 0700 /migrator /seed /provisioner /api /worker /ingestion-worker /report-worker /dispatcher /postgres /keycloak /minio /backupops;
         for name in
         f0d_migration_dsn f1_bootstrap_dsn f1_migration_dsn
         f1_api_password f1_worker_password;
@@ -23,11 +23,17 @@ services:
         for name in keycloak_admin_password oidc_admin_anhuan_local oidc_tester oidc_tenant_a oidc_tenant_b oidc_invitee oidc_auditor oidc_employee;
         do test -f "/source/$${name}" && cp "/source/$${name}" "/provisioner/$${name}" && chmod 0600 "/provisioner/$${name}";
         done;
-        for name in f1_api_password minio_root_user minio_root_password invite_signing_key f1_qa_key f0i_key;
+        for name in f1_api_password minio_root_user minio_root_password invite_signing_key f1_qa_key f0i_key f1_material_rag_key;
         do test -f "/source/$${name}" && cp "/source/$${name}" "/api/$${name}" && chmod 0600 "/api/$${name}";
         done;
-        for name in f1_worker_password minio_root_user minio_root_password f0i_key;
+        for name in f1_worker_password minio_root_user minio_root_password f0i_key f1_material_rag_key;
         do test -f "/source/$${name}" && cp "/source/$${name}" "/worker/$${name}" && chmod 0600 "/worker/$${name}";
+        done;
+        for name in f1_api_password minio_root_user minio_root_password f1_material_rag_key;
+        do test -f "/source/$${name}" && cp "/source/$${name}" "/ingestion-worker/$${name}" && chmod 0600 "/ingestion-worker/$${name}";
+        done;
+        for name in f1_api_password f1_material_rag_key;
+        do test -f "/source/$${name}" && cp "/source/$${name}" "/report-worker/$${name}" && chmod 0600 "/report-worker/$${name}";
         done;
         cp /source/f1_worker_password /dispatcher/f1_worker_password;
         chmod 0600 /dispatcher/f1_worker_password;
@@ -53,6 +59,8 @@ services:
       - provisioner_secrets:/provisioner
       - api_secrets:/api
       - worker_secrets:/worker
+      - ingestion_worker_secrets:/ingestion-worker
+      - report_worker_secrets:/report-worker
       - dispatcher_secrets:/dispatcher
       - postgres_secrets:/postgres
       - keycloak_secrets:/keycloak
@@ -183,8 +191,7 @@ services:
     restart: unless-stopped
 
   clamd:
-    image: clamav/clamav:1.4.6-debian13-slim@sha256:aaf6efb85740dc60872e2c13e5b7778c2d57b05b960f854a2461eaf729250d18
-    platform: linux/arm64
+    image: clamav/clamav:1.4.6-debian13-slim@sha256:bcfc3d6117a6cfbeb6cd041c00164097916291b870c6183e06def6fed7fb740b
     environment:
       CLAMAV_NO_FRESHCLAMD: "true"
       CLAMD_STARTUP_TIMEOUT: "300"
@@ -206,6 +213,8 @@ services:
     build:
       context: ../..
       dockerfile: infra/f1/local.Dockerfile
+      args:
+        PIP_INDEX_URL: ${LOCAL_PIP_INDEX_URL:-https://pypi.org/simple}
     image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
     command: ["python", "-B", "/app/infra/f1/local_migrate.py"]
     environment: &runtime_environment
@@ -527,6 +536,7 @@ services:
       F1_API_PASSWORD_FILE: /run/secrets/f1/f1_api_password
       F1_INVITE_KEY_FILE: /run/secrets/f1/invite_signing_key
       F1_QA_KEY_FILE: /run/secrets/f1/f1_qa_key
+      F1_MATERIAL_RAG_KEY_FILE: /run/secrets/f1/f1_material_rag_key
       F1_MINIO_ROOT_USER_FILE: /run/secrets/f1/minio_root_user
       F1_MINIO_ROOT_PASSWORD_FILE: /run/secrets/f1/minio_root_password
       F1_F0I_KEY_FILE: /run/secrets/f1/f0i_key
@@ -561,10 +571,11 @@ services:
         from redis import Redis;
         from rq import Queue,Worker;
         from platform_foundation.f1.upload_task import QUEUE_NAME,REDIS_URL;
-        Worker([Queue(QUEUE_NAME,connection=Redis.from_url(REDIS_URL))]).work()
+        Worker([Queue(QUEUE_NAME,connection=Redis.from_url(REDIS_URL))]).work(with_scheduler=True)
     environment:
       <<: *runtime_environment
       F1_WORKER_PASSWORD_FILE: /run/secrets/f1/f1_worker_password
+      F1_MATERIAL_RAG_KEY_FILE: /run/secrets/f1/f1_material_rag_key
       F1_MINIO_ROOT_USER_FILE: /run/secrets/f1/minio_root_user
       F1_MINIO_ROOT_PASSWORD_FILE: /run/secrets/f1/minio_root_password
       F1_F0I_KEY_FILE: /run/secrets/f1/f0i_key
@@ -581,6 +592,42 @@ services:
         [
           "CMD-SHELL",
           "python -c \"from redis import Redis; from rq import Worker; r=Redis.from_url('redis://redis:6379/0'); raise SystemExit(0 if Worker.all(connection=r) else 1)\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    restart: unless-stopped
+
+  ingestion-worker:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command:
+      [
+        "python",
+        "-B",
+        "-m",
+        "platform_foundation.f1.features.p3.delivery_worker",
+      ]
+    environment:
+      <<: *runtime_environment
+      F1_API_PASSWORD_FILE: /run/secrets/f1/f1_api_password
+      F1_MATERIAL_RAG_KEY_FILE: /run/secrets/f1/f1_material_rag_key
+      F1_MINIO_ROOT_USER_FILE: /run/secrets/f1/minio_root_user
+      F1_MINIO_ROOT_PASSWORD_FILE: /run/secrets/f1/minio_root_password
+    volumes:
+      - ingestion_worker_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      minio: {condition: service_healthy}
+      clamd: {condition: service_healthy}
+    profiles: [analysis-report]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"from redis import Redis; from rq import Worker; from platform_foundation.f1.features.p3.delivery_queue import QUEUE_NAME,REDIS_URL; r=Redis.from_url(REDIS_URL); raise SystemExit(0 if any(w.name.startswith('material-ingestion.') and set(w.queue_names())=={QUEUE_NAME} for w in Worker.all(connection=r)) else 1)\"",
         ]
       interval: 5s
       timeout: 5s
@@ -606,6 +653,37 @@ services:
         [
           "CMD-SHELL",
           "python -c \"import pathlib,time; p=pathlib.Path('/tmp/f1-dispatcher-heartbeat'); lines=p.read_text(encoding='ascii').splitlines() if p.is_file() else []; raise SystemExit(0 if lines[:1]==['ok'] and time.time()-p.stat().st_mtime<30 else 1)\"",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+    restart: unless-stopped
+
+  report-worker:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command:
+      [
+        "python",
+        "-B",
+        "-m",
+        "platform_foundation.f1.features.analysis_reports.worker",
+      ]
+    environment:
+      <<: *runtime_environment
+      F1_API_PASSWORD_FILE: /run/secrets/f1/f1_api_password
+      F1_MATERIAL_RAG_KEY_FILE: /run/secrets/f1/f1_material_rag_key
+    volumes:
+      - report_worker_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    labels: *labels
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"from redis import Redis; from rq import Worker; from platform_foundation.f1.features.analysis_reports.queue import QUEUE_NAME,REDIS_URL; r=Redis.from_url(REDIS_URL); raise SystemExit(0 if any(QUEUE_NAME in w.queue_names() for w in Worker.all(connection=r)) else 1)\"",
         ]
       interval: 5s
       timeout: 5s
@@ -654,6 +732,8 @@ volumes:
   provisioner_secrets: {labels: *volume_labels}
   api_secrets: {labels: *volume_labels}
   worker_secrets: {labels: *volume_labels}
+  ingestion_worker_secrets: {labels: *volume_labels}
+  report_worker_secrets: {labels: *volume_labels}
   dispatcher_secrets: {labels: *volume_labels}
   postgres_secrets: {labels: *volume_labels}
   keycloak_secrets: {labels: *volume_labels}

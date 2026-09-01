@@ -1,10 +1,4 @@
-"""Closed-manifest durable indexing worker for the isolated verifier.
-
-This round's external-processing authority is intentionally encoded as a
-closed SHA allowlist for four Demo sources and two fixed canaries.  A future
-production worker needs separate approval;
-there is no environment switch that broadens this list.
-"""
+"""Lease-fenced durable indexing worker for released material sources."""
 from __future__ import annotations
 
 import asyncio
@@ -49,10 +43,7 @@ from .repository import (
     persist_dataset_binding,
     prepare_empty_scope_dataset_delete,
 )
-from .security import (
-    AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256,
-    verify_demo_unit_manifest_proof,
-)
+from .security import verify_unit_manifest_proof
 
 
 _SQLSTATE_RE = re.compile(r"^[A-Z0-9]{5}$")
@@ -322,8 +313,6 @@ def _compensate_unbound_scope_dataset_sync(claim: MaterialRagJobClaim) -> int:
 def _validate_units(
     claim: MaterialRagJobClaim, units: tuple[CanonicalUnit, ...]
 ) -> None:
-    if claim.source_sha256 not in AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256:
-        raise MaterialRagIntegrityError("MATERIAL_RAG_SOURCE_NOT_AUTHORIZED")
     if any(
         unit.enterprise_id != claim.enterprise_id
         or unit.knowledge_scope_id != claim.knowledge_scope_id
@@ -388,15 +377,13 @@ async def _process_claimed_demo_job_locked(
         raise ValueError("MATERIAL_RAG_JOB_CLAIM_INVALID")
     supplied = tuple(units) if units is not None else ()
     try:
-        if claim.source_sha256 not in AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256:
-            raise MaterialRagIntegrityError("MATERIAL_RAG_SOURCE_NOT_AUTHORIZED")
         if claim.action == "delete":
             if supplied or manifest_proof is not None:
                 raise MaterialRagIntegrityError("MATERIAL_RAG_DELETE_UNITS_FORBIDDEN")
         else:
             if not supplied or manifest_proof is None:
                 raise MaterialRagIntegrityError("MATERIAL_RAG_MANIFEST_REQUIRED")
-            supplied = verify_demo_unit_manifest_proof(
+            supplied = verify_unit_manifest_proof(
                 claim, supplied, manifest_proof
             )
             _validate_units(claim, supplied)
@@ -707,7 +694,6 @@ async def process_demo_job(
 
 
 __all__ = (
-    "AUTHORIZED_MATERIAL_RAG_SOURCE_SHA256",
     "LEASE_SOURCES",
     "PROCESS_OUTCOME_KINDS",
     "ProcessOutcome",

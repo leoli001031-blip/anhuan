@@ -1,0 +1,34 @@
+[build]
+  base = "src/web"
+  command = "npm run build"
+  publish = "dist"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+[[redirects]]
+  from = "/api/*"
+  to = "__EDGE_ORIGIN__/api/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/realms/*"
+  to = "__EDGE_ORIGIN__/realms/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/resources/*"
+  to = "__EDGE_ORIGIN__/resources/:splat"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

@@ -347,14 +347,15 @@ async def ask_material_question(
     tenant: Tenant,
     context: object,
 ) -> QaResult:
-    """Persist and replay the fixed no-egress result for public material QA.
+    """Persist and replay a citation-required extractive material answer.
 
     The product context is derived under RLS before this function is called.
     Its digest participates in claim, completion, and response AAD so the same
-    request/question cannot be replayed after switching clients.  The current
-    authorization does not cover arbitrary user questions, therefore a claim
-    owner completes a deterministic refusal without invoking RAGFlow or Ark.
+    request/question cannot be replayed after switching clients.  The answer is
+    assembled only from evidence re-verified against released encrypted units;
+    this path never invokes a generative model.
     """
+    from .features import material_rag
     from .features.material_rag.contracts import RetrievalContext
 
     if (
@@ -376,24 +377,27 @@ async def ask_material_question(
         raise RequestInProgress("REQUEST_IN_PROGRESS")
     if reservation.state is ReservationState.REPLAY:
         replay = reservation.result
-        if (
-            replay is None
-            or replay.answer is not None
-            or replay.citations
-            or replay.refusal_reason
-            != "MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED"
-        ):
+        if replay is None or replay.request_id != str(request_id):
             raise QaOutcomeInvalid("MATERIAL_REPLAY_INVALID")
+        try:
+            _validate_outcome(replay)
+        except QaOutcomeInvalid:
+            raise QaOutcomeInvalid("MATERIAL_REPLAY_INVALID") from None
         return replay
     if reservation.state is not ReservationState.CLAIMED:
         raise RequestOwnershipLost("REQUEST_RESERVATION_INVALID")
     if reservation.owner_token is None:
         raise RequestOwnershipLost("REQUEST_OWNER_MISSING")
 
+    extracted = await material_rag.run_extractive_answer(
+        question,
+        tenant,
+        context,
+    )
     outcome = QaResult(
-        answer=None,
-        citations=[],
-        refusal_reason="MATERIAL_QUERY_EXTERNAL_PROCESSING_NOT_AUTHORIZED",
+        answer=extracted.answer,
+        citations=extracted.citation_dicts(),
+        refusal_reason=extracted.refusal_reason,
         request_id=str(request_id),
     )
     await complete_request(

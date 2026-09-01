@@ -14,6 +14,18 @@ CLOSEOUT = ROOT / "tests/test_engineering_closeout_migration.py"
 MODELS = ROOT / "src/platform_foundation/f1/models.py"
 SERVICE = ROOT / "src/platform_foundation/f1/features/analysis_reports/service.py"
 REPOSITORY = ROOT / "src/platform_foundation/f1/features/analysis_reports/repository.py"
+QUEUE = ROOT / "src/platform_foundation/f1/features/analysis_reports/queue.py"
+REPORT_WORKER = ROOT / "src/platform_foundation/f1/features/analysis_reports/worker.py"
+PIPELINE_COORDINATOR = (
+    ROOT / "src/platform_foundation/f1/features/material_pipeline/coordinator.py"
+)
+PIPELINE_QUEUE = ROOT / "src/platform_foundation/f1/features/material_pipeline/queue.py"
+PIPELINE_WORKER = ROOT / "src/platform_foundation/f1/features/material_pipeline/worker.py"
+LOCAL_COMPOSE = ROOT / "infra/f1/docker-compose.local.yml"
+DEMO_OVERLAY = ROOT / "infra/f1/docker-compose.analysis-report-demo.yml"
+UAT_OVERLAY = ROOT / "infra/f1/docker-compose.analysis-report-uat.yml"
+DEMO_HARNESS = ROOT / "infra/f1/analysis_report_demo.py"
+UAT_HARNESS = ROOT / "infra/f1/analysis_report_uat.py"
 
 P2_P7_31 = {
     "service_case",
@@ -48,19 +60,25 @@ P2_P7_31 = {
     "rehearsal_run",
     "rehearsal_check_result",
 }
-MATERIAL_RAG_3 = {
+MATERIAL_AUTOMATION_6 = {
     "material_rag_scope_binding",
     "material_rag_unit",
     "material_rag_job",
+    "material_pipeline_delivery",
+    "material_ingestion_delivery",
+    "material_ocr_checkpoint",
 }
-ANALYSIS_REPORT_7 = {
+ANALYSIS_REPORT_10 = {
     "analysis_report_client_audience",
     "analysis_report",
     "analysis_report_version",
     "analysis_report_section",
     "analysis_report_citation",
     "analysis_report_generation_job",
+    "analysis_report_generation_delivery",
     "analysis_report_audit_event",
+    "analysis_report_health_snapshot",
+    "analysis_report_review_event",
 }
 
 
@@ -74,6 +92,14 @@ def _function(path: Path, name: str) -> ast.FunctionDef:
         if isinstance(node, ast.FunctionDef) and node.name == name:
             return node
     raise AssertionError(f"missing function: {path}:{name}")
+
+
+def _async_function(path: Path, name: str) -> ast.AsyncFunctionDef:
+    tree = ast.parse(_source(path), filename=str(path))
+    for node in tree.body:
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"missing async function: {path}:{name}")
 
 
 def _expanded(path: Path, function: str) -> str:
@@ -168,21 +194,25 @@ class AnalysisReportRlsAcyclicContracts(unittest.TestCase):
 
 
 class AnalysisReportMigratorCatalogContracts(unittest.TestCase):
-    def test_migrator_verifies_audience_binding_force_rls_in_41_table_set(self) -> None:
+    def test_migrator_verifies_analysis_report_force_rls_in_47_table_set(self) -> None:
         analysis_tables = _tuple_names(MIGRATOR, "ANALYSIS_REPORT_TABLES")
         material_tables = _tuple_names(MIGRATOR, "MATERIAL_RAG_TABLES")
         p2_tables = _tuple_names(MIGRATOR, "P2_P7_FORCE_RLS_TABLES")
         expected = _tuple_names(MIGRATOR, "EXPECTED_RLS_TABLES")
         self.assertEqual(set(p2_tables), P2_P7_31)
-        self.assertEqual(set(material_tables), MATERIAL_RAG_3)
-        self.assertEqual(set(analysis_tables), ANALYSIS_REPORT_7)
+        self.assertEqual(set(material_tables), MATERIAL_AUTOMATION_6)
+        self.assertEqual(set(analysis_tables), ANALYSIS_REPORT_10)
         self.assertIn("analysis_report_client_audience", analysis_tables)
-        self.assertEqual(len(p2_tables) + len(material_tables) + len(analysis_tables), 41)
-        self.assertEqual(set(expected), P2_P7_31 | MATERIAL_RAG_3 | ANALYSIS_REPORT_7)
-        self.assertEqual(len(expected), 41)
-        self.assertEqual(len(set(expected)), 41)
+        self.assertIn("analysis_report_health_snapshot", analysis_tables)
+        self.assertIn("analysis_report_review_event", analysis_tables)
+        self.assertEqual(len(p2_tables) + len(material_tables) + len(analysis_tables), 47)
+        self.assertEqual(
+            set(expected), P2_P7_31 | MATERIAL_AUTOMATION_6 | ANALYSIS_REPORT_10
+        )
+        self.assertEqual(len(expected), 47)
+        self.assertEqual(len(set(expected)), 47)
         source = _source(MIGRATOR)
-        self.assertIn('"f1_0017"', source)
+        self.assertIn('"f1_0024"', source)
         self.assertIn("F1_ANALYSIS_REPORT_MIGRATE_TARGET", source)
         self.assertNotIn("local_migrate.P2_P7_TABLES", source)
         self.assertIn("relforcerowsecurity", source)
@@ -236,6 +266,117 @@ class AnalysisReportIntegrityContracts(unittest.TestCase):
         self.assertIn("active_binding_for_provider", service)
         self.assertNotIn("tenant.roles", service)
         self.assertIn("withdraw", _source(REPOSITORY))
+
+
+class AnalysisReportAsyncGenerationContracts(unittest.TestCase):
+    def test_auto_pipeline_replay_and_terminal_delivery_contracts(self) -> None:
+        coordinator_source = _source(PIPELINE_COORDINATOR)
+        coordinator = ast.unparse(
+            _async_function(PIPELINE_COORDINATOR, "advance_auto_pipeline")
+        )
+        queue_source = _source(PIPELINE_QUEUE)
+        worker_source = _source(PIPELINE_WORKER)
+
+        self.assertLess(
+            coordinator.index("enqueue_reconcile_stage"),
+            coordinator.index("act_on_version"),
+        )
+        self.assertIn("auto-local-index-retry", coordinator)
+        self.assertIn("context = await _load_context", coordinator)
+        self.assertIn("record.status='active'", coordinator_source)
+        self.assertIn("version.version_no=record.latest_version_no", coordinator_source)
+        self.assertIn("MATERIAL_ANALYSIS_PERSIST_FAILED", coordinator_source)
+        self.assertIn("index_dispatch_failure_reason", queue_source)
+        self.assertIn("Retry(max=3, interval=[15, 120, 910])", queue_source)
+        self.assertIn("REPORT_ACTOR_REVOKED", worker_source)
+        self.assertIn("MATERIAL_PIPELINE_DISABLED", worker_source)
+
+    def test_http_registers_durable_delivery_and_never_generates_body(self) -> None:
+        generate = ast.unparse(_async_function(SERVICE, "generate_report"))
+        begin = ast.unparse(_async_function(REPOSITORY, "begin_generation"))
+        self.assertIn("begin_generation", generate)
+        self.assertIn("register_delivery_in_session", begin)
+        self.assertLess(begin.index("add_audit"), begin.index("register_delivery_in_session"))
+        self.assertIn("await session.commit()", generate)
+        self.assertIn("status': 'queued'", generate)
+        self.assertNotIn("enqueue_generation", generate)
+        self.assertNotIn("fail_queued_generation", generate)
+        self.assertNotIn("generation_dispatch_failure_reason", _source(SERVICE))
+        self.assertIn("fixed dispatch failure is reset", _source(SERVICE))
+        self.assertIn("action='redispatch'", generate)
+        self.assertNotIn("EvidenceDrivenReportGenerator", generate)
+        self.assertNotIn("persist_generated", generate)
+        self.assertNotIn("claim_live_lease", generate)
+
+    def test_rq_dispatch_is_stable_idempotent_and_retriable(self) -> None:
+        source = _source(QUEUE)
+        enqueue = ast.unparse(_function(QUEUE, "enqueue_generation"))
+        self.assertIn(
+            'return f"f1-analysis-report-{delivery_id}-{dispatch_token}"',
+            source,
+        )
+        self.assertIn("fetch_job(stable_id)", enqueue)
+        self.assertIn("get_status(refresh=True) in _ACTIVE_STATUSES", enqueue)
+        self.assertIn("Retry(max=3, interval=[5, 60, 310])", enqueue)
+        self.assertIn("str(delivery_id)", enqueue)
+        self.assertIn("str(dispatch_token)", enqueue)
+        self.assertNotIn("enterprise_id", enqueue)
+        self.assertNotIn("actor_sub", enqueue)
+
+    def test_worker_revalidates_actor_and_fences_generation_with_a_db_lease(self) -> None:
+        source = _source(REPORT_WORKER)
+        entry = _function(REPORT_WORKER, "run_generation_job")
+        self.assertEqual(
+            [argument.arg for argument in entry.args.args],
+            ["delivery_id", "dispatch_token"],
+        )
+        self.assertIn('role="f1_api"', source)
+        self.assertIn("actor_user_id", source)
+        self.assertIn("REPORT_ACTOR_REVOKED", source)
+        self.assertIn("mark_current_dispatch_failure", source)
+        self.assertIn("read_delivery_claim", source)
+        self.assertIn("dispatch_token", source)
+        self.assertIn("claim_generation_job", source)
+        self.assertIn("load_eligible_sources", source)
+        self.assertIn("source_fingerprint_sha256", source)
+        self.assertIn("EvidenceDrivenReportGenerator", source)
+        self.assertIn("persist_generated", source)
+        self.assertIn("fail_claimed_generation", source)
+        self.assertIn("release_generation_claim", source)
+        repository = _source(REPOSITORY)
+        self.assertIn("'queued', :fingerprint, NULL, NULL, NULL", repository)
+        self.assertIn("AND lease_until <= statement_timestamp()", repository)
+        self.assertIn("AND lease_token = :lease_token", repository)
+        self.assertIn("AS dispatch_recoverable", repository)
+
+    def test_dedicated_worker_secret_and_demo_wiring_are_isolated(self) -> None:
+        compose = _source(LOCAL_COMPOSE)
+        generic = compose.split("\n  worker:", 1)[1].split(
+            "\n  ingestion-worker:", 1
+        )[0]
+        ingestion = compose.split("\n  ingestion-worker:", 1)[1].split(
+            "\n  dispatcher:", 1
+        )[0]
+        report = compose.split("\n  report-worker:", 1)[1].split("\n  web:", 1)[0]
+        self.assertNotIn("F1_API_PASSWORD_FILE", generic)
+        self.assertNotIn("api_secrets:/run/secrets/f1:ro", generic)
+        self.assertIn("F1_API_PASSWORD_FILE", ingestion)
+        self.assertIn("ingestion_worker_secrets:/run/secrets/f1:ro", ingestion)
+        self.assertNotIn("api_secrets:/run/secrets/f1:ro", ingestion)
+        self.assertIn("analysis_reports.worker", report)
+        self.assertIn("QUEUE_NAME", report)
+        self.assertIn("F1_API_PASSWORD_FILE", report)
+        self.assertIn("report_worker_secrets:/run/secrets/f1:ro", report)
+        self.assertNotIn("api_secrets:/run/secrets/f1:ro", report)
+        for overlay in (DEMO_OVERLAY, UAT_OVERLAY):
+            worker = _source(overlay).split("\n  report-worker:", 1)[1].split(
+                "\n  web:", 1
+            )[0]
+            self.assertIn("F1_MATERIAL_ANALYSIS_REPORT_LOCAL", worker)
+            self.assertIn("F1_LOCAL_ENGINEERING", worker)
+            self.assertIn("io.anhuan.scope", worker)
+        self.assertIn('"report-worker"', _source(DEMO_HARNESS))
+        self.assertIn('"report-worker"', _source(UAT_HARNESS))
 
 
 if __name__ == "__main__":

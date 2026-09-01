@@ -132,9 +132,9 @@ def _run(
         raise HarnessError("PROCESS_FAILED") from exc
 
 
-def canonical_shared_fingerprint() -> bytes:
+def canonical_shared_fingerprint(docker: Path = DOCKER) -> bytes:
     def capture(args: list[str]) -> list[str]:
-        raw = subprocess.check_output([str(DOCKER), *args], text=True).strip()
+        raw = subprocess.check_output([str(docker), *args], text=True).strip()
         return [line for line in raw.splitlines() if line]
 
     containers = []
@@ -149,7 +149,7 @@ def canonical_shared_fingerprint() -> bytes:
         ]
     ):
         payload = json.loads(
-            subprocess.check_output([str(DOCKER), "inspect", cid], text=True)
+            subprocess.check_output([str(docker), "inspect", cid], text=True)
         )[0]
         containers.append(
             {
@@ -176,7 +176,7 @@ def canonical_shared_fingerprint() -> bytes:
     ):
         payload = json.loads(
             subprocess.check_output(
-                [str(DOCKER), "volume", "inspect", name], text=True
+                [str(docker), "volume", "inspect", name], text=True
             )
         )[0]
         volumes.append(
@@ -200,7 +200,7 @@ def canonical_shared_fingerprint() -> bytes:
     ):
         payload = json.loads(
             subprocess.check_output(
-                [str(DOCKER), "network", "inspect", nid], text=True
+                [str(docker), "network", "inspect", nid], text=True
             )
         )[0]
         networks.append(
@@ -532,7 +532,7 @@ class PostgresIntegrationStack:
                 "SELECT string_agg(version_num, ',' ORDER BY version_num) "
                 "FROM f1.alembic_version"
             ).fetchone()
-            if head is None or head[0] != "f1_0017":
+            if head is None or head[0] != "f1_0024":
                 self.stop()
                 raise HarnessError("SEED_HEAD_MISMATCH")
             local_seed._ensure_enterprise(
@@ -705,6 +705,28 @@ class PostgresIntegrationStack:
             )
             connection.commit()
 
+    def set_binding_client(
+        self,
+        *,
+        provider_enterprise_id: uuid.UUID,
+        audience_enterprise_id: uuid.UUID,
+        client_account_id: uuid.UUID,
+    ) -> None:
+        with self._bootstrap() as connection:
+            changed = connection.execute(
+                "UPDATE f1.analysis_report_client_audience "
+                "SET client_account_id=%s, updated_at=statement_timestamp() "
+                "WHERE enterprise_id=%s AND audience_enterprise_id=%s",
+                (
+                    client_account_id,
+                    provider_enterprise_id,
+                    audience_enterprise_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise HarnessError("AUDIENCE_BINDING_NOT_UNIQUE")
+            connection.commit()
+
     def api_counts(self, enterprise_id: uuid.UUID, sub: str) -> dict[str, int]:
         with psycopg.connect(
             host="127.0.0.1",
@@ -790,6 +812,7 @@ class PostgresIntegrationStack:
             "analysis_report_citation",
             "analysis_report_generation_job",
             "analysis_report_audit_event",
+            "analysis_report_health_snapshot",
         )
         result: dict[str, dict[str, bool]] = {}
         with self._bootstrap() as connection:
@@ -818,6 +841,7 @@ class PostgresIntegrationStack:
             "analysis_report_citation",
             "analysis_report_generation_job",
             "analysis_report_audit_event",
+            "analysis_report_health_snapshot",
         )
         result: dict[str, dict[str, bool]] = {}
         with self._bootstrap() as connection:
@@ -836,6 +860,97 @@ class PostgresIntegrationStack:
                     "DELETE": bool(row[3]),
                 }
         return result
+
+    def catalog_head(self) -> str:
+        with self._bootstrap() as connection:
+            row = connection.execute(
+                "SELECT version_num FROM f1.alembic_version"
+            ).fetchone()
+        return str(row[0]) if row else ""
+
+    def force_rls_names(self) -> set[str]:
+        with self._bootstrap() as connection:
+            rows = connection.execute(
+                "SELECT c.relname FROM pg_class AS c "
+                "JOIN pg_namespace AS n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = 'f1' AND c.relkind = 'r' "
+                "AND c.relrowsecurity AND c.relforcerowsecurity"
+            ).fetchall()
+        return {str(row[0]) for row in rows}
+
+    def table_privileges(self, role: str, table: str) -> dict[str, bool]:
+        with self._bootstrap() as connection:
+            row = connection.execute(
+                "SELECT has_table_privilege(%s, %s, 'SELECT'),"
+                "has_table_privilege(%s, %s, 'INSERT'),"
+                "has_table_privilege(%s, %s, 'UPDATE'),"
+                "has_table_privilege(%s, %s, 'DELETE')",
+                (
+                    role,
+                    f"f1.{table}",
+                    role,
+                    f"f1.{table}",
+                    role,
+                    f"f1.{table}",
+                    role,
+                    f"f1.{table}",
+                ),
+            ).fetchone()
+        return {
+            "SELECT": bool(row[0]),
+            "INSERT": bool(row[1]),
+            "UPDATE": bool(row[2]),
+            "DELETE": bool(row[3]),
+        }
+
+    def snapshot_row(self, version_id: uuid.UUID) -> dict[str, object] | None:
+        with self._bootstrap() as connection:
+            row = connection.execute(
+                "SELECT report_id, version_id, payload, payload_sha256, score, max_score "
+                "FROM f1.analysis_report_health_snapshot WHERE version_id = %s",
+                (version_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "report_id": row[0],
+            "version_id": row[1],
+            "payload": row[2],
+            "payload_sha256": row[3],
+            "score": row[4],
+            "max_score": row[5],
+        }
+
+    def snapshot_count(self, version_id: uuid.UUID | None = None) -> int:
+        with self._bootstrap() as connection:
+            if version_id is None:
+                row = connection.execute(
+                    "SELECT count(*) FROM f1.analysis_report_health_snapshot"
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT count(*) FROM f1.analysis_report_health_snapshot "
+                    "WHERE version_id = %s",
+                    (version_id,),
+                ).fetchone()
+        return int(row[0]) if row else 0
+
+    def version_status(self, version_id: uuid.UUID) -> str:
+        with self._bootstrap() as connection:
+            row = connection.execute(
+                "SELECT status FROM f1.analysis_report_version WHERE id = %s",
+                (version_id,),
+            ).fetchone()
+        return str(row[0]) if row else ""
+
+    def audit_actions(self, version_id: uuid.UUID) -> list[str]:
+        with self._bootstrap() as connection:
+            rows = connection.execute(
+                "SELECT action FROM f1.analysis_report_audit_event "
+                "WHERE version_id = %s ORDER BY id",
+                (version_id,),
+            ).fetchall()
+        return [str(row[0]) for row in rows]
 
     def dispose_runtime(self) -> None:
         try:

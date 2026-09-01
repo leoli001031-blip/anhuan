@@ -125,7 +125,6 @@ const ANALYSIS_REPORT_WORKFLOW_IDENTITIES = Object.freeze([
   ANALYSIS_REPORT_EMPLOYEE_IDENTITY,
 ]);
 const ANALYSIS_REPORT_CRM_ID = "cc8649c4-195a-5261-b139-d24483345cd0";
-const ANALYSIS_REPORT_CRM_NAME = "Local analysis-report audience B";
 const ANALYSIS_REPORT_TITLE = "企业安环资料分析报告";
 const ANALYSIS_REPORT_REVIEW_CHECKS = Object.freeze([
   "引用证据可溯源",
@@ -4639,10 +4638,10 @@ async function executeAnalysisReportUat(cdp, origin, secretDirectory) {
     origin,
     secretDirectory,
     ANALYSIS_REPORT_IDENTITIES[1],
-    "/portal/qa",
+    "/portal",
     async (page) => {
       const text = String(await page.evaluate(`document.body?.textContent ?? ""`));
-      if (!text.includes("安环智能助手") || !text.includes("检索能力接入中")) {
+      if (!text.includes("企业安环服务总览") || !text.includes("安环管理健康度")) {
         fail("CLIENT_PORTAL_MISSING");
       }
       if (text.includes("本地合成数据")) fail("ANALYSIS_REPORT_MOCK_DATA_PRESENT");
@@ -4652,10 +4651,10 @@ async function executeAnalysisReportUat(cdp, origin, secretDirectory) {
         "client_user",
         "CLIENT_SESSION_ACCESS_UNBOUND",
       );
-      await navigateExpect(page, "/console/clients", "/portal/qa", "CLIENT_CONSOLE_NOT_DENIED");
-      await navigateExpect(page, "/workbench", "/portal/qa", "CLIENT_LEGACY_TREE_NOT_DENIED");
+      await navigateExpect(page, "/console/clients", "/portal", "CLIENT_CONSOLE_NOT_DENIED");
+      await navigateExpect(page, "/workbench", "/portal", "CLIENT_LEGACY_TREE_NOT_DENIED");
       await page.waitForExpression(
-        `(document.body?.textContent ?? "").includes("安环智能助手")`,
+        `(document.body?.textContent ?? "").includes("企业安环服务总览")`,
         "CLIENT_PORTAL_AFTER_DENY_MISSING",
       );
       if (page.tenantRequests.some((value) => value === ANALYSIS_REPORT_UNKNOWN_ENTERPRISE || value === UAT_SEED_ENTERPRISE_A)) {
@@ -4776,7 +4775,9 @@ async function clickButtonText(page, textValue, code, timeout = 30_000) {
 
 function reviewCheckPointLocator(label) {
   return `(() => {
-    const row = document.querySelector(${JSON.stringify(`[data-review-check=${JSON.stringify(label)}]`)});
+    const row = Array.from(document.querySelectorAll("[data-review-check]")).find(
+      (candidate) => (candidate.textContent ?? "").trim() === ${JSON.stringify(label)},
+    );
     if (!(row instanceof HTMLElement)) return null;
     const input = row.querySelector("input[type=checkbox]");
     if (!(input instanceof HTMLInputElement) || input.disabled) return null;
@@ -4810,7 +4811,9 @@ async function clickReviewCheck(page, label) {
   await dispatchClick(page, point);
   await page.waitForExpression(
     `(() => {
-      const row = document.querySelector(${JSON.stringify(`[data-review-check=${JSON.stringify(label)}]`)});
+      const row = Array.from(document.querySelectorAll("[data-review-check]")).find(
+        (candidate) => (candidate.textContent ?? "").trim() === ${JSON.stringify(label)},
+      );
       return row instanceof HTMLElement && row.getAttribute("data-checked") === "1";
     })()`,
     "REVIEW_CHECK_CLICK_FAILED",
@@ -4933,10 +4936,11 @@ async function navigateLoggedInPath(page, path, code) {
 
 async function clickAudienceReports(page) {
   const locator = `(() => {
-    const rows = Array.from(document.querySelectorAll("tr"));
-    const row = rows.find((item) => (item.textContent ?? "").includes(${JSON.stringify(ANALYSIS_REPORT_CRM_NAME)}));
-    if (!row) return null;
-    const link = Array.from(row.querySelectorAll("a")).find((item) => (item.textContent ?? "").trim() === "报告");
+    const wanted = ${JSON.stringify(`/console/clients/${ANALYSIS_REPORT_CRM_ID}/reports`)};
+    const link = Array.from(document.querySelectorAll("a")).find((item) => (
+      item.getAttribute("href") === wanted
+      && (item.textContent ?? "").trim() === "报告"
+    ));
     if (!(link instanceof HTMLElement)) return null;
     link.scrollIntoView({ block: "center", inline: "center" });
     const box = link.getBoundingClientRect();
@@ -4961,15 +4965,41 @@ async function clickAudienceReports(page) {
 
 async function clickPortalReportsNav(page) {
   const locator = `(() => {
-    const link = Array.from(document.querySelectorAll("a")).find((item) => (item.textContent ?? "").trim() === "分析报告");
-    if (!(link instanceof HTMLElement)) return null;
-    link.scrollIntoView({ block: "center", inline: "center" });
-    const box = link.getBoundingClientRect();
-    const x = box.left + box.width / 2;
-    const y = box.top + box.height / 2;
-    const hit = document.elementFromPoint(x, y);
-    if (box.width > 0 && box.height > 0 && hit instanceof Element && (hit === link || link.contains(hit))) {
-      return { x, y };
+    const pointFor = (link) => {
+      if (!(link instanceof HTMLElement)) return null;
+      link.scrollIntoView({ block: "center", inline: "center" });
+      const box = link.getBoundingClientRect();
+      const style = getComputedStyle(link);
+      const x = box.left + box.width / 2;
+      const y = box.top + box.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      if (
+        box.width > 0
+        && box.height > 0
+        && style.display !== "none"
+        && style.visibility !== "hidden"
+        && hit instanceof Element
+        && (hit === link || link.contains(hit))
+      ) {
+        return { x, y };
+      }
+      return null;
+    };
+    const links = Array.from(document.querySelectorAll("a")).filter((item) => (
+      (item.textContent ?? "").trim() === "分析报告"
+      && item.getAttribute("href") === "/portal/reports"
+    ));
+    for (const link of links) {
+      const point = pointFor(link);
+      if (point) return point;
+    }
+    const mobile = document.querySelector("details.portal-mobile-menu");
+    if (mobile instanceof HTMLDetailsElement) {
+      mobile.open = true;
+      for (const link of links) {
+        const point = pointFor(link);
+        if (point) return point;
+      }
     }
     return null;
   })()`;
@@ -5032,6 +5062,82 @@ async function bindLastAnalysisRequest(page, method, pathIncludes, okStatuses, c
 
 function publishedTitleVisibleExpression() {
   return `Array.from(document.querySelectorAll("a")).some((item) => (item.textContent ?? "").includes(${JSON.stringify(ANALYSIS_REPORT_TITLE)}))`;
+}
+
+async function verifyPublishedHealthUnscored(page) {
+  await navigateLoggedInPath(page, "/portal", "CLIENT_HEALTH_HOME_NAV_FAILED");
+  await page.waitForExpression(
+    `document.querySelector(".health-empty__status")?.textContent?.trim() === "暂不评分"
+      && !document.querySelector(".health-score-line")
+      && !(document.body?.innerText ?? "").includes("测试环境·本地证据评分")
+      && !(document.body?.innerText ?? "").includes("视觉 Mock·固定示例分")`,
+    "CLIENT_HEALTH_HOME_MISSING",
+    30_000,
+  );
+  const response = await bindLastAnalysisRequest(
+    page,
+    "GET",
+    "/api/v1/analysis-reports/health/latest",
+    [200],
+    "CLIENT_HEALTH_CDP_UNBOUND",
+  );
+  let payload;
+  try {
+    payload = JSON.parse(response.body);
+  } catch {
+    fail("CLIENT_HEALTH_JSON_INVALID");
+  }
+  if (
+    payload?.schema !== "anhuan-analysis-report-health-v1"
+    || payload?.snapshot !== null
+  ) {
+    fail("CLIENT_HEALTH_PAYLOAD_INVALID");
+  }
+  await spaGoto(page, "/portal/health", "CLIENT_HEALTH_DETAIL_NAV_FAILED");
+  await page.waitForExpression(
+    `location.pathname === "/portal/health"
+      && (document.querySelector(".health-unavailable")?.textContent ?? "").includes("暂不评分")
+      && !document.querySelector(".health-score-line")
+      && !(document.body?.innerText ?? "").includes("测试环境·本地证据评分")
+      && !(document.body?.innerText ?? "").includes("视觉 Mock·固定示例分")`,
+    "CLIENT_HEALTH_DETAIL_MISSING",
+    30_000,
+  );
+  await page.waitForApiIdle();
+  await assertAnalysisReportSurfaceClean(page);
+  return {
+    health_null_after_publish: 1,
+  };
+}
+
+async function verifyHealthHiddenAfterWithdraw(page) {
+  await navigateLoggedInPath(page, "/portal", "CLIENT_HEALTH_WITHDRAW_NAV_FAILED");
+  await page.waitForExpression(
+    `document.querySelector(".health-empty__status")?.textContent?.trim() === "暂不评分"
+      && !document.querySelector(".health-score-line")
+      && !(document.body?.innerText ?? "").includes("测试环境·本地证据评分")
+      && !(document.body?.innerText ?? "").includes("视觉 Mock·固定示例分")`,
+    "CLIENT_HEALTH_WITHDRAW_NOT_HIDDEN",
+    30_000,
+  );
+  const response = await bindLastAnalysisRequest(
+    page,
+    "GET",
+    "/api/v1/analysis-reports/health/latest",
+    [200],
+    "CLIENT_HEALTH_WITHDRAW_CDP_UNBOUND",
+  );
+  let payload;
+  try {
+    payload = JSON.parse(response.body);
+  } catch {
+    fail("CLIENT_HEALTH_WITHDRAW_JSON_INVALID");
+  }
+  if (payload?.schema !== "anhuan-analysis-report-health-v1" || payload?.snapshot !== null) {
+    fail("CLIENT_HEALTH_WITHDRAW_PAYLOAD_INVALID");
+  }
+  await assertAnalysisReportSurfaceClean(page);
+  return 1;
 }
 
 async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
@@ -5108,7 +5214,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
       } catch {
         fail("GENERATE_JSON_INVALID");
       }
-      if (generatedPayload?.status !== "draft") fail("GENERATION_NOT_DRAFT");
+      if (generatedPayload?.status !== "queued") fail("GENERATION_NOT_QUEUED");
       await assertAnalysisReportSurfaceClean(page);
       await clickButtonText(page, "提交审核", "SUBMIT_BUTTON_MISSING");
       await bindLastAnalysisRequest(page, "POST", "/submit", [200], "SUBMIT_CDP_UNBOUND");
@@ -5159,7 +5265,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
     origin,
     secretDirectory,
     ANALYSIS_REPORT_IDENTITIES[1],
-    "/portal/qa",
+    "/portal",
     async (page) => {
       await bindSessionAccess(
         page,
@@ -5228,7 +5334,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
     origin,
     secretDirectory,
     ANALYSIS_REPORT_IDENTITIES[1],
-    "/portal/qa",
+    "/portal",
     async (page) => {
       await bindSessionAccess(
         page,
@@ -5236,6 +5342,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
         "client_user",
         "CLIENT_SESSION_ACCESS_UNBOUND",
       );
+      const health = await verifyPublishedHealthUnscored(page);
       await clickPortalReportsNav(page);
       await page.waitForExpression(
         `location.pathname === "/portal/reports" && ${publishedTitleVisibleExpression()}`,
@@ -5298,9 +5405,97 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
       if (!Array.isArray(detailPayload?.citations) || detailPayload.citations.length < 2) {
         fail("CLIENT_DETAIL_CITATION_PAYLOAD_INVALID");
       }
+
+      await navigateLoggedInPath(page, "/portal/services", "CLIENT_SERVICES_NAV_FAILED");
+      await page.waitForExpression(
+        `location.pathname === "/portal/services" && (document.body?.innerText ?? "").includes("Local client service case")`,
+        "CLIENT_SERVICES_ITEM_MISSING",
+        30_000,
+      );
+      const services = await bindLastAnalysisRequest(
+        page,
+        "GET",
+        "/api/v1/service-cases/portal",
+        [200],
+        "CLIENT_SERVICES_CDP_UNBOUND",
+      );
+      let servicesPayload;
+      try {
+        servicesPayload = JSON.parse(services.body);
+      } catch {
+        fail("CLIENT_SERVICES_JSON_INVALID");
+      }
+      const serviceItem = servicesPayload?.items?.find(
+        (item) => item?.title === "Local client service case",
+      );
+      const safeServiceKeys = [
+        "assigned", "id", "planned_end_at", "planned_start_at",
+        "service_type", "status", "title", "updated_at",
+      ];
+      if (
+        !serviceItem
+        || serviceItem.id !== "90403144-21d3-518b-bb41-1f52cca4e268"
+        || JSON.stringify(Object.keys(serviceItem).sort()) !== JSON.stringify(safeServiceKeys)
+      ) {
+        fail("CLIENT_SERVICES_DTO_INVALID");
+      }
+
+      await navigateLoggedInPath(page, "/portal/qa", "CLIENT_QA_NAV_FAILED");
+      await page.waitForExpression(
+        `location.pathname === "/portal/qa" && document.querySelector("textarea") instanceof HTMLTextAreaElement`,
+        "CLIENT_QA_INPUT_MISSING",
+        30_000,
+      );
+      const question = "我们的废气治理采用什么方案？";
+      const populated = await page.evaluate(`(() => {
+        const input = document.querySelector("textarea");
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+        if (!(input instanceof HTMLTextAreaElement) || !setter) return false;
+        setter.call(input, ${JSON.stringify("我们的废气治理采用什么方案？")});
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      })()`);
+      if (!populated) fail("CLIENT_QA_INPUT_FAILED");
+      await clickButtonText(page, "提问", "CLIENT_QA_SUBMIT_MISSING");
+      await page.waitForExpression(
+        `(document.body?.innerText ?? "").includes("活性炭吸附装置") && document.querySelectorAll(".citation-ref").length >= 1`,
+        "CLIENT_QA_ANSWER_MISSING",
+        30_000,
+      );
+      const qa = await bindLastAnalysisRequest(
+        page,
+        "POST",
+        "/api/v1/material-qa",
+        [200],
+        "CLIENT_QA_CDP_UNBOUND",
+      );
+      let qaPayload;
+      try {
+        qaPayload = JSON.parse(qa.body);
+      } catch {
+        fail("CLIENT_QA_JSON_INVALID");
+      }
+      if (
+        typeof qaPayload?.answer !== "string"
+        || !qaPayload.answer.includes("活性炭吸附装置")
+        || !Array.isArray(qaPayload?.citations)
+        || qaPayload.citations.length < 1
+        || qaPayload.refusal_reason !== null
+      ) {
+        fail("CLIENT_QA_PAYLOAD_INVALID");
+      }
+      const qaCitationCount = qaPayload.citations.length;
+      void question;
       await assertAnalysisReportSurfaceClean(page);
       arkCalls += page.arkCalls;
-      return { sectionCount, citationCount };
+      return {
+        sectionCount,
+        citationCount,
+        clientQa: 1,
+        clientServices: 1,
+        qaCitationCount,
+        ...health,
+      };
     },
   );
 
@@ -5351,7 +5546,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
     origin,
     secretDirectory,
     ANALYSIS_REPORT_IDENTITIES[1],
-    "/portal/qa",
+    "/portal",
     async (page) => {
       await bindSessionAccess(
         page,
@@ -5359,6 +5554,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
         "client_user",
         "CLIENT_SESSION_ACCESS_UNBOUND",
       );
+      const healthHidden = await verifyHealthHiddenAfterWithdraw(page);
       await clickPortalReportsNav(page);
       await page.waitForExpression(
         `location.pathname === "/portal/reports" && (document.body?.innerText ?? "").includes("暂无已发布的分析报告")`,
@@ -5393,7 +5589,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
       );
       await assertAnalysisReportSurfaceClean(page);
       arkCalls += page.arkCalls;
-      return 1;
+      return healthHidden;
     },
   );
 
@@ -5402,7 +5598,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
     origin,
     secretDirectory,
     ANALYSIS_REPORT_EMPLOYEE_IDENTITY,
-    "/portal/qa",
+    "/portal",
     async (page) => {
       await bindSessionAccess(
         page,
@@ -5443,13 +5639,19 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
     citation_count: clientVisible.citationCount,
     client_detail: 1,
     client_list: 1,
+    client_qa: clientVisible.clientQa,
+    client_services: clientVisible.clientServices,
     create_idempotent: 1,
     generation_draft: 1,
     generation_idempotent: 1,
+    health_null_after_publish: clientVisible.health_null_after_publish,
+    health_null_after_withdraw: hidden,
+    health_snapshot_count: 0,
     hidden_after_withdraw: 1,
     mock_data: 0,
     provider_create: 1,
     publish: 1,
+    qa_citation_count: clientVisible.qaCitationCount,
     section_count: clientVisible.sectionCount,
     skipped: 0,
     submit: 1,

@@ -2,6 +2,7 @@
 
 from .contracts import (
     GenerationDisabled,
+    HealthSnapshotUnavailable,
     ReportNotFound,
     ReportTransitionInvalid,
     RequestIdConflict,
@@ -15,16 +16,22 @@ from .service import (
     generation_enabled,
     get_published,
     job_status,
+    latest_health,
     list_client_reports,
     list_published,
+    published_artifact,
+    published_artifact_pdf,
     product_role_for,
     session_access,
     version_detail,
+    version_artifact,
+    version_artifact_pdf,
     version_history,
 )
 
 __all__ = (
     "GenerationDisabled",
+    "HealthSnapshotUnavailable",
     "ReportNotFound",
     "ReportTransitionInvalid",
     "RequestIdConflict",
@@ -36,10 +43,15 @@ __all__ = (
     "generation_enabled",
     "get_published",
     "job_status",
+    "latest_health",
     "list_client_reports",
     "list_published",
+    "published_artifact",
+    "published_artifact_pdf",
     "product_role_for",
     "session_access",
     "version_detail",
+    "version_artifact",
+    "version_artifact_pdf",
     "version_history",
 )

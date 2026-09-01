@@ -1,0 +1,55 @@
+# Final override for an amd64 candidate that uses the explicitly configured
+# cloud vision OCR adapter (GLM/Ark chat models) instead of the locked ARM64
+# sidecar.  Layered AFTER the no-ocr override: the sidecar stays disabled and
+# scanned PDFs are served by the cloud engine only when every fail-closed
+# condition below is satisfied at runtime.
+#
+# Required host environment:
+#   A_ECO_CLOUD_OCR_KEY_FILE    absolute path to a 0600 API key file
+#   A_ECO_CLOUD_OCR_PROVIDER    glm_vision | ark_vision     (default glm_vision)
+#   A_ECO_CLOUD_OCR_DIALECT     chat | anthropic            (default anthropic)
+#   A_ECO_CLOUD_OCR_MODEL       explicit model id           (default glm-5.3-flash)
+services:
+  api:
+    environment:
+      F1_MATERIAL_CLOUD_OCR_PROVIDER: ${A_ECO_CLOUD_OCR_PROVIDER:-glm_vision}
+      F1_MATERIAL_CLOUD_OCR_DIALECT: ${A_ECO_CLOUD_OCR_DIALECT:-anthropic}
+      F1_MATERIAL_CLOUD_OCR_API_KEY_FILE: /run/secrets/cloud-ocr/api_key
+      F1_MATERIAL_CLOUD_OCR_MODEL: ${A_ECO_CLOUD_OCR_MODEL:-glm-5.3-flash}
+    volumes: !override
+      - api_secrets:/run/secrets/f1:ro
+      - ${A_ECO_CLOUD_OCR_KEY_FILE:?A_ECO_CLOUD_OCR_KEY_FILE_REQUIRED}:/run/secrets/cloud-ocr/api_key:ro
+  worker:
+    environment:
+      F1_MATERIAL_CLOUD_OCR_PROVIDER: ${A_ECO_CLOUD_OCR_PROVIDER:-glm_vision}
+      F1_MATERIAL_CLOUD_OCR_DIALECT: ${A_ECO_CLOUD_OCR_DIALECT:-anthropic}
+      F1_MATERIAL_CLOUD_OCR_API_KEY_FILE: /run/secrets/cloud-ocr/api_key
+      F1_MATERIAL_CLOUD_OCR_MODEL: ${A_ECO_CLOUD_OCR_MODEL:-glm-5.3-flash}
+    volumes: !override
+      - worker_secrets:/run/secrets/f1:ro
+      - ${A_ECO_CLOUD_OCR_KEY_FILE:?A_ECO_CLOUD_OCR_KEY_FILE_REQUIRED}:/run/secrets/cloud-ocr/api_key:ro
+  dispatcher:
+    environment:
+      F1_MATERIAL_CLOUD_OCR_PROVIDER: ${A_ECO_CLOUD_OCR_PROVIDER:-glm_vision}
+      F1_MATERIAL_CLOUD_OCR_DIALECT: ${A_ECO_CLOUD_OCR_DIALECT:-anthropic}
+      F1_MATERIAL_CLOUD_OCR_API_KEY_FILE: /run/secrets/cloud-ocr/api_key
+      F1_MATERIAL_CLOUD_OCR_MODEL: ${A_ECO_CLOUD_OCR_MODEL:-glm-5.3-flash}
+  ingestion-worker:
+    environment:
+      F1_MATERIAL_CLOUD_OCR_PROVIDER: ${A_ECO_CLOUD_OCR_PROVIDER:-glm_vision}
+      F1_MATERIAL_CLOUD_OCR_DIALECT: ${A_ECO_CLOUD_OCR_DIALECT:-anthropic}
+      F1_MATERIAL_CLOUD_OCR_API_KEY_FILE: /run/secrets/cloud-ocr/api_key
+      F1_MATERIAL_CLOUD_OCR_MODEL: ${A_ECO_CLOUD_OCR_MODEL:-glm-5.3-flash}
+    volumes: !override
+      - ingestion_worker_secrets:/run/secrets/f1:ro
+      - ${A_ECO_CLOUD_OCR_KEY_FILE:?A_ECO_CLOUD_OCR_KEY_FILE_REQUIRED}:/run/secrets/cloud-ocr/api_key:ro
+  report-worker:
+    environment:
+      F1_MATERIAL_CLOUD_OCR_PROVIDER: ${A_ECO_CLOUD_OCR_PROVIDER:-glm_vision}
+      F1_MATERIAL_CLOUD_OCR_DIALECT: ${A_ECO_CLOUD_OCR_DIALECT:-anthropic}
+      F1_MATERIAL_CLOUD_OCR_API_KEY_FILE: /run/secrets/cloud-ocr/api_key
+      F1_MATERIAL_CLOUD_OCR_MODEL: ${A_ECO_CLOUD_OCR_MODEL:-glm-5.3-flash}
+      F1_MATERIAL_ANALYSIS_REPORT_LLM: ${A_ECO_REPORT_LLM:-0}
+    volumes: !override
+      - report_worker_secrets:/run/secrets/f1:ro
+      - ${A_ECO_CLOUD_OCR_KEY_FILE:?A_ECO_CLOUD_OCR_KEY_FILE_REQUIRED}:/run/secrets/cloud-ocr/api_key:ro

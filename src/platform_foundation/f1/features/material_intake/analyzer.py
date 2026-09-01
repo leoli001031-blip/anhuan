@@ -1,4 +1,4 @@
-"""Bounded pypdf-only heuristics for human-reviewable material candidates."""
+"""Bounded pypdf heuristics with optional local OCR for reviewable candidates."""
 from __future__ import annotations
 
 import hashlib
@@ -7,8 +7,9 @@ import math
 import re
 import unicodedata
 from collections import Counter, defaultdict
+from dataclasses import replace
 from datetime import date
-from typing import BinaryIO
+from typing import BinaryIO, Callable, Iterable
 
 from pypdf import PdfReader
 
@@ -18,6 +19,14 @@ from .contracts import (
     MaterialAnalysisResult,
     MaterialKind,
     PageClassification,
+)
+from .ocr import (
+    LocalOcrError,
+    MAX_OCR_SOURCE_BYTES,
+    OCR_PARSER_BACKEND,
+    OCR_PARSER_BACKENDS,
+    OcrPageResult,
+    ocr_pdf_pages,
 )
 
 
@@ -185,30 +194,67 @@ def _page_classification(
     page,
     text: str,
     fragments: list[tuple[float, float, str]],
+    *,
+    embedded_text: str | None = None,
+    ocr_result: OcrPageResult | None = None,
 ) -> PageClassification:
+    embedded = text if embedded_text is None else embedded_text
+    embedded_character_count = min(100_000, len(re.sub(r"\s+", "", embedded)))
     character_count = min(100_000, len(re.sub(r"\s+", "", text)))
-    if character_count < 20:
+    if embedded_character_count < 20:
         primary_kind = "scanned"
-        text_confidence = _ppm(character_count / 40.0)
-        scan_confidence = _ppm(0.92 - character_count / 100.0)
-    elif character_count < 120:
+        text_confidence = _ppm(embedded_character_count / 40.0)
+        scan_confidence = _ppm(0.92 - embedded_character_count / 100.0)
+    elif embedded_character_count < 120:
         primary_kind = "mixed"
-        text_confidence = _ppm(0.45 + min(character_count, 120) / 400.0)
-        scan_confidence = _ppm(0.65 - min(character_count, 120) / 400.0)
+        text_confidence = _ppm(
+            0.45 + min(embedded_character_count, 120) / 400.0
+        )
+        scan_confidence = _ppm(
+            0.65 - min(embedded_character_count, 120) / 400.0
+        )
     else:
         primary_kind = "text"
-        text_confidence = _ppm(min(0.95, 0.68 + character_count / 8_000.0))
-        scan_confidence = _ppm(max(0.02, 0.25 - character_count / 10_000.0))
+        text_confidence = _ppm(
+            min(0.95, 0.68 + embedded_character_count / 8_000.0)
+        )
+        scan_confidence = _ppm(
+            max(0.02, 0.25 - embedded_character_count / 10_000.0)
+        )
+    if ocr_result is not None and ocr_result.ocr_applied:
+        # F0-H exposes an uncalibrated model score.  It is useful as a routing
+        # hint, but never promoted to measured document accuracy.
+        text_confidence = min(
+            800_000,
+            ocr_result.confidence_mean_ppm
+            if ocr_result.confidence_mean_ppm is not None
+            else 550_000,
+        )
     table, table_confidence, columns, column_confidence = _geometry_hints(
         page, fragments
     )
     if not table and len(re.findall(r"\S+\s{2,}\S+", text)) >= 3:
         table = True
         table_confidence = 420_000
+    if ocr_result is not None and ocr_result.ocr_applied:
+        if ocr_result.table_candidate:
+            table = True
+            table_confidence = max(table_confidence, 520_000)
+        if ocr_result.two_column_candidate:
+            columns = True
+            column_confidence = max(column_confidence, 520_000)
+    ocr_required = embedded_character_count < 40 and not (
+        ocr_result is not None and ocr_result.ocr_applied
+    )
+    reason_codes: list[str] = []
+    if ocr_required:
+        reason_codes.append("OCR_REQUIRED")
+    if ocr_result is not None:
+        reason_codes.append(ocr_result.reason_code)
     return PageClassification(
         page_number=page_number,
         primary_kind=primary_kind,
-        ocr_required=character_count < 40,
+        ocr_required=ocr_required,
         table_candidate=table,
         two_column_candidate=columns,
         text_character_count=character_count,
@@ -216,7 +262,7 @@ def _page_classification(
         scan_confidence_ppm=scan_confidence,
         table_confidence_ppm=table_confidence,
         two_column_confidence_ppm=column_confidence,
-        reason_codes=("OCR_REQUIRED",) if character_count < 40 else (),
+        reason_codes=tuple(dict.fromkeys(reason_codes)),
     )
 
 
@@ -539,14 +585,22 @@ def analyze_pdf(
     file_obj: BinaryIO,
     *,
     expected_sha256: str,
+    ocr_checkpoints: Iterable[OcrPageResult] = (),
+    ocr_checkpoint_callback: Callable[[OcrPageResult], None] | None = None,
+    ocr_pages: Callable[..., tuple[OcrPageResult, ...]] | None = None,
+    ocr_parser_backend: str = OCR_PARSER_BACKEND,
 ) -> MaterialAnalysisResult:
     """Analyze one already-scanned PDF without changing its P3 state."""
+    if ocr_parser_backend not in OCR_PARSER_BACKENDS:
+        raise MaterialAnalysisFailure("MATERIAL_OCR_ENGINE_INVALID")
     try:
         file_obj.seek(0)
-        raw = file_obj.read()
+        raw = file_obj.read(MAX_OCR_SOURCE_BYTES + 1)
         file_obj.seek(0)
     except Exception as error:
         raise MaterialAnalysisFailure("MATERIAL_SOURCE_READ_FAILED") from error
+    if not isinstance(raw, bytes) or not 8 <= len(raw) <= MAX_OCR_SOURCE_BYTES:
+        raise MaterialAnalysisFailure("MATERIAL_SOURCE_SIZE_LIMIT")
     if hashlib.sha256(raw).hexdigest() != expected_sha256:
         raise MaterialAnalysisFailure("MATERIAL_SOURCE_IDENTITY_MISMATCH")
     try:
@@ -558,19 +612,99 @@ def analyze_pdf(
     if not 1 <= len(reader.pages) <= MAX_PDF_PAGES:
         raise MaterialAnalysisFailure("MATERIAL_PDF_PAGE_LIMIT")
 
-    page_outputs: list[PageClassification] = []
-    page_texts: list[tuple[int, str]] = []
+    extracted_pages: list[
+        tuple[int, object, str, list[tuple[float, float, str]]]
+    ] = []
     try:
         for page_number, page in enumerate(reader.pages, start=1):
             text, fragments = _page_fragments(page)
-            page_texts.append((page_number, text))
-            page_outputs.append(
-                _page_classification(page_number, page, text, fragments)
-            )
+            extracted_pages.append((page_number, page, text, fragments))
     except MaterialAnalysisFailure as error:
         raise MaterialAnalysisFailure(
             error.code, page_count=len(reader.pages)
         ) from error
+
+    ocr_page_numbers = tuple(
+        page_number
+        for page_number, _page, text, _fragments in extracted_pages
+        if len(re.sub(r"\s+", "", text)) < 40
+    )
+    ocr_results: dict[int, OcrPageResult] = {}
+    try:
+        for item in ocr_checkpoints:
+            if (
+                item.page_number not in ocr_page_numbers
+                or item.page_number in ocr_results
+                or not item.ocr_applied
+                or item.status != "applied"
+                or item.reason_code != "OCR_APPLIED"
+                or item.parser_backend != ocr_parser_backend
+                or item.source_unit_id is None
+            ):
+                raise MaterialAnalysisFailure("MATERIAL_OCR_CHECKPOINT_INVALID")
+            ocr_results[item.page_number] = item
+    except TypeError as error:
+        raise MaterialAnalysisFailure("MATERIAL_OCR_CHECKPOINT_INVALID") from error
+    if ocr_page_numbers:
+        remaining_ocr_pages = tuple(
+            page_number
+            for page_number in ocr_page_numbers
+            if page_number not in ocr_results
+        )
+        try:
+            ocr_results.update(
+                {
+                    item.page_number: item
+                    for item in (ocr_pages or ocr_pdf_pages)(
+                        raw,
+                        page_numbers=remaining_ocr_pages,
+                        expected_sha256=expected_sha256,
+                        completed_page_callback=ocr_checkpoint_callback,
+                    )
+                }
+            )
+        except LocalOcrError as error:
+            if error.code == "MATERIAL_ANALYSIS_PERSIST_FAILED":
+                raise MaterialAnalysisFailure(
+                    error.code, page_count=len(reader.pages)
+                ) from error
+            # The authoritative pypdf path remains available.  A missing or
+            # rejected optional runtime must never be presented as OCR success.
+            ocr_results.update(
+                {
+                    page_number: OcrPageResult(
+                        page_number=page_number,
+                        text="",
+                        status="unavailable",
+                        reason_code="OCR_UNAVAILABLE",
+                        ocr_applied=False,
+                        character_count=0,
+                    )
+                    for page_number in remaining_ocr_pages
+                }
+            )
+
+    page_outputs: list[PageClassification] = []
+    page_texts: list[tuple[int, str]] = []
+    applied_ocr_pages: set[int] = set()
+    for page_number, page, embedded_text, fragments in extracted_pages:
+        ocr_result = ocr_results.get(page_number)
+        effective_text = embedded_text
+        if ocr_result is not None and ocr_result.ocr_applied:
+            effective_text = _normalize_text(ocr_result.text)
+        if ocr_result is not None and ocr_result.ocr_applied:
+            applied_ocr_pages.add(page_number)
+        page_texts.append((page_number, effective_text))
+        page_outputs.append(
+            _page_classification(
+                page_number,
+                page,
+                effective_text,
+                fragments,
+                embedded_text=embedded_text,
+                ocr_result=ocr_result,
+            )
+        )
 
     kinds = {page.primary_kind for page in page_outputs}
     if kinds == {"scanned"}:
@@ -589,6 +723,19 @@ def analyze_pdf(
     if any(page.text_character_count >= 40 for page in page_outputs):
         if nonempty_pages:
             candidates = _field_candidates(nonempty_pages)
+            if applied_ocr_pages:
+                # The database producer remains ``pypdf_heuristic`` by design:
+                # it identifies the candidate rule set.  The confidence basis
+                # records that the rule consumed validated local OCR text.
+                candidates = tuple(
+                    replace(
+                        candidate,
+                        confidence_basis=f"ocr_heuristic.{candidate.field_name}",
+                    )
+                    if candidate.page_number in applied_ocr_pages
+                    else candidate
+                    for candidate in candidates
+                )
     suggested_kind, suggested_kind_confidence_ppm = _suggest_material_kind(
         nonempty_pages, page_outputs
     )

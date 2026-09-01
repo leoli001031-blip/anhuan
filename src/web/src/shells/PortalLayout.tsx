@@ -1,21 +1,17 @@
-// 客户门户壳：顶部 48px 白条，仅「智能问答 · 分析报告」两项导航。
+// 客户门户壳：导航只呈现已接入真实合同的客户能力。
+// 窄屏（<768px）：品牌+退出一行、导航整行等分 tab，邮箱隐藏，无逐字断行。
 // 无侧边栏、无企业切换器——客户身份完全由会话推导。
-import type { CSSProperties } from "react";
+import { MenuOutlined } from "@ant-design/icons";
 import { Button, Layout, Spin, Typography } from "antd";
 import { Navigate, NavLink, Outlet } from "react-router-dom";
-import { useSessionAccess } from "../adapters";
+import { useSessionAccess, isMockData } from "../adapters";
 import { homePathFor } from "../adapters/SessionAccess";
 import { useAuth } from "../auth/OidcProvider";
 import ErrorState from "../components/ErrorState";
 import MockBadge from "../components/MockBadge";
 
-const navLinkStyle = (active: boolean): CSSProperties => ({
-  color: active ? "var(--eco-primary)" : "var(--eco-text)",
-  borderBottom: active ? "2px solid var(--eco-primary)" : "2px solid transparent",
-  padding: "12px 2px",
-  textDecoration: "none",
-  fontSize: 14,
-});
+const navLinkClass = (active: boolean) =>
+  active ? "portal-nav__link portal-nav__link--active" : "portal-nav__link";
 
 export default function PortalLayout() {
   const { user, logout } = useAuth();
@@ -28,39 +24,68 @@ export default function PortalLayout() {
     return <Navigate to={session ? homePathFor(session.product_role) : "/login"} replace />;
   }
 
+  const enterpriseLabel = isMockData
+    ? "青川精密制造有限公司"
+    : (user?.profile.name ?? user?.profile.preferred_username ?? "当前企业");
+
   return (
-    <Layout style={{ minHeight: "100vh", background: "var(--eco-content-bg)" }}>
+    <Layout style={{ minHeight: "100vh", background: "var(--eco-page-bg)" }}>
       <Layout.Header
+        className="portal-header"
         style={{
           display: "flex",
           alignItems: "center",
-          gap: 32,
-          borderBottom: "1px solid var(--eco-border)",
-          background: "var(--eco-content-bg)",
+          columnGap: 24,
           position: "sticky",
           top: 0,
           zIndex: 10,
         }}
       >
-        <Typography.Text strong style={{ fontSize: 15 }}>
-          安环智能助手
-        </Typography.Text>
-        <nav style={{ display: "flex", gap: 24, flex: 1 }}>
-          <NavLink to="/portal/qa" style={({ isActive }) => navLinkStyle(isActive)}>
-            智能问答
+        <span className="portal-brand">
+          <strong>A‑Eco</strong>
+          <Typography.Text strong>企业门户</Typography.Text>
+          <i aria-hidden="true" />
+          <Typography.Text className="portal-brand__context">安环服务平台</Typography.Text>
+        </span>
+        <nav className="portal-nav">
+          <NavLink to="/portal" end className={({ isActive }) => navLinkClass(isActive)}>
+            总览
           </NavLink>
-          <NavLink to="/portal/reports" style={({ isActive }) => navLinkStyle(isActive)}>
+          <NavLink to="/portal/services" className={({ isActive }) => navLinkClass(isActive)}>
+            服务事项
+          </NavLink>
+          <NavLink to="/portal/qa" className={({ isActive }) => navLinkClass(isActive)}>
+            资料问答
+          </NavLink>
+          <NavLink to="/portal/reports" className={({ isActive }) => navLinkClass(isActive)}>
             分析报告
           </NavLink>
+          <NavLink to="/portal/health" className={({ isActive }) => navLinkClass(isActive)}>
+            健康度
+          </NavLink>
         </nav>
-        <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-          {user?.profile.email ?? user?.profile.preferred_username ?? ""}
+        <Typography.Text className="portal-email">
+          {enterpriseLabel}
         </Typography.Text>
-        <Button type="text" size="small" onClick={() => void logout()}>
+        <Button className="portal-desktop-logout" type="text" size="small" onClick={() => void logout()}>
           退出
         </Button>
+        <details className="portal-mobile-menu">
+          <summary aria-label="打开导航"><MenuOutlined aria-hidden="true" /></summary>
+          <div>
+            <NavLink to="/portal" end className={({ isActive }) => navLinkClass(isActive)}>总览</NavLink>
+            <NavLink to="/portal/services" className={({ isActive }) => navLinkClass(isActive)}>服务事项</NavLink>
+            <NavLink to="/portal/qa" className={({ isActive }) => navLinkClass(isActive)}>资料问答</NavLink>
+            <NavLink to="/portal/reports" className={({ isActive }) => navLinkClass(isActive)}>分析报告</NavLink>
+            <NavLink to="/portal/health" className={({ isActive }) => navLinkClass(isActive)}>健康度</NavLink>
+            <button type="button" onClick={() => void logout()}>退出登录</button>
+          </div>
+        </details>
+        <Typography.Text className="portal-mobile-enterprise">
+          {enterpriseLabel}
+        </Typography.Text>
       </Layout.Header>
-      <Layout.Content style={{ background: "var(--eco-content-bg)" }}>
+      <Layout.Content style={{ background: "var(--eco-page-bg)" }}>
         <Outlet />
       </Layout.Content>
       <MockBadge />

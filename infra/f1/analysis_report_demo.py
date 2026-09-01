@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -25,10 +26,12 @@ from infra.f1.analysis_report_uat import (
     ROOT,
     UatError,
     _apply_fixture,
+    _assert_ocr_runtime,
     _environment,
     _run,
     _seed_identities,
     _shared_fingerprint,
+    _validate_analysis_report_secret_set,
     _write_docker_config,
     _write_env,
     _write_receipt,
@@ -37,12 +40,25 @@ from infra.f1.analysis_report_uat import (
 
 
 OVERLAY_FILE = ROOT / "infra/f1/docker-compose.analysis-report-demo.yml"
+NO_OCR_OVERLAY_FILE = (
+    ROOT / "infra/f1/docker-compose.analysis-report-no-ocr.yml"
+)
+CLOUD_OCR_OVERLAY_FILE = (
+    ROOT / "infra/f1/docker-compose.analysis-report-cloud-ocr.yml"
+)
 SCOPE = "analysis-report-demo"
 CONTROL_SCHEMA = "anhuan-analysis-report-demo-control-v1"
 WORKSPACE_SHA256 = hashlib.sha256(
     f"{CONTROL_SCHEMA}\0{ROOT}\0{os.geteuid()}".encode("utf-8")
 ).hexdigest()
 PROBE = WORKSPACE_SHA256[:12]
+NO_OCR_WORKSPACE_SHA256 = hashlib.sha256(
+    f"{CONTROL_SCHEMA}\0{ROOT}\0{os.geteuid()}\0ocr-disabled".encode("utf-8")
+).hexdigest()
+CLOUD_OCR_WORKSPACE_SHA256 = hashlib.sha256(
+    f"{CONTROL_SCHEMA}\0{ROOT}\0{os.geteuid()}\0ocr-cloud".encode("utf-8")
+).hexdigest()
+OCR_MODE_ENV = "A_ECO_ANALYSIS_REPORT_OCR_MODE"
 PROJECT_RE = re.compile(r"^anhuan-ar-demo-[0-9a-f]{12}\Z")
 STATUS_KEYS = frozenset(
     {
@@ -63,19 +79,55 @@ class DemoError(UatError):
     pass
 
 
+def _ocr_mode() -> str:
+    mode = os.environ.get(OCR_MODE_ENV, "required").strip().lower()
+    if mode not in {"", "required", "disabled", "cloud"}:
+        raise DemoError("LOCAL_ANALYSIS_REPORT_OCR_MODE_INVALID")
+    return mode or "required"
+
+
+def _ocr_disabled() -> bool:
+    return _ocr_mode() == "disabled"
+
+
+def _assert_cloud_ocr_key_file() -> None:
+    """Cloud mode fails closed without an explicit 0600 host key file."""
+
+    raw = os.environ.get("A_ECO_CLOUD_OCR_KEY_FILE", "").strip()
+    path = Path(raw) if raw else None
+    if (
+        path is None
+        or not path.is_absolute()
+        or not path.is_file()
+        or path.is_symlink()
+    ):
+        raise DemoError("LOCAL_ANALYSIS_REPORT_CLOUD_OCR_KEY_FILE_INVALID")
+    info = path.stat()
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        raise DemoError("LOCAL_ANALYSIS_REPORT_CLOUD_OCR_KEY_FILE_INVALID")
+
+
 def _identity() -> dict[str, object]:
+    mode = _ocr_mode()
+    if mode == "disabled":
+        workspace_sha256 = NO_OCR_WORKSPACE_SHA256
+    elif mode == "cloud":
+        workspace_sha256 = CLOUD_OCR_WORKSPACE_SHA256
+    else:
+        workspace_sha256 = WORKSPACE_SHA256
+    probe = workspace_sha256[:12]
     project_id = uuid.uuid5(
-        uuid.NAMESPACE_URL, f"{CONTROL_SCHEMA}:{WORKSPACE_SHA256}"
+        uuid.NAMESPACE_URL, f"{CONTROL_SCHEMA}:{workspace_sha256}"
     ).hex
     return {
         "schema": CONTROL_SCHEMA,
         "project_id": project_id,
-        "compose_project": f"anhuan-ar-demo-{PROBE}",
-        "pgint_project_name": f"anhuan-ar-pgint-{PROBE}",
-        "database": f"f1_arpg_{PROBE}",
-        "runtime_image": f"anhuan-ar-demo-runtime:{PROBE}",
-        "web_image": f"anhuan-ar-demo-web:{PROBE}",
-        "control_dir": f"/private/tmp/anhuan-ar-pgint-{PROBE}",
+        "compose_project": f"anhuan-ar-demo-{probe}",
+        "pgint_project_name": f"anhuan-ar-pgint-{probe}",
+        "database": f"f1_arpg_{probe}",
+        "runtime_image": f"anhuan-ar-demo-runtime:{probe}",
+        "web_image": f"anhuan-ar-demo-web:{probe}",
+        "control_dir": f"/private/tmp/anhuan-ar-pgint-{probe}",
         "shared_before": "",
     }
 
@@ -98,10 +150,22 @@ def _compose(state: dict[str, object], paths: dict[str, Path], *arguments: str, 
         str(COMPOSE_FILE),
         "-f",
         str(OVERLAY_FILE),
-        "--profile",
-        "ops",
-        *arguments,
     ]
+    mode = _ocr_mode()
+    if mode in {"disabled", "cloud"}:
+        command.extend(["-f", str(NO_OCR_OVERLAY_FILE)])
+    if mode == "cloud":
+        _assert_cloud_ocr_key_file()
+        command.extend(["-f", str(CLOUD_OCR_OVERLAY_FILE)])
+    command.extend(
+        [
+            "--profile",
+            "ops",
+            "--profile",
+            "analysis-report",
+            *arguments,
+        ]
+    )
     _run(command, paths=paths, timeout=timeout)
 
 
@@ -177,15 +241,28 @@ def _initialize() -> tuple[dict[str, object], dict[str, Path]]:
         LC._exclusive_write(paths["state"], payload)
     _write_docker_config(paths)
     _write_secrets(state, paths)
-    LC._validate_secret_set(paths["secrets"])
+    _validate_analysis_report_secret_set(paths["secrets"])
     _write_env(state, paths)
     _write_receipt(state, paths)
     return state, paths
 
 
 def _start_stack(state: dict[str, object], paths: dict[str, Path]) -> None:
+    ocr_disabled = _ocr_mode() in {"disabled", "cloud"}
+    if _ocr_mode() == "required":
+        _assert_ocr_runtime(paths)
     _compose(state, paths, "run", "--rm", "--no-deps", "secret-init", timeout=180)
     _compose(state, paths, "build", "migrator", "web", timeout=1800)
+    runtime_services = [
+        "api",
+        "worker",
+        "dispatcher",
+        "ingestion-worker",
+        "report-worker",
+        "web",
+    ]
+    if not ocr_disabled:
+        runtime_services.insert(0, "material-rag-ocr")
     _compose(
         state,
         paths,
@@ -214,10 +291,7 @@ def _start_stack(state: dict[str, object], paths: dict[str, Path]) -> None:
         "--wait",
         "--wait-timeout",
         "180",
-        "api",
-        "worker",
-        "dispatcher",
-        "web",
+        *runtime_services,
         timeout=240,
     )
 
@@ -245,6 +319,26 @@ def _password_grant(origin: str, secrets: Path, username: str, secret_name: str)
         return False
     token = payload.get("access_token")
     return isinstance(token, str) and len(token) > 20
+
+
+def _readiness_ready(origin: str) -> bool:
+    request = urllib.request.Request(f"{origin}/api/readyz", method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            if response.status != 200:
+                return False
+            if response.headers.get("Cache-Control", "").lower() != "no-store":
+                return False
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, json.JSONDecodeError):
+        return False
+    components = payload.get("components") if isinstance(payload, dict) else None
+    return bool(
+        payload.get("status") == "ready"
+        and isinstance(components, dict)
+        and components
+        and all(value is True for value in components.values())
+    )
 
 
 def _session_role(origin: str, secrets: Path, username: str, secret_name: str, enterprise: str) -> str | None:
@@ -371,10 +465,46 @@ def _api_generator_flags(state: dict[str, object], paths: dict[str, Path]) -> tu
     blob = inspect.stdout or ""
     local = "F1_MATERIAL_ANALYSIS_REPORT_LOCAL=1" in blob.splitlines()
     engineering = "F1_LOCAL_ENGINEERING=1" in blob.splitlines()
+    local_qa = "F1_MATERIAL_QA_LOCAL_EXTRACTIVE=1" in blob.splitlines()
     ark = any("ARK" in line and line.split("=", 1)[-1] not in {"", "0", "false", "False"} for line in blob.splitlines())
-    if local and engineering and not ark:
-        return "deterministic_local", 0
-    return "", 1
+    if not (local and engineering and local_qa and not ark):
+        return "", 1
+    report_worker = _run(
+        [
+            LC._docker(),
+            "ps",
+            "-a",
+            "--filter",
+            f"label=com.docker.compose.project={state['compose_project']}",
+            "--filter",
+            "label=com.docker.compose.service=report-worker",
+            "--format",
+            "{{.ID}}",
+        ],
+        paths=paths,
+        timeout=30,
+        check=False,
+    )
+    worker_ids = (report_worker.stdout or "").strip().splitlines()
+    if report_worker.returncode == 0 and len(worker_ids) == 1:
+        worker_inspect = _run(
+            [
+                LC._docker(),
+                "inspect",
+                "-f",
+                "{{range .Config.Env}}{{println .}}{{end}}",
+                worker_ids[0],
+            ],
+            paths=paths,
+            timeout=30,
+            check=False,
+        )
+        if (
+            "F1_MATERIAL_ANALYSIS_REPORT_LLM=1"
+            in (worker_inspect.stdout or "").splitlines()
+        ):
+            return "glm_chat", 0
+    return "evidence_local", 0
 
 
 def run_start() -> dict[str, str]:
@@ -415,7 +545,7 @@ def run_status() -> dict[str, object]:
     state = json.loads(paths["state"].read_text(encoding="ascii"))
     origin = f"http://127.0.0.1:{int(state['web_port'])}"
     leftovers = _inventory(str(state["compose_project"]), paths)
-    ready = 1 if leftovers[0] > 0 else 0
+    ready = 1 if leftovers[0] > 0 and _readiness_ready(origin) else 0
     head, seeded = _head_and_seeded(state, paths)
     generator, ark_calls = _api_generator_flags(state, paths)
     provider = _password_grant(origin, paths["secrets"], "tenant-a", "oidc_tenant_a")
@@ -437,8 +567,8 @@ def run_status() -> dict[str, object]:
     expected = {
         "ark_calls": 0,
         "client_login_ready": 1,
-        "f1_head": "f1_0017",
-        "generator": "deterministic_local",
+        "f1_head": "f1_0024",
+        "generator": "evidence_local",
         "mock_data": 0,
         "provider_login_ready": 1,
         "ready": 1,
@@ -489,7 +619,15 @@ def run_stop() -> dict[str, int]:
             timeout=180,
         )
         leftovers = _inventory(project, paths)
-        scoped = _scope_counts(paths)
+        # The amd64 no-OCR candidate is intentionally allowed to coexist with
+        # a stopped historical demo as a rollback target. Its project-specific
+        # inventory remains the cleanup authority; the default ARM64 path keeps
+        # the original global scope exclusivity check.
+        scoped = (
+            (0, 0, 0)
+            if _ocr_mode() in {"disabled", "cloud"}
+            else _scope_counts(paths)
+        )
         if leftovers != (0, 0, 0) or scoped != (0, 0, 0):
             raise DemoError(
                 f"LOCAL_ANALYSIS_REPORT_DEMO_RESIDUAL C={leftovers[0]} V={leftovers[1]} N={leftovers[2]}"

@@ -21,6 +21,7 @@ interface DocumentUploadModalProps {
   token: string | null;
   documentId?: string;
   capabilities: IngestionCapabilities | null;
+  acceptedContentTypes?: readonly string[];
   onCancel: () => void;
   onSuccess: (result: UploadResult) => void;
 }
@@ -42,6 +43,7 @@ export default function DocumentUploadModal({
   token,
   documentId,
   capabilities,
+  acceptedContentTypes,
   onCancel,
   onSuccess,
 }: DocumentUploadModalProps) {
@@ -62,9 +64,13 @@ export default function DocumentUploadModal({
     return () => activeRequest.current?.abort();
   }, [form, open]);
 
-  const allowedExtensions =
-    capabilities?.allowed_types.flatMap((item) => item.extensions.map((ext) => ext.toLowerCase())) ?? [];
-  const accept = allowedExtensions.join(",");
+  const allowedTypes =
+    capabilities?.allowed_types.filter(
+      (item) => !acceptedContentTypes || acceptedContentTypes.includes(item.content_type),
+    ) ?? [];
+  const accept = allowedTypes
+    .flatMap((item) => [item.content_type, ...item.extensions.map((ext) => ext.toLowerCase())])
+    .join(",");
 
   const close = () => {
     activeRequest.current?.abort();
@@ -84,11 +90,15 @@ export default function DocumentUploadModal({
       return;
     }
     const extension = extensionOf(file.name);
-    const formatCapability = capabilities.allowed_types.find((item) =>
+    const formatCapability = allowedTypes.find((item) =>
       item.extensions.map((ext) => ext.toLowerCase()).includes(extension),
     );
     if (!formatCapability) {
       setError(reasonCopy("FILE_TYPE_NOT_ALLOWED"));
+      return;
+    }
+    if (file.size <= 0) {
+      setError(reasonCopy("EMPTY_FILE"));
       return;
     }
     if (
@@ -157,7 +167,7 @@ export default function DocumentUploadModal({
       okText="上传到隔离区"
       cancelText="取消"
       confirmLoading={submitting}
-      okButtonProps={{ disabled: !capabilities?.upload_enabled }}
+      okButtonProps={{ disabled: !capabilities?.upload_enabled || allowedTypes.length === 0 }}
       closable={!submitting}
       maskClosable={!submitting}
       onOk={() => void submit()}
@@ -202,12 +212,12 @@ export default function DocumentUploadModal({
         <p className="ant-upload-text">点击或拖拽一个文件到这里</p>
         <p className="ant-upload-hint">
           {capabilities
-            ? capabilities.allowed_types
+            ? allowedTypes
                 .map(
                   (item) =>
                     `${item.extensions.map((ext) => ext.toUpperCase()).join("/")} ${formatBytes(item.max_file_bytes)}`,
                 )
-                .join("；")
+                .join("；") || "当前环境未开放所需文件格式"
             : "正在读取允许格式与上限"}
         </p>
       </Upload.Dragger>

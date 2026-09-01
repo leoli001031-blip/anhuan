@@ -1,12 +1,13 @@
 """P2 service-case and personnel-assignment API."""
 from __future__ import annotations
 
+import os
 import uuid
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -30,9 +31,10 @@ from ...database import session_scope
 
 router = APIRouter()
 
-_CASE_COLUMNS = (
-    "id, enterprise_id, plant_id, title, description, service_type, status, "
-    "planned_start_at, planned_end_at, created_by_user_id, created_at, updated_at"
+_BASE_CASE_COLUMNS = (
+    "id, enterprise_id, plant_id, {client_account_id}, title, description, "
+    "service_type, status, planned_start_at, planned_end_at, "
+    "created_by_user_id, created_at, updated_at"
 )
 _ASSIGNMENT_COLUMNS = (
     "id, enterprise_id, service_case_id, assignee_user_id, assigned_by_user_id, "
@@ -42,6 +44,7 @@ _ASSIGNMENT_COLUMNS = (
 
 class ServiceCaseCreate(BaseModel):
     plant_id: uuid.UUID | None = None
+    client_account_id: uuid.UUID | None = None
     title: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=4000)
     service_type: str = Field(min_length=1, max_length=64)
@@ -82,6 +85,7 @@ class ServiceCaseOut(BaseModel):
     id: uuid.UUID
     enterprise_id: uuid.UUID
     plant_id: uuid.UUID | None
+    client_account_id: uuid.UUID | None
     title: str
     description: str | None
     service_type: str
@@ -97,6 +101,22 @@ class ServiceCaseOut(BaseModel):
 class ServiceCaseListOut(BaseModel):
     items: list[ServiceCaseOut]
     allowed_actions: list[str]
+
+
+class ClientServiceCaseOut(BaseModel):
+    id: uuid.UUID
+    title: str
+    service_type: str
+    status: str
+    planned_start_at: datetime | None
+    planned_end_at: datetime | None
+    assigned: bool
+    updated_at: datetime
+
+
+class ClientServiceCaseListOut(BaseModel):
+    items: list[ClientServiceCaseOut]
+    allowed_actions: list[str] = []
 
 
 class AssignmentCandidateOut(BaseModel):
@@ -146,6 +166,24 @@ def _require_manager(tenant: Tenant) -> None:
         raise HTTPException(status_code=403, detail="P2_MANAGER_REQUIRED")
 
 
+def _aeco_client_ops_enabled() -> bool:
+    return (
+        os.environ.get("F1_LOCAL_ENGINEERING") == "1"
+        and os.environ.get("F1_MATERIAL_ANALYSIS_REPORT_LOCAL") == "1"
+    )
+
+
+def _case_columns() -> str:
+    # f1_0020 is deliberately exclusive to the analysis-report candidate;
+    # the default f1_0014 runtime still receives the legacy nullable shape.
+    client = (
+        "client_account_id"
+        if _aeco_client_ops_enabled()
+        else "NULL::uuid AS client_account_id"
+    )
+    return _BASE_CASE_COLUMNS.format(client_account_id=client)
+
+
 def _validate_window(start: datetime | None, end: datetime | None) -> None:
     if start is not None and end is not None and end < start:
         raise HTTPException(status_code=422, detail="SERVICE_WINDOW_INVALID")
@@ -189,6 +227,33 @@ async def _ensure_plant(
         raise HTTPException(status_code=404, detail="PLANT_NOT_FOUND")
 
 
+async def _ensure_client_account(
+    session: AsyncSession,
+    tenant: Tenant,
+    client_account_id: uuid.UUID | None,
+) -> None:
+    if client_account_id is None:
+        return
+    if not _aeco_client_ops_enabled():
+        raise HTTPException(status_code=409, detail="CLIENT_ACCOUNT_BINDING_UNAVAILABLE")
+    found = (
+        await session.execute(
+            text(
+                "SELECT 1 FROM f1.crm_account "
+                "WHERE enterprise_id = :enterprise_id "
+                "AND id = :client_account_id "
+                "AND stage IN ('lead','active','dormant')"
+            ),
+            {
+                "enterprise_id": tenant.enterprise_id,
+                "client_account_id": client_account_id,
+            },
+        )
+    ).first()
+    if found is None:
+        raise HTTPException(status_code=404, detail="CLIENT_ACCOUNT_NOT_FOUND")
+
+
 async def _case_row(
     session: AsyncSession,
     case_id: uuid.UUID,
@@ -196,7 +261,7 @@ async def _case_row(
     return (
         await session.execute(
             text(
-                f"SELECT {_CASE_COLUMNS} FROM f1.service_case WHERE id = :case_id"
+                f"SELECT {_case_columns()} FROM f1.service_case WHERE id = :case_id"
             ),
             {"case_id": case_id},
         )
@@ -327,27 +392,38 @@ async def _detail_out(
     )
 
 
-async def _list_cases(tenant: Tenant, *, mine: bool) -> ServiceCaseListOut:
+async def _list_cases(
+    tenant: Tenant,
+    *,
+    mine: bool,
+    client_account_id: uuid.UUID | None = None,
+) -> ServiceCaseListOut:
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
     ) as session:
         actor_id = await _current_user_id(session, tenant)
-        mine_clause = ""
+        clauses: list[str] = []
         parameters: dict[str, Any] = {}
         if mine:
-            mine_clause = (
-                "WHERE EXISTS ("
+            clauses.append(
+                "EXISTS ("
                 "SELECT 1 FROM f1.service_assignment AS assignment "
                 "WHERE assignment.service_case_id = service_case.id "
                 "AND assignment.assignee_user_id = :actor_id "
                 "AND assignment.status IN ('pending','accepted'))"
             )
             parameters["actor_id"] = actor_id
+        if client_account_id is not None:
+            _require_manager(tenant)
+            await _ensure_client_account(session, tenant, client_account_id)
+            clauses.append("client_account_id = :client_account_id")
+            parameters["client_account_id"] = client_account_id
+        where_clause = " WHERE " + " AND ".join(clauses) if clauses else ""
         rows = (
             await session.execute(
                 text(
-                    f"SELECT {_CASE_COLUMNS} FROM f1.service_case "
-                    f"{mine_clause} ORDER BY updated_at DESC, id"
+                    f"SELECT {_case_columns()} FROM f1.service_case "
+                    f"{where_clause} ORDER BY updated_at DESC, id"
                 ),
                 parameters,
             )
@@ -360,9 +436,42 @@ async def _list_cases(tenant: Tenant, *, mine: bool) -> ServiceCaseListOut:
 
 @router.get("", response_model=ServiceCaseListOut)
 async def list_service_cases(
+    client_account_id: uuid.UUID | None = Query(default=None),
     tenant: Tenant = Depends(tenant_from_header),
 ) -> ServiceCaseListOut:
-    return await _list_cases(tenant, mine=False)
+    return await _list_cases(
+        tenant,
+        mine=False,
+        client_account_id=client_account_id,
+    )
+
+
+@router.get("/portal", response_model=ClientServiceCaseListOut)
+async def list_client_service_cases(
+    tenant: Tenant = Depends(tenant_from_header),
+) -> ClientServiceCaseListOut:
+    """Return only the audience-bound, client-safe service summary contract."""
+    if (
+        not _aeco_client_ops_enabled()
+        or tenant.role in {"super_admin", "enterprise_admin"}
+    ):
+        raise HTTPException(status_code=404, detail="SERVICE_CASES_NOT_FOUND")
+    async with session_scope(
+        role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
+    ) as session:
+        rows = (
+            await session.execute(
+                text(
+                    "SELECT id,title,service_type,status,planned_start_at,"
+                    "planned_end_at,assigned,updated_at "
+                    "FROM f1.aeco_client_service_cases()"
+                )
+            )
+        ).mappings().all()
+    return ClientServiceCaseListOut(
+        items=[ClientServiceCaseOut(**dict(row)) for row in rows],
+        allowed_actions=[],
+    )
 
 
 @router.post("", response_model=ServiceCaseDetailOut, status_code=201)
@@ -382,21 +491,28 @@ async def create_service_case(
     ) as session:
         actor_id = await _current_user_id(session, tenant)
         await _ensure_plant(session, tenant, body.plant_id)
+        await _ensure_client_account(session, tenant, body.client_account_id)
         row = (
             await session.execute(
                 text(
                     "INSERT INTO f1.service_case ("
-                    "id, enterprise_id, plant_id, title, description, service_type, "
+                    "id, enterprise_id, plant_id, "
+                    + ("client_account_id, " if _aeco_client_ops_enabled() else "")
+                    + "title, "
+                    "description, service_type, "
                     "status, planned_start_at, planned_end_at, created_by_user_id"
                     ") VALUES ("
-                    ":id, :enterprise_id, :plant_id, :title, :description, :service_type, "
+                    ":id, :enterprise_id, :plant_id, "
+                    + (":client_account_id, " if _aeco_client_ops_enabled() else "")
+                    + ":title, :description, :service_type, "
                     ":status, :planned_start_at, :planned_end_at, :created_by_user_id"
-                    f") RETURNING {_CASE_COLUMNS}"
+                    f") RETURNING {_case_columns()}"
                 ),
                 {
                     "id": case_id,
                     "enterprise_id": tenant.enterprise_id,
                     "plant_id": body.plant_id,
+                    "client_account_id": body.client_account_id,
                     "title": title,
                     "description": body.description,
                     "service_type": service_type,
@@ -521,7 +637,7 @@ async def update_service_case(
                 await session.execute(
                     text(
                         f"UPDATE f1.service_case SET {setters} "
-                        f"WHERE id = :case_id RETURNING {_CASE_COLUMNS}"
+                        f"WHERE id = :case_id RETURNING {_case_columns()}"
                     ),
                     updates,
                 )
@@ -566,7 +682,7 @@ async def close_service_case(
         current = (
             await session.execute(
                 text(
-                    f"SELECT {_CASE_COLUMNS} FROM f1.service_case "
+                    f"SELECT {_case_columns()} FROM f1.service_case "
                     "WHERE id = :case_id"
                 ),
                 {"case_id": case_id},
@@ -581,7 +697,7 @@ async def close_service_case(
                 text(
                     "UPDATE f1.service_case SET status = 'closed' "
                     "WHERE id = :case_id AND status = 'completed' "
-                    f"RETURNING {_CASE_COLUMNS}"
+                    f"RETURNING {_case_columns()}"
                 ),
                 {"case_id": case_id},
             )

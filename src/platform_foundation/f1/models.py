@@ -455,6 +455,11 @@ class ServiceCase(Base):
             name="service_case_plant_enterprise_fk",
         ),
         ForeignKeyConstraint(
+            ("enterprise_id", "client_account_id"),
+            ("f1.crm_account.enterprise_id", "f1.crm_account.id"),
+            name="service_case_client_account_fk",
+        ),
+        ForeignKeyConstraint(
             ("enterprise_id", "created_by_user_id"),
             ("f1.enterprise_user.enterprise_id", "f1.enterprise_user.user_id"),
             name="service_case_creator_enterprise_fk",
@@ -476,6 +481,7 @@ class ServiceCase(Base):
         Uuid, ForeignKey("f1.enterprise.id")
     )
     plant_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
+    client_account_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     title: Mapped[str] = mapped_column(String(200))
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     service_type: Mapped[str] = mapped_column(String(64))
@@ -1818,7 +1824,13 @@ class MaterialAnalysis(Base):
             "enterprise_id",
             "document_version_id",
             "analysis_version",
-            name="material_analysis_version_uq",
+            "analysis_revision",
+            name="material_analysis_revision_uq",
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "supersedes_analysis_id",
+            name="material_analysis_supersedes_uq",
         ),
         ForeignKeyConstraint(
             ("enterprise_id", "document_version_id"),
@@ -1845,6 +1857,11 @@ class MaterialAnalysis(Base):
             ("f1.policy_version.enterprise_id", "f1.policy_version.id"),
             name="material_analysis_policy_version_enterprise_fk",
         ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "supersedes_analysis_id"),
+            ("f1.material_analysis.enterprise_id", "f1.material_analysis.id"),
+            name="material_analysis_supersedes_enterprise_fk",
+        ),
         CheckConstraint(
             "status IN ('ready','failed','confirmed')",
             name="material_analysis_status_ck",
@@ -1865,6 +1882,15 @@ class MaterialAnalysis(Base):
         CheckConstraint(
             "analysis_version = 'material-v1'",
             name="material_analysis_version_ck",
+        ),
+        CheckConstraint(
+            "analysis_revision BETWEEN 1 AND 100",
+            name="material_analysis_revision_ck",
+        ),
+        CheckConstraint(
+            "(analysis_revision = 1 AND supersedes_analysis_id IS NULL) OR "
+            "(analysis_revision > 1 AND supersedes_analysis_id IS NOT NULL)",
+            name="material_analysis_supersession_shape_ck",
         ),
         CheckConstraint(
             "parser_backend = 'pypdf_heuristic'",
@@ -1943,6 +1969,13 @@ class MaterialAnalysis(Base):
             "document_version_id",
             "created_at",
         ),
+        Index(
+            "material_analysis_current_idx",
+            "enterprise_id",
+            "document_version_id",
+            "analysis_version",
+            "analysis_revision",
+        ),
         {"schema": "f1"},
     )
 
@@ -1953,6 +1986,10 @@ class MaterialAnalysis(Base):
     document_version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
     source_sha256: Mapped[str] = mapped_column(String(64))
     analysis_version: Mapped[str] = mapped_column(String, default="material-v1")
+    analysis_revision: Mapped[int] = mapped_column(Integer, default=1)
+    supersedes_analysis_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, nullable=True
+    )
     parser_backend: Mapped[str] = mapped_column(String, default="pypdf_heuristic")
     status: Mapped[str] = mapped_column(String)
     document_profile: Mapped[str] = mapped_column(String)
@@ -3035,6 +3072,63 @@ class AnalysisReportAuditEvent(Base):
     )
 
 
+class AnalysisReportHealthSnapshot(Base):
+    __tablename__ = "analysis_report_health_snapshot"
+    __table_args__ = (
+        UniqueConstraint(
+            "enterprise_id", "id", name="analysis_report_health_snapshot_enterprise_id_id_uq"
+        ),
+        UniqueConstraint(
+            "enterprise_id",
+            "version_id",
+            name="analysis_report_health_snapshot_version_uq",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "report_id", "version_id"),
+            (
+                "f1.analysis_report_version.enterprise_id",
+                "f1.analysis_report_version.report_id",
+                "f1.analysis_report_version.id",
+            ),
+            name="analysis_report_health_snapshot_version_fk",
+        ),
+        ForeignKeyConstraint(
+            ("enterprise_id", "report_id", "client_account_id"),
+            (
+                "f1.analysis_report.enterprise_id",
+                "f1.analysis_report.id",
+                "f1.analysis_report.client_account_id",
+            ),
+            name="analysis_report_health_snapshot_client_fk",
+        ),
+        CheckConstraint("score >= 0 AND score <= 100", name="analysis_report_health_snapshot_score_ck"),
+        CheckConstraint("max_score = 100", name="analysis_report_health_snapshot_max_ck"),
+        CheckConstraint("score <= max_score", name="analysis_report_health_snapshot_score_max_ck"),
+        CheckConstraint(
+            "payload_sha256 ~ '^[0-9a-f]{64}$'",
+            name="analysis_report_health_snapshot_sha_ck",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(payload) = 'object'",
+            name="analysis_report_health_snapshot_payload_object_ck",
+        ),
+        {"schema": "f1"},
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    enterprise_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("f1.enterprise.id"))
+    report_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    version_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    client_account_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    payload: Mapped[dict[str, object]] = mapped_column(JSON)
+    payload_sha256: Mapped[str] = mapped_column(String(64))
+    score: Mapped[int] = mapped_column(Integer)
+    max_score: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.statement_timestamp()
+    )
+
+
 __all__ = (
     "Enterprise",
     "Plant",
@@ -3074,6 +3168,7 @@ __all__ = (
     "AnalysisReportCitation",
     "AnalysisReportGenerationJob",
     "AnalysisReportAuditEvent",
+    "AnalysisReportHealthSnapshot",
     "PolicySource",
     "PolicyVersion",
     "MaterialAnalysis",

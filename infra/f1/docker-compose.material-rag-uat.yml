@@ -133,6 +133,14 @@ volumes:
     labels: !override
       io.anhuan.scope: material-rag-uat
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  ingestion_worker_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+  report_worker_secrets:
+    labels: !override
+      io.anhuan.scope: material-rag-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
   dispatcher_secrets:
     labels: !override
       io.anhuan.scope: material-rag-uat

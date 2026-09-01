@@ -15,7 +15,7 @@ import subprocess
 import sys
 import uuid
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,6 +80,10 @@ def _load_fixture():
 
 
 LC = _localctl()
+ANALYSIS_REPORT_SECRET_NAMES = (*LC.ALL_SECRET_NAMES, "f1_material_rag_key")
+OCR_RUNTIME_IMAGE_ID = (
+    "sha256:02e6300f52463818de7ceaf447bfb0765e5f8466251177006131dec4e55a27f5"
+)
 
 
 def _identity() -> dict[str, object]:
@@ -205,6 +209,8 @@ def _compose(state: dict[str, object], paths: dict[str, Path], *arguments: str, 
         str(OVERLAY_FILE),
         "--profile",
         "ops",
+        "--profile",
+        "analysis-report",
         *arguments,
     ]
     _run(command, paths=paths, timeout=timeout)
@@ -249,7 +255,7 @@ def _shared_fingerprint() -> bytes:
         canonical_shared_fingerprint,
     )
 
-    return canonical_shared_fingerprint()
+    return canonical_shared_fingerprint(Path(LC._docker()))
 
 
 def _initialize() -> tuple[dict[str, object], dict[str, Path]]:
@@ -284,7 +290,7 @@ def _initialize() -> tuple[dict[str, object], dict[str, Path]]:
         LC._exclusive_write(paths["state"], payload)
     _write_docker_config(paths)
     _write_secrets(state, paths)
-    LC._validate_secret_set(paths["secrets"])
+    _validate_analysis_report_secret_set(paths["secrets"])
     _write_env(state, paths)
     _write_receipt(state, paths)
     return state, paths
@@ -310,11 +316,18 @@ def _write_docker_config(paths: dict[str, Path]) -> None:
 
 
 def _write_secrets(state: dict[str, object], paths: dict[str, Path]) -> None:
-    existing = {
-        name for name in LC.ALL_SECRET_NAMES if (paths["secrets"] / name).exists()
-    }
+    existing = {entry.name for entry in os.scandir(paths["secrets"])}
     if existing:
-        if existing != set(LC.ALL_SECRET_NAMES):
+        base_names = set(LC.ALL_SECRET_NAMES)
+        if existing == base_names:
+            import secrets as secrets_mod
+
+            LC._exclusive_write(
+                paths["secrets"] / "f1_material_rag_key",
+                secrets_mod.token_hex(32).encode("ascii"),
+            )
+            return
+        if existing != set(ANALYSIS_REPORT_SECRET_NAMES):
             raise UatError("LOCAL_ANALYSIS_REPORT_UAT_SECRET_SET_INCOMPLETE")
         return
     import secrets as secrets_mod
@@ -350,10 +363,50 @@ def _write_secrets(state: dict[str, object], paths: dict[str, Path]) -> None:
     f0i_path = paths["secrets"] / "f0i_key"
     if not f0i_path.exists():
         LC._exclusive_write(f0i_path, secrets_mod.token_bytes(32))
+    material_key_path = paths["secrets"] / "f1_material_rag_key"
+    if not material_key_path.exists():
+        LC._exclusive_write(
+            material_key_path, secrets_mod.token_hex(32).encode("ascii")
+        )
+
+
+def _validate_analysis_report_secret_set(directory: Path) -> None:
+    LC._directory(directory)
+    try:
+        entries = {entry.name for entry in os.scandir(directory)}
+    except OSError:
+        raise UatError("LOCAL_ANALYSIS_REPORT_UAT_SECRET_SET_INVALID") from None
+    if entries != set(ANALYSIS_REPORT_SECRET_NAMES):
+        raise UatError("LOCAL_ANALYSIS_REPORT_UAT_SECRET_SET_INVALID")
+    for name in LC.ALL_SECRET_NAMES:
+        minimum = 32 if name == "f0i_key" else 1
+        maximum = 32 if name == "f0i_key" else 16384
+        LC._secure_file(directory / name, minimum=minimum, maximum=maximum)
+    LC._secure_file(
+        directory / "f1_material_rag_key", minimum=64, maximum=64
+    )
 
 
 def _write_env(state: dict[str, object], paths: dict[str, Path]) -> None:
     origin = f"http://127.0.0.1:{int(state['web_port'])}"
+    pip_index_url = os.environ.get("A_ECO_PIP_INDEX_URL", "").strip()
+    if pip_index_url:
+        try:
+            parsed_index = urlsplit(pip_index_url)
+            parsed_index.port
+        except ValueError as error:
+            raise UatError("LOCAL_ANALYSIS_REPORT_PIP_INDEX_INVALID") from error
+        if (
+            not pip_index_url.isascii()
+            or any(character.isspace() for character in pip_index_url)
+            or parsed_index.scheme != "https"
+            or not parsed_index.hostname
+            or parsed_index.username is not None
+            or parsed_index.password is not None
+            or parsed_index.query
+            or parsed_index.fragment
+        ):
+            raise UatError("LOCAL_ANALYSIS_REPORT_PIP_INDEX_INVALID")
     values = {
         "LOCAL_DATABASE": state["database"],
         "LOCAL_GID": os.getegid(),
@@ -366,11 +419,66 @@ def _write_env(state: dict[str, object], paths: dict[str, Path]) -> None:
         "LOCAL_WEB_ORIGIN": origin,
         "LOCAL_WEB_PORT": state["web_port"],
     }
+    if pip_index_url:
+        values["LOCAL_PIP_INDEX_URL"] = pip_index_url.rstrip("/")
+    # Compose interpolation reads the env file, not the driver's process
+    # environment; the cloud OCR overlay variables must be persisted here or
+    # the layered compose files fail closed on interpolation.
+    cloud_key_file = os.environ.get("A_ECO_CLOUD_OCR_KEY_FILE", "").strip()
+    if cloud_key_file:
+        values["A_ECO_CLOUD_OCR_KEY_FILE"] = cloud_key_file
+    report_llm = os.environ.get("A_ECO_REPORT_LLM", "").strip()
+    if report_llm:
+        values["A_ECO_REPORT_LLM"] = report_llm
+    for name in (
+        "A_ECO_CLOUD_OCR_PROVIDER",
+        "A_ECO_CLOUD_OCR_DIALECT",
+        "A_ECO_CLOUD_OCR_MODEL",
+    ):
+        cloud_value = os.environ.get(name, "").strip()
+        if cloud_value:
+            values[name] = cloud_value
     data = "".join(f"{key}={values[key]}\n" for key in sorted(values)).encode("utf-8")
     if paths["env"].exists():
         LC._atomic_replace(paths["env"], data)
     else:
         LC._exclusive_write(paths["env"], data)
+
+
+def _assert_ocr_runtime(paths: dict[str, Path]) -> None:
+    """Fail before stack mutation unless the locked ARM64 OCR image exists."""
+
+    architecture = _run(
+        [LC._docker(), "version", "--format", "{{.Server.Arch}}"],
+        paths=paths,
+        timeout=30,
+        check=False,
+    )
+    if (
+        architecture.returncode != 0
+        or architecture.stderr
+        or architecture.stdout.strip() not in {"arm64", "aarch64"}
+    ):
+        raise UatError("LOCAL_ANALYSIS_REPORT_OCR_ARCH_UNSUPPORTED")
+    image = _run(
+        [
+            LC._docker(),
+            "image",
+            "inspect",
+            "--format",
+            "{{.Id}}",
+            OCR_RUNTIME_IMAGE_ID,
+        ],
+        paths=paths,
+        timeout=30,
+        check=False,
+    )
+    if (
+        image.returncode != 0
+        or image.stderr
+        or image.stdout.strip() != OCR_RUNTIME_IMAGE_ID
+    ):
+        raise UatError("LOCAL_ANALYSIS_REPORT_OCR_IMAGE_MISSING")
 
 
 def _write_receipt(state: dict[str, object], paths: dict[str, Path]) -> None:
@@ -400,6 +508,7 @@ def _rewrite_host_bootstrap_dsn(state: dict[str, object], paths: dict[str, Path]
 
 
 def _start(state: dict[str, object], paths: dict[str, Path]) -> None:
+    _assert_ocr_runtime(paths)
     _compose(state, paths, "run", "--rm", "--no-deps", "secret-init", timeout=180)
     _compose(state, paths, "build", "migrator", "web", timeout=1800)
     _compose(
@@ -430,9 +539,12 @@ def _start(state: dict[str, object], paths: dict[str, Path]) -> None:
         "--wait",
         "--wait-timeout",
         "180",
+        "material-rag-ocr",
         "api",
         "worker",
         "dispatcher",
+        "ingestion-worker",
+        "report-worker",
         "web",
         timeout=240,
     )
@@ -442,6 +554,7 @@ def _pg_env(state: dict[str, object], paths: dict[str, Path]) -> dict[str, str]:
     return {
         "F1_LOCAL_ENGINEERING": "1",
         "F1_MATERIAL_ANALYSIS_REPORT_LOCAL": "1",
+        "F1_MATERIAL_QA_LOCAL_EXTRACTIVE": "1",
         "F1_PG_HOST": "127.0.0.1",
         "F1_PG_PORT": str(state["pg_port"]),
         "F1_PG_DATABASE": str(state["database"]),
@@ -455,7 +568,7 @@ def _pg_env(state: dict[str, object], paths: dict[str, Path]) -> dict[str, str]:
 
 def _seed_identities(state: dict[str, object], paths: dict[str, Path]) -> None:
     # local_seed.main() is frozen at f1_0014. This UAT migrator stops at
-    # f1_0017, so the same ensure_* helpers run on the host with that head.
+    # f1_0024, so the same ensure_* helpers run on the host with that head.
     from infra.f1 import local_seed
     from infra.f1.migrate_f1 import _bootstrap_dsn
 
@@ -470,7 +583,7 @@ def _seed_identities(state: dict[str, object], paths: dict[str, Path]) -> None:
                 "SELECT string_agg(version_num, ',' ORDER BY version_num) "
                 "FROM f1.alembic_version"
             ).fetchone()
-            if head is None or head[0] != "f1_0017":
+            if head is None or head[0] != "f1_0024":
                 raise UatError("LOCAL_ANALYSIS_REPORT_UAT_SEED_HEAD_MISMATCH")
             local_seed._ensure_enterprise(
                 connection, local_seed.ENTERPRISE_A, "Local Enterprise A", "LOCAL-A"
@@ -620,16 +733,22 @@ WORKFLOW_SUMMARY_KEYS = frozenset(
         "citation_count",
         "client_detail",
         "client_list",
+        "client_qa",
+        "client_services",
         "create_idempotent",
         "dedicated_c",
         "dedicated_n",
         "dedicated_v",
         "generation_draft",
         "generation_idempotent",
+        "health_null_after_publish",
+        "health_null_after_withdraw",
+        "health_snapshot_count",
         "hidden_after_withdraw",
         "mock_data",
         "provider_create",
         "publish",
+        "qa_citation_count",
         "section_count",
         "shared_match",
         "skipped",
@@ -698,10 +817,22 @@ def _workflow_supervisor(
                 "WHERE report.client_account_id=%s",
                 (fixture.CRM_ACCOUNT_ID,),
             ).fetchone()
+            health = connection.execute(
+                "SELECT count(*) "
+                "FROM f1.analysis_report_health_snapshot "
+                "WHERE client_account_id=%s",
+                (fixture.CRM_ACCOUNT_ID,),
+            ).fetchone()
         if reports is None or versions is None or int(reports[0]) != 1 or int(versions[0]) != 1:
             raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_SUPERVISOR_COUNT")
+        if (
+            health is None
+            or int(health[0]) != 0
+        ):
+            raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_HEALTH_COUNT")
         summary["create_idempotent"] = 1
         summary["generation_idempotent"] = 1
+        summary["health_snapshot_count"] = 0
     except UatError:
         raise
     except Exception as error:
@@ -715,22 +846,31 @@ def _workflow_expected(summary: dict[str, object]) -> None:
     citation = summary.get("citation_count")
     if not isinstance(citation, int) or citation < 2:
         raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_SUMMARY_INVALID")
+    qa_citation = summary.get("qa_citation_count")
+    if not isinstance(qa_citation, int) or qa_citation < 1:
+        raise UatError("LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_SUMMARY_INVALID")
     expected = {
         "approve": 1,
         "ark_calls": 0,
         "cdp_request_id_bound": 1,
         "client_detail": 1,
         "client_list": 1,
+        "client_qa": 1,
+        "client_services": 1,
         "create_idempotent": 1,
         "dedicated_c": 0,
         "dedicated_n": 0,
         "dedicated_v": 0,
         "generation_draft": 1,
         "generation_idempotent": 1,
+        "health_null_after_publish": 1,
+        "health_null_after_withdraw": 1,
+        "health_snapshot_count": 0,
         "hidden_after_withdraw": 1,
         "mock_data": 0,
         "provider_create": 1,
         "publish": 1,
+        "qa_citation_count": qa_citation,
         "section_count": 7,
         "shared_match": 1,
         "skipped": 0,

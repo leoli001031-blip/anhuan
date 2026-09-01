@@ -9,7 +9,8 @@ export interface SessionAccess {
 }
 
 export function homePathFor(role: ProductRole): string {
-  return role === "provider_admin" ? "/console/clients" : "/portal/qa";
+  // 客户正式首页是 /portal（由门户路由决定默认落点），不硬跳问答。
+  return role === "provider_admin" ? "/console/clients" : "/portal";
 }
 
 export function canAccessConsole(session: SessionAccessV1): boolean {

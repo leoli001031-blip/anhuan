@@ -1,6 +1,7 @@
 import { tenantFetch, ApiError } from "../../api";
 import { reasonCopy } from "./reasonCopy";
 import type {
+  AutoPipelineStatus,
   DocumentCollection,
   DocumentDetail,
   IngestionCapabilities,
@@ -262,6 +263,26 @@ export function getMaterialIntakeAnalysis(
       "/versions/" +
       encodeURIComponent(versionId) +
       "/material-intake",
+    { token, signal },
+  );
+}
+
+export function getAutoPipelineStatus(
+  token: string | null,
+  versionId: string,
+  clientAccountId?: string,
+  signal?: AbortSignal,
+): Promise<AutoPipelineStatus> {
+  const query = new URLSearchParams();
+  if (clientAccountId) query.set("client_account_id", clientAccountId);
+  const queryString = query.toString();
+  const suffix = queryString ? "?" + queryString : "";
+  return requestJson<AutoPipelineStatus>(
+    P3_INGESTION_BASE +
+      "/versions/" +
+      encodeURIComponent(versionId) +
+      "/auto-pipeline" +
+      suffix,
     { token, signal },
   );
 }

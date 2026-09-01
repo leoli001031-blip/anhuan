@@ -16,7 +16,7 @@ export default function ErrorState({
   const copy = ERROR_COPY[kind];
 
   return (
-    <div style={{ padding: "48px 0", textAlign: "center" }}>
+    <div className="error-state" role="status">
       <Typography.Title level={5} style={{ marginBottom: 8 }}>
         {copy.title}
       </Typography.Title>
