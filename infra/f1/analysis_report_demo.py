@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -42,6 +43,9 @@ OVERLAY_FILE = ROOT / "infra/f1/docker-compose.analysis-report-demo.yml"
 NO_OCR_OVERLAY_FILE = (
     ROOT / "infra/f1/docker-compose.analysis-report-no-ocr.yml"
 )
+CLOUD_OCR_OVERLAY_FILE = (
+    ROOT / "infra/f1/docker-compose.analysis-report-cloud-ocr.yml"
+)
 SCOPE = "analysis-report-demo"
 CONTROL_SCHEMA = "anhuan-analysis-report-demo-control-v1"
 WORKSPACE_SHA256 = hashlib.sha256(
@@ -50,6 +54,9 @@ WORKSPACE_SHA256 = hashlib.sha256(
 PROBE = WORKSPACE_SHA256[:12]
 NO_OCR_WORKSPACE_SHA256 = hashlib.sha256(
     f"{CONTROL_SCHEMA}\0{ROOT}\0{os.geteuid()}\0ocr-disabled".encode("utf-8")
+).hexdigest()
+CLOUD_OCR_WORKSPACE_SHA256 = hashlib.sha256(
+    f"{CONTROL_SCHEMA}\0{ROOT}\0{os.geteuid()}\0ocr-cloud".encode("utf-8")
 ).hexdigest()
 OCR_MODE_ENV = "A_ECO_ANALYSIS_REPORT_OCR_MODE"
 PROJECT_RE = re.compile(r"^anhuan-ar-demo-[0-9a-f]{12}\Z")
@@ -72,19 +79,42 @@ class DemoError(UatError):
     pass
 
 
-def _ocr_disabled() -> bool:
+def _ocr_mode() -> str:
     mode = os.environ.get(OCR_MODE_ENV, "required").strip().lower()
-    if mode in {"", "required"}:
-        return False
-    if mode == "disabled":
-        return True
-    raise DemoError("LOCAL_ANALYSIS_REPORT_OCR_MODE_INVALID")
+    if mode not in {"", "required", "disabled", "cloud"}:
+        raise DemoError("LOCAL_ANALYSIS_REPORT_OCR_MODE_INVALID")
+    return mode or "required"
+
+
+def _ocr_disabled() -> bool:
+    return _ocr_mode() == "disabled"
+
+
+def _assert_cloud_ocr_key_file() -> None:
+    """Cloud mode fails closed without an explicit 0600 host key file."""
+
+    raw = os.environ.get("A_ECO_CLOUD_OCR_KEY_FILE", "").strip()
+    path = Path(raw) if raw else None
+    if (
+        path is None
+        or not path.is_absolute()
+        or not path.is_file()
+        or path.is_symlink()
+    ):
+        raise DemoError("LOCAL_ANALYSIS_REPORT_CLOUD_OCR_KEY_FILE_INVALID")
+    info = path.stat()
+    if stat.S_IMODE(info.st_mode) != 0o600:
+        raise DemoError("LOCAL_ANALYSIS_REPORT_CLOUD_OCR_KEY_FILE_INVALID")
 
 
 def _identity() -> dict[str, object]:
-    workspace_sha256 = (
-        NO_OCR_WORKSPACE_SHA256 if _ocr_disabled() else WORKSPACE_SHA256
-    )
+    mode = _ocr_mode()
+    if mode == "disabled":
+        workspace_sha256 = NO_OCR_WORKSPACE_SHA256
+    elif mode == "cloud":
+        workspace_sha256 = CLOUD_OCR_WORKSPACE_SHA256
+    else:
+        workspace_sha256 = WORKSPACE_SHA256
     probe = workspace_sha256[:12]
     project_id = uuid.uuid5(
         uuid.NAMESPACE_URL, f"{CONTROL_SCHEMA}:{workspace_sha256}"
@@ -121,8 +151,12 @@ def _compose(state: dict[str, object], paths: dict[str, Path], *arguments: str, 
         "-f",
         str(OVERLAY_FILE),
     ]
-    if _ocr_disabled():
+    mode = _ocr_mode()
+    if mode in {"disabled", "cloud"}:
         command.extend(["-f", str(NO_OCR_OVERLAY_FILE)])
+    if mode == "cloud":
+        _assert_cloud_ocr_key_file()
+        command.extend(["-f", str(CLOUD_OCR_OVERLAY_FILE)])
     command.extend(
         [
             "--profile",
@@ -214,8 +248,8 @@ def _initialize() -> tuple[dict[str, object], dict[str, Path]]:
 
 
 def _start_stack(state: dict[str, object], paths: dict[str, Path]) -> None:
-    ocr_disabled = _ocr_disabled()
-    if not ocr_disabled:
+    ocr_disabled = _ocr_mode() in {"disabled", "cloud"}
+    if _ocr_mode() == "required":
         _assert_ocr_runtime(paths)
     _compose(state, paths, "run", "--rm", "--no-deps", "secret-init", timeout=180)
     _compose(state, paths, "build", "migrator", "web", timeout=1800)
@@ -554,7 +588,11 @@ def run_stop() -> dict[str, int]:
         # a stopped historical demo as a rollback target. Its project-specific
         # inventory remains the cleanup authority; the default ARM64 path keeps
         # the original global scope exclusivity check.
-        scoped = (0, 0, 0) if _ocr_disabled() else _scope_counts(paths)
+        scoped = (
+            (0, 0, 0)
+            if _ocr_mode() in {"disabled", "cloud"}
+            else _scope_counts(paths)
+        )
         if leftovers != (0, 0, 0) or scoped != (0, 0, 0):
             raise DemoError(
                 f"LOCAL_ANALYSIS_REPORT_DEMO_RESIDUAL C={leftovers[0]} V={leftovers[1]} N={leftovers[2]}"
