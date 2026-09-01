@@ -13,6 +13,7 @@ from ...auth import Tenant
 from ...database import session_scope
 from . import health, repository
 from .artifact import ReportArtifact, ReportArtifactInvalid, render_html_artifact
+from .pdf_artifact import render_pdf_artifact
 from .contracts import (
     CLIENT_CAPABILITIES,
     ENGINEERING_FLAG,
@@ -250,6 +251,17 @@ async def get_published(tenant: Tenant, report_id: uuid.UUID) -> dict[str, Any]:
     }
     _forbid_leaks(payload)
     return payload
+
+
+async def published_artifact_pdf(
+    tenant: Tenant, report_id: uuid.UUID
+) -> ReportArtifact:
+    """Deterministic PDF of one published version for the bound client."""
+
+    try:
+        return render_pdf_artifact(await get_published(tenant, report_id))
+    except ReportArtifactInvalid:
+        raise ReportNotFound() from None
 
 
 async def published_artifact(
@@ -638,6 +650,17 @@ async def version_detail(tenant: Tenant, version_id: uuid.UUID) -> dict[str, Any
     }
     _forbid_leaks(detail)
     return detail
+
+
+async def version_artifact_pdf(
+    tenant: Tenant, version_id: uuid.UUID
+) -> ReportArtifact:
+    """Deterministic PDF of one stored version for the provider console."""
+
+    try:
+        return render_pdf_artifact(await version_detail(tenant, version_id))
+    except ReportArtifactInvalid:
+        raise ReportNotFound() from None
 
 
 async def version_artifact(

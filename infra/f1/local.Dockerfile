@@ -9,11 +9,12 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     --index-url "$PIP_INDEX_URL" -r /app/requirements.txt
 
 COPY src/ /app/src/
+COPY assets/ /app/assets/
 COPY migrations/ /app/migrations/
 COPY alembic.ini /app/alembic.ini
 COPY infra/f1/ /app/infra/f1/
 COPY scripts/localctl /app/scripts/localctl
-RUN chmod -R a+rX /app/src /app/migrations /app/infra /app/scripts \
+RUN chmod -R a+rX /app/src /app/assets /app/migrations /app/infra /app/scripts \
     && chmod a+r /app/alembic.ini
 
 ENV PYTHONPATH=/app/src

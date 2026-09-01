@@ -21,9 +21,11 @@ from ...features.analysis_reports import (
     list_client_reports,
     list_published,
     published_artifact,
+    published_artifact_pdf,
     session_access,
     apply_transition,
     version_artifact,
+    version_artifact_pdf,
     version_detail,
     version_history,
 )
@@ -141,6 +143,17 @@ async def client_get_published(
         raise _map_error(exc) from None
 
 
+@router.get("/published/{report_id}/artifact.pdf")
+async def client_get_published_artifact_pdf(
+    report_id: uuid.UUID,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> Response:
+    try:
+        return _artifact_response(await published_artifact_pdf(tenant, report_id))
+    except Exception as extra:  # noqa: BLE001
+        raise _map_error(extra) from None
+
+
 @router.get("/published/{report_id}/artifact.html")
 async def client_get_published_artifact(
     report_id: uuid.UUID,
@@ -222,6 +235,17 @@ async def provider_version(
 ) -> dict:
     try:
         return await version_detail(tenant, version_id)
+    except Exception as extra:  # noqa: BLE001
+        raise _map_error(extra) from None
+
+
+@router.get("/versions/{version_id}/artifact.pdf")
+async def provider_version_artifact_pdf(
+    version_id: uuid.UUID,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> Response:
+    try:
+        return _artifact_response(await version_artifact_pdf(tenant, version_id))
     except Exception as extra:  # noqa: BLE001
         raise _map_error(extra) from None
 
