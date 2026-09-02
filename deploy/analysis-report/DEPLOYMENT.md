@@ -24,6 +24,19 @@ python -B deploy/analysis-report/local_candidate.py start
 
 该模式会追加 `infra/f1/docker-compose.analysis-report-no-ocr.yml`，把 OCR 服务移入未启用 profile，并让 API、dispatcher、普通 worker 与 ingestion worker 以 `F1_MATERIAL_OCR_ENABLED=false` 启动。它仍然保留 ClamAV、MinIO、Redis、PostgreSQL、Keycloak、入库调度和 native-text PDF 处理；扫描件或图片 PDF 必须 fail-closed 为 `OCR_REQUIRED`。默认未设置该变量时仍执行 ARM64 OCR 硬门，二者使用不同的 compose project/control identity，不得混用。
 
+云视觉 OCR 候选模式（amd64 扫描件链路）：
+
+```bash
+export A_ECO_ANALYSIS_REPORT_OCR_MODE=cloud
+export A_ECO_CLOUD_OCR_KEY_FILE=/path/to/0600-key-file   # 必须是绝对路径的 0600 常规文件
+export A_ECO_CLOUD_OCR_PROVIDER=glm_vision              # 或 ark_vision
+export A_ECO_CLOUD_OCR_DIALECT=anthropic               # glm 的 Coding Plan 额度走 anthropic 兼容端点；按量余额走 chat
+export A_ECO_CLOUD_OCR_MODEL=glm-5.3-flash
+# 可选：A_ECO_REPORT_LLM=1 同时启用 report-worker 的 GLM 报告生成（generator=glm_chat）
+```
+
+cloud 模式在 no-ocr 叠层之上再追加 `infra/f1/docker-compose.analysis-report-cloud-ocr.yml`：sidecar 保持禁用，云 OCR env 注入 api/worker/dispatcher/ingestion-worker/report-worker，宿主 key 文件只读 bind mount 到 `/run/secrets/cloud-ocr/api_key`；缺 key 文件时插值与启动均 fail-closed。适配器本身也是 fail-closed（key 必须 0600、模型必须显式、仅 https、禁重定向/代理），不可用时逐页 `OCR_UNAVAILABLE`，`OCR_REQUIRED` 语义不变。
+
 服务器已经存在旧 demo 时，不得把新代码覆盖到旧 checkout 后直接执行 `start`。应把当前候选解包到新的版本目录，由不同 project/volume 启动；受内存约束时只 `stop` 旧容器而不 `down`，新候选失败后重新启动旧 project。删除旧 volume、原地迁移旧数据库或覆盖旧目录都需要另行授权和备份证据。
 
 架构正确也不等于镜像已就绪。Compose 只接受锁定的本地内容 ID `sha256:02e6300f52463818de7ceaf447bfb0765e5f8466251177006131dec4e55a27f5`，并且 `pull_policy: never`。仓库不包含可直接在新机器上构建的 F0-E 基础镜像或最终镜像 tar；因此必须由授权发布人通过受保护的交付通道转移并 `docker load` 该 ARM64 镜像，然后精确核验：
