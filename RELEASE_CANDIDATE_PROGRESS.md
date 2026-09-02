@@ -164,3 +164,14 @@
 - **最终浏览器门**：web 重建后重跑 `analysis-report-workflow` 全流程 `LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_OK` exit 0、stderr 空——且本次 `generation_draft` 实际由 GLM 生成（report-worker LLM=1），即浏览器全流程 × LLM 报告组合验证通过（7 节、3 引用、提交/批准/发布/客户可见/撤回隐藏全绿）。
 - **演示数据清理**：删除无版本的 `empty` 报告（DELETE 1）；`failed` 版本保留为 fail-closed 终态可追溯的展示；业务级清理 API 仍为已知 P1 缺口（版本表 FK NO ACTION + 不可变触发器使在线删除按设计困难）。
 - 边界：PDF 为确定性服务端渲染（同一版本字节级一致），不是签章/防伪文件；OCR 与报告内容质量仍未人工评审。现役新增：`REPORT_PDF_ARTifact_PASSED / FINAL_BROWSER_GATE_LLM_PASSED / NOT_PRODUCTION`。
+
+## 2026-09-02 `neat-freak` 现役事实矩阵（知识收尾）
+
+- 代码 `verified-current`：全部开发线经 PR #1–#5 合入 `main`；F1 单一 head `f1_0024`；本地工作树零未提交/零未跟踪；部署树与 main 811 共同文件哈希零差异。
+- 运行态 `verified-current`：测试服务器 `anhuan-ar-demo-5508e0ac08b6` 11/11 healthy、readyz 全绿、`f1_0024` + 云 OCR + GLM 报告 + PDF 产物 live（loopback:60063+SSH 隧道）；旧 `f1_0020`/`f1_0023` 栈停止保留为回滚点。本机另有一个 2026-09-01 遗留的本地 demo 栈（11 容器运行约 30 小时，`24d95ebd000f`）——与远端演示重复，列入清场候选待确认。
+- 文档 `changed-and-verified`：README（移除 955a274/NOT_COMMITTED/NOT_DEPLOYED 时代声明，改为 main 已合入+服务器现状+cloud 模式入口）、TEST_HANDOFF（状态行、`f1_head=f1_0024`、`generator=evidence_local|glm_chat` 语义）、DEPLOYMENT（新增 cloud 模式段落：env/key/方言/叠层与 fail-closed 语义）。PROJECT_STATUS/AGENTS 在本日早前审计轮已同步。
+- 规则 `verified-current`：AGENTS.md 指向的权威文件全部存在；迁移 head/目标闭集与源码一致；无死引用。
+- 记忆 `generated-read-only/out-of-scope`：Codex 生成记忆未手改。
+- 工作区 `pending`（清场候选，未确认未删）：① 本机遗留 demo 栈 `24d95ebd000f`（停服）；② 后台 SSH 隧道（60063）；③ 3 个兄弟 worktree（backend-runtime-20260819 / analysis-report-backend-20260821 / analysis-report-integration-20260821，分支均已合入）；④ 4 条已合入本地分支；⑤ 本机 /tmp 中转物（main-tree.tgz、pdf-deps/、web-deploy*.tgz、anhuan-ocr-live/）；⑥ 服务器 incoming/ 中已解压的 f1_0024 源码包。复核现场全部保留，等待用户确认后清场。
+- 遗留 pending（非工作区）：服务器密码轮换、回滚演练、远端故障注入、业务级清理 API、公网入口/DNS/TLS、甲方自有 key 切换、OCR/报告内容人工评审——均已在 PROJECT_STATUS「下一步」登记。
+- 现役整体：`KNOWLEDGE_CLOSEOUT_DONE / CLEANUP_PREVIEW_PENDING_USER_CONFIRMATION / NOT_PRODUCTION`。

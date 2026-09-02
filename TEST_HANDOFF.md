@@ -2,7 +2,7 @@
 
 本目录只描述 **本机可重复启停** 的专属测试栈。
 2026-08-24 的组件级机器门证据保留为历史记录，不覆盖当前“无可信 scorer 则不评分”合同。
-当前状态：`TARGETED_TEST_PASSED / LOCAL_WORKFLOW_UAT_PASSED / HUMAN_VISUAL_ACCEPTANCE=NOT_PART_OF_THIS_RUN / NOT_COMMITTED / NOT_PUSHED / NOT_DEPLOYED / NOT_PRODUCTION`；其中 `NOT_DEPLOYED` 精确指当前 `f1_0023` 工作树。服务器上的历史 `f1_0020` demo 为 `REMOTE_OLD_DEMO_RUNNING / NOT_CURRENT_CANDIDATE / NOT_PRODUCTION`。
+当前状态：候选已全部合入 `main`（PR #1–#5）；测试服务器运行 `f1_0024` 云 OCR 栈（扫描件 GLM 识别 + GLM 报告 + PDF 产物，远端浏览器全流程 UAT 通过，loopback+SSH 隧道）；旧 `f1_0020`/`f1_0023` 栈停止保留为回滚点。本文件描述的本机专属栈仍从 `main` 起停，`NOT_PRODUCTION`。
 整体证据仍保留 `BLOCKED(HISTORICAL_OIDC_CALLBACK_CODE_OUTPUT / FORBIDDEN_OR_TRUE_COMMAND_USED)`；不得写 `RELEASE_CANDIDATE_LOCAL_PASSED`。
 不是共享 `anhuan-f1` 栈，不是远端预发，不是生产。
 
@@ -67,7 +67,7 @@ client_username=invitee
 
 `ready, f1_head, provider_login_ready, client_login_ready, workflow_seeded, generator, ark_calls, mock_data, shared_match`
 
-其中 `f1_head` 必须精确为 `f1_0023`；默认工程仍是 `f1_0014`，只有分析报告专属 migrator 到 0023。
+其中 `f1_head` 必须精确为 `f1_0024`；默认工程仍是 `f1_0014`，只有分析报告专属 migrator 到 0024。`generator` 在默认模式下为 `evidence_local`；report-worker 启用 `F1_MATERIAL_ANALYSIS_REPORT_LLM=1` 时为 `glm_chat`（云 OCR/LLM 的 env 与 key 文件约定见 DEPLOYMENT.md 的 cloud 模式）。
 
 停止后专属容器/卷/网络为 0，控制目录删除。失败也必须收口，禁止按前缀扫共享栈。
 
