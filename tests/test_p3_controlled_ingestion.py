@@ -830,3 +830,19 @@ class P3FormatScannerAndPreviewTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IngestionRetryBackoffTests(unittest.TestCase):
+    def test_ingestion_retry_backoff_caps_at_two_minutes(self) -> None:
+        from platform_foundation.f1.features.p3.delivery_worker import (
+            _retry_delay as delay,
+        )
+        # exponential growth early…
+        self.assertEqual(delay(30, 0), 30)
+        self.assertEqual(delay(30, 5), 32)
+        # …capped at 120s for the user-visible ingestion path…
+        self.assertEqual(delay(30, 9, cap_seconds=120), 120)
+        self.assertEqual(delay(30, 20, cap_seconds=120), 120)
+        # …while the default infrastructure cap stays at the exponential
+        # ceiling (2**11 = 2048s, below the legacy 3600s outer bound).
+        self.assertEqual(delay(30, 20), 2048)

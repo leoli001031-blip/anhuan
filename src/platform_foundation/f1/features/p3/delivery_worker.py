@@ -32,8 +32,17 @@ def _worker_name() -> str:
     return f"material-ingestion.{host[:80]}"
 
 
-def _retry_delay(base_seconds: int, attempt: int) -> int:
-    return min(3600, max(base_seconds, 2 ** min(max(attempt, 0), 11)))
+def _retry_delay(
+    base_seconds: int, attempt: int, *, cap_seconds: int = 3600
+) -> int:
+    """Bounded exponential backoff.
+
+    The ingestion path passes ``cap_seconds=120``: these retries sit behind a
+    user-visible upload, so a transient cloud-OCR/engine failure should retry
+    within two minutes instead of the infrastructure-grade one-hour cap used
+    by dispatcher-internal failures.
+    """
+    return min(cap_seconds, max(base_seconds, 2 ** min(max(attempt, 0), 11)))
 
 
 async def _manager_tenant(
@@ -121,7 +130,9 @@ async def _run_durable_ingestion(
             tenant, claim.document_version_id
         )
         if retry_seconds is not None:
-            retry_seconds = _retry_delay(retry_seconds, claim.attempt)
+            retry_seconds = _retry_delay(
+                retry_seconds, claim.attempt, cap_seconds=120
+            )
         finished = await finish_delivery(
             claim.id,
             claim.dispatch_token,
@@ -159,7 +170,9 @@ async def _run_durable_ingestion(
             outcome="retry" if retryable else "blocked",
             reason_code=reason,
             retry_seconds=(
-                _retry_delay(30, claim.attempt) if retryable else None
+                _retry_delay(30, claim.attempt, cap_seconds=120)
+                if retryable
+                else None
             ),
         )
     except Exception:
@@ -168,7 +181,7 @@ async def _run_durable_ingestion(
             claim.dispatch_token,
             outcome="retry",
             reason_code="MATERIAL_INGESTION_DELIVERY_FAILED",
-            retry_seconds=_retry_delay(30, claim.attempt),
+            retry_seconds=_retry_delay(30, claim.attempt, cap_seconds=120),
         )
 
 
