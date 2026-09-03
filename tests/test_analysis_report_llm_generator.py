@@ -252,6 +252,38 @@ class LlmReportGeneratorContracts(unittest.TestCase):
         else:
             self.fail("GenerationFailed expected")
 
+    def test_long_unit_excerpt_capped_at_db_contract(self) -> None:
+        env = _Env(self)
+        env.enable()
+        long_text = "整改建议正文。" * 200  # 1400 chars, well above 320
+        unit = _unit(2, 1, long_text)
+        frozen = FrozenSourceSet(
+            enterprise_id=uuid.uuid4(),
+            client_account_id=uuid.uuid4(),
+            template_id="enterprise-ehs-material-analysis-v1",
+            fingerprint_sha256="c" * 64,
+            sources=(
+                EligibleSource(
+                    document_version_id=uuid.uuid4(),
+                    document_name="长材料",
+                    version_number=1,
+                    source_sha256="a" * 64,
+                    scope_kind="client",
+                    page_number=1,
+                    evidence_units=(_unit(1, 1, _CLIENT_TEXT), unit),
+                ),
+            ),
+        )
+        transport, _ = _capture_transport(
+            _chat_envelope(_model_payload([1, 2]))
+        )
+        report = LlmReportGenerator(transport=transport).generate(frozen)
+        self.assertTrue(
+            all(len(c.excerpt) <= 320 for c in report.citations)
+        )
+        longest = max(report.citations, key=lambda c: len(c.excerpt))
+        self.assertEqual(longest.excerpt, long_text.strip()[:320])
+
     def test_too_few_citations_rejected(self) -> None:
         env = _Env(self)
         env.enable()
