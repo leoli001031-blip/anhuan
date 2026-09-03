@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App";
 import { registerInternalPwaServiceWorker } from "./features/p8";
+import "./auth/insecureContextCrypto";
 
 void registerInternalPwaServiceWorker().catch(() => undefined);
 
