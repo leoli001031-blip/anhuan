@@ -1954,7 +1954,7 @@ async def _ocr_backfill_lines(
                     text(
                         "SELECT unit.id,unit.ordinal,unit.parser_version,"
                         "unit.body_ciphertext,unit.body_sha256,unit.body_aad_sha256,"
-                        "record.id AS record_id,record.source_sha256,"
+                        "record.id AS record_id,unit.source_sha256,"
                         "record.knowledge_scope_id "
                         "FROM f1.material_rag_unit AS unit "
                         "JOIN f1.document_record AS record "
@@ -1996,6 +1996,9 @@ async def _ocr_backfill_lines(
     except Exception:
         # Backfill is best-effort presentation only; the strict preview
         # contract (empty lines) stays authoritative on any failure.
+        import logging
+
+        logging.getLogger(__name__).warning("P3_PREVIEW_OCR_BACKFILL_FAILED")
         return [], False
     if not parts:
         return [], False
