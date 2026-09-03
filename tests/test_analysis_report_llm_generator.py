@@ -206,7 +206,7 @@ class LlmReportGeneratorContracts(unittest.TestCase):
         self.assertTrue(url.endswith("/v1/messages"))
         self.assertEqual(headers.get("anthropic-version"), "2023-06-01")
         request = json.loads(body.decode("utf-8"))
-        self.assertEqual(request["max_tokens"], 4096)
+        self.assertEqual(request["max_tokens"], 16384)
         self.assertIn("证据块", request["messages"][0]["content"])
 
     def test_citation_out_of_whitelist_rejected(self) -> None:
