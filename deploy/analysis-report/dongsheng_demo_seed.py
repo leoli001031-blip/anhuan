@@ -256,9 +256,12 @@ def _load_state(control_dir: Path) -> tuple[dict[str, object], dict[str, Path]]:
 
 def _require_origin(origin: str, state: dict[str, object]) -> str:
     parsed = urllib.parse.urlsplit(origin)
+    # The control-dir binding identifies the demo stack; the origin only has
+    # to reach it over plain HTTP on the exact stack web port.  Host may be
+    # loopback or the public trial IP (the HTTP issuer follows the origin).
     if (
         parsed.scheme != "http"
-        or parsed.hostname != "127.0.0.1"
+        or parsed.hostname not in ("127.0.0.1", "124.220.1.182")
         or parsed.port != int(state["web_port"])
         or parsed.username is not None
         or parsed.password is not None
