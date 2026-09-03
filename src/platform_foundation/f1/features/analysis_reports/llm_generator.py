@@ -47,7 +47,10 @@ _CITATION_EXCERPT_CHARACTERS = 320
 _MODEL_BODY_CHARACTERS = 1_200
 _MAX_CITATIONS = 12
 _MIN_CITATIONS = 2
-_ANTHROPIC_MAX_TOKENS = 4096
+# Long real-world evidence (e.g. the Dongsheng sanitized summary) makes
+# five ~1200-char sections exceed 4k output tokens; truncation breaks the
+# strict-JSON contract and fails generation closed. 16k is generous headroom.
+_ANTHROPIC_MAX_TOKENS = 16384
 
 _USAGE_BOUNDARY_BODY = (
     "本报告由大语言模型基于已冻结的已发布材料文本辅助生成，"
