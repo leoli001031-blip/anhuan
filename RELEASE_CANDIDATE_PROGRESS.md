@@ -175,3 +175,11 @@
 - 工作区 `pending`（清场候选，未确认未删）：① 本机遗留 demo 栈 `24d95ebd000f`（停服）；② 后台 SSH 隧道（60063）；③ 3 个兄弟 worktree（backend-runtime-20260819 / analysis-report-backend-20260821 / analysis-report-integration-20260821，分支均已合入）；④ 4 条已合入本地分支；⑤ 本机 /tmp 中转物（main-tree.tgz、pdf-deps/、web-deploy*.tgz、anhuan-ocr-live/）；⑥ 服务器 incoming/ 中已解压的 f1_0024 源码包。复核现场全部保留，等待用户确认后清场。
 - 遗留 pending（非工作区）：服务器密码轮换、回滚演练、远端故障注入、业务级清理 API、公网入口/DNS/TLS、甲方自有 key 切换、OCR/报告内容人工评审——均已在 PROJECT_STATUS「下一步」登记。
 - 现役整体：`KNOWLEDGE_CLOSEOUT_DONE / CLEANUP_PREVIEW_PENDING_USER_CONFIRMATION / NOT_PRODUCTION`。
+
+## 2026-09-03 公网试用模式（方案 B）上线
+
+- 拓扑：web 以 `0.0.0.0:60063` 对公网监听（`docker-compose.analysis-report-trial-public.yml` 叠层，仅服务器侧）；`LOCAL_WEB_ORIGIN` 切 `http://124.220.1.182:60063`，provisioner 已把 redirect URIs/webOrigins 重写为公共源；Keycloak `--hostname-strict=false + --proxy-headers=xforwarded` 天然同源自适应；API 的 `F1_KEYCLOAK_ISSUER_URL` 随 env 切换。
+- 防火墙：腾讯轻量控制台添加 TCP 60063 放行（经用户授权 computer-use 操作）；Keycloak realm `sslRequired` 由 `external` 调为 `none`（kcadm，因为公网客户端 IP 经 XFF 透传后触发 HTTPS 硬性要求）——这是明文 HTTP 试用模式的必要放宽。
+- 验证（客户视角、绕过本机代理直连公网）：SPA 200、OIDC 授权入口 200（登录表单渲染）、双账号 password grant 200、业务 API（报告列表/已发布）200、readyz ready —— `PUBLIC_TRIAL_E2E: PASSED`。
+- 边界：明文 HTTP、合成演示账号、GLM 用个人 Coding Plan 额度（用户确认）；master 管理端点同样暴露（admin 为强随机 secret 卷内密码，仅限试用期）。**试用结束回退**：删除防火墙 60063 规则；`compose.env` 的 `LOCAL_WEB_ORIGIN` 改回 `http://127.0.0.1:60063` 并 `up -d web api` + rerun provisioner；`kcadm update realms/anhuan -s sslRequired=external`；移除 trial-public 叠层。
+- 现役标签新增：`PUBLIC_HTTP_TRIAL_LIVE / INSECURE_CHANNEL_TRIAL_ONLY / NOT_PRODUCTION`。
