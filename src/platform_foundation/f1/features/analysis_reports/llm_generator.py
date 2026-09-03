@@ -42,6 +42,8 @@ LLM_REPORT_MODE_ENV = "F1_MATERIAL_ANALYSIS_REPORT_LLM"
 LLM_REPORT_MODEL_ENV = "F1_MATERIAL_ANALYSIS_REPORT_LLM_MODEL"
 _MAX_EVIDENCE_BLOCKS = 60
 _EVIDENCE_TEXT_CHARACTERS = 400
+# f1_0017 caps citation excerpts at 320 characters.
+_CITATION_EXCERPT_CHARACTERS = 320
 _MODEL_BODY_CHARACTERS = 1_200
 _MAX_CITATIONS = 12
 _MIN_CITATIONS = 2
@@ -272,7 +274,7 @@ class LlmReportGenerator:
                 version_number=by_index[index].source.version_number,
                 page_number=by_index[index].unit.page_number,
                 excerpt=by_index[index].unit.text.strip()[
-                    :_EVIDENCE_TEXT_CHARACTERS
+                    :_CITATION_EXCERPT_CHARACTERS
                 ],
             )
             for index in indices
