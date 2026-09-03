@@ -1888,6 +1888,24 @@ async def read_preview_content_unit(
             raise IngestionError("P3_PREVIEW_INVALID", http_status=503) from error
         if any(len(line) > 80 for line in page.lines):
             raise IngestionError("P3_PREVIEW_INVALID", http_status=503)
+        lines = list(page.lines)
+        if not lines:
+            # Scanned pages ingest with empty pypdf text; after analysis the
+            # OCR'd text lives in the encrypted canonical units.  Surface it
+            # here so the preview reflects what the pipeline actually read.
+            lines, truncated = await _ocr_backfill_lines(
+                tenant, version_id, int(row.get("ordinal") or 0)
+            )
+            if lines:
+                return (
+                    "application/json",
+                    json.dumps(
+                        {"lines": lines, "truncated": truncated},
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8"),
+                )
         return (
             "application/json",
             json.dumps(
@@ -1902,6 +1920,89 @@ async def read_preview_content_unit(
     if not loaded.startswith(b"\xff\xd8") or not loaded.endswith(b"\xff\xd9"):
         raise IngestionError("P3_PREVIEW_INVALID", http_status=503)
     return "image/jpeg", loaded
+
+
+def _wrap_preview_lines(text: str, *, width: int = 80, max_lines: int = 400) -> tuple[list[str], bool]:
+    lines: list[str] = []
+    truncated = False
+    for raw_line in text.splitlines() or [text]:
+        stripped = raw_line.strip()
+        if not stripped:
+            continue
+        while stripped:
+            if len(lines) >= max_lines:
+                return lines, True
+            lines.append(stripped[:width])
+            stripped = stripped[width:]
+    return lines, truncated
+
+
+async def _ocr_backfill_lines(
+    tenant: Tenant, version_id: uuid.UUID, page_number: int
+) -> tuple[list[str], bool]:
+    """Return OCR'd page text from the indexed canonical units, if present."""
+    if page_number < 1:
+        return [], False
+    from ..material_rag.repository import decrypt_text, unit_aad_for_identity
+
+    try:
+        async with session_scope(
+            role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
+        ) as session:
+            rows = (
+                await session.execute(
+                    text(
+                        "SELECT unit.id,unit.ordinal,unit.parser_version,"
+                        "unit.body_ciphertext,unit.body_sha256,unit.body_aad_sha256,"
+                        "record.id AS record_id,unit.source_sha256,"
+                        "record.knowledge_scope_id "
+                        "FROM f1.material_rag_unit AS unit "
+                        "JOIN f1.document_record AS record "
+                        "ON record.enterprise_id=unit.enterprise_id "
+                        "AND record.id=unit.document_record_id "
+                        "WHERE unit.enterprise_id=:enterprise_id "
+                        "AND unit.document_version_id=:version_id "
+                        "AND unit.page_number=:page_number "
+                        "ORDER BY unit.ordinal,unit.id"
+                    ),
+                    {
+                        "enterprise_id": tenant.enterprise_id,
+                        "version_id": version_id,
+                        "page_number": page_number,
+                    },
+                )
+            ).mappings().all()
+            parts: list[str] = []
+            for row in rows:
+                aad = unit_aad_for_identity(
+                    enterprise_id=tenant.enterprise_id,
+                    knowledge_scope_id=row["knowledge_scope_id"],
+                    unit_id=row["id"],
+                    document_record_id=row["record_id"],
+                    document_version_id=version_id,
+                    source_sha256=str(row["source_sha256"]),
+                    page_number=page_number,
+                    ordinal=int(row["ordinal"]),
+                    parser_version=str(row["parser_version"]),
+                    body_sha256=str(row["body_sha256"]),
+                )
+                parts.append(
+                    decrypt_text(
+                        bytes(row["body_ciphertext"]),
+                        aad,
+                        str(row["body_aad_sha256"]),
+                    )
+                )
+    except Exception:
+        # Backfill is best-effort presentation only; the strict preview
+        # contract (empty lines) stays authoritative on any failure.
+        import logging
+
+        logging.getLogger(__name__).warning("P3_PREVIEW_OCR_BACKFILL_FAILED")
+        return [], False
+    if not parts:
+        return [], False
+    return _wrap_preview_lines("\n".join(parts))
 
 
 async def read_preview_grid_unit(

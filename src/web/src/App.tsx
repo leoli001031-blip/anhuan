@@ -2,7 +2,7 @@
 //   新双壳：客户门户 /portal/*、甲方运营台 /console/*（新导航只暴露这些入口）
 //   旧工程界面：原路径全部保留兼容，由 LegacyProviderGate 包住（仅 provider_admin 进入 Layout）
 //   login/callback/portal/console 不受该门包裹；角色门只控制体验，权限以后端为准。
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from "react";
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useNavigate } from "react-router-dom";
 import { Alert, ConfigProvider, Spin } from "antd";
 import zhCN from "antd/locale/zh_CN";
@@ -14,37 +14,37 @@ import ErrorState from "./components/ErrorState";
 import Login from "./pages/Login";
 import LegacyProviderGate from "./shells/LegacyProviderGate";
 import ConsoleLayout from "./shells/ConsoleLayout";
-import QaPage from "./pages/portal/QaPage";
-import PortalServicesPage from "./pages/portal/PortalServicesPage";
-import PortalHomePage from "./pages/portal/PortalHomePage";
-import PortalReportListPage from "./pages/portal/ReportListPage";
-import PortalReportDetailPage from "./pages/portal/ReportDetailPage";
-import HealthScorePage from "./pages/portal/HealthScorePage";
-import ClientsPage from "./pages/console/ClientsPage";
-import ClientOverviewPage from "./pages/console/ClientOverviewPage";
-import ClientMaterialsPage from "./pages/console/ClientMaterialsPage";
-import ClientServicesPage from "./pages/console/ClientServicesPage";
-import ClientServiceCalendarPage from "./pages/console/ClientServiceCalendarPage";
-import ClientRectificationPage from "./pages/console/ClientRectificationPage";
-import ClientReportsPage from "./pages/console/ClientReportsPage";
-import ReportWorkbenchPage from "./pages/console/ReportWorkbenchPage";
-import ExceptionsPage from "./pages/console/ExceptionsPage";
-import SharedMaterialsPage from "./pages/console/SharedMaterialsPage";
+const QaPage = lazy(() => import("./pages/portal/QaPage"));
+const PortalServicesPage = lazy(() => import("./pages/portal/PortalServicesPage"));
+const PortalHomePage = lazy(() => import("./pages/portal/PortalHomePage"));
+const PortalReportListPage = lazy(() => import("./pages/portal/ReportListPage"));
+const PortalReportDetailPage = lazy(() => import("./pages/portal/ReportDetailPage"));
+const HealthScorePage = lazy(() => import("./pages/portal/HealthScorePage"));
+const ClientsPage = lazy(() => import("./pages/console/ClientsPage"));
+const ClientOverviewPage = lazy(() => import("./pages/console/ClientOverviewPage"));
+const ClientMaterialsPage = lazy(() => import("./pages/console/ClientMaterialsPage"));
+const ClientServicesPage = lazy(() => import("./pages/console/ClientServicesPage"));
+const ClientServiceCalendarPage = lazy(() => import("./pages/console/ClientServiceCalendarPage"));
+const ClientRectificationPage = lazy(() => import("./pages/console/ClientRectificationPage"));
+const ClientReportsPage = lazy(() => import("./pages/console/ClientReportsPage"));
+const ReportWorkbenchPage = lazy(() => import("./pages/console/ReportWorkbenchPage"));
+const ExceptionsPage = lazy(() => import("./pages/console/ExceptionsPage"));
+const SharedMaterialsPage = lazy(() => import("./pages/console/SharedMaterialsPage"));
 import PortalLayout from "./shells/PortalLayout";
-import EnterpriseList from "./pages/EnterpriseList";
-import LegacyQAPage from "./pages/QAPage";
-import AuditPage from "./pages/AuditPage";
-import AdminPage from "./pages/AdminPage";
-import InvitePage from "./pages/InvitePage";
-import ServiceCaseList from "./pages/ServiceCaseList";
-import ServiceCaseCreate from "./pages/ServiceCaseCreate";
-import ServiceCaseDetail from "./pages/ServiceCaseDetail";
-import FindingWorkbenchPage from "./pages/FindingWorkbenchPage";
-import FindingCreate from "./pages/FindingCreate";
-import FindingDetail from "./pages/FindingDetail";
-import WorkbenchPage from "./pages/WorkbenchPage";
-import ServiceCalendarPage from "./pages/ServiceCalendarPage";
-import NotificationsPage from "./pages/NotificationsPage";
+const EnterpriseList = lazy(() => import("./pages/EnterpriseList"));
+const LegacyQAPage = lazy(() => import("./pages/QAPage"));
+const AuditPage = lazy(() => import("./pages/AuditPage"));
+const AdminPage = lazy(() => import("./pages/AdminPage"));
+const InvitePage = lazy(() => import("./pages/InvitePage"));
+const ServiceCaseList = lazy(() => import("./pages/ServiceCaseList"));
+const ServiceCaseCreate = lazy(() => import("./pages/ServiceCaseCreate"));
+const ServiceCaseDetail = lazy(() => import("./pages/ServiceCaseDetail"));
+const FindingWorkbenchPage = lazy(() => import("./pages/FindingWorkbenchPage"));
+const FindingCreate = lazy(() => import("./pages/FindingCreate"));
+const FindingDetail = lazy(() => import("./pages/FindingDetail"));
+const WorkbenchPage = lazy(() => import("./pages/WorkbenchPage"));
+const ServiceCalendarPage = lazy(() => import("./pages/ServiceCalendarPage"));
+const NotificationsPage = lazy(() => import("./pages/NotificationsPage"));
 import {
   DocumentDetailPage as ControlledDocumentDetailPage,
   DocumentLibraryPage as ControlledDocumentLibraryPage,
@@ -115,6 +115,7 @@ function RoleHome() {
 function AppRoutes() {
   const { isAuthenticated } = useAuth();
   return (
+    <Suspense fallback={<Spin style={{ display: "block", margin: "96px auto" }} />}>
     <Routes>
       <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <Login />} />
       <Route path="/callback" element={<Callback />} />
@@ -246,6 +247,7 @@ function AppRoutes() {
       </Route>
       <Route path="*" element={<Navigate to={isAuthenticated ? "/" : "/login"} replace />} />
     </Routes>
+    </Suspense>
   );
 }
 
