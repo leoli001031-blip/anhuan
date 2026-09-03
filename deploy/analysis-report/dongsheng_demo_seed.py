@@ -300,11 +300,7 @@ def _upsert_timeline_event(
         "INSERT INTO f1.business_timeline ("
         "id,enterprise_id,service_case_id,event_type,subject_type,subject_id,"
         "status,actor_user_id,occurred_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-        "ON CONFLICT (id) DO UPDATE SET "
-        "service_case_id=EXCLUDED.service_case_id,event_type=EXCLUDED.event_type,"
-        "subject_type=EXCLUDED.subject_type,subject_id=EXCLUDED.subject_id,"
-        "status=EXCLUDED.status,actor_user_id=EXCLUDED.actor_user_id,"
-        "occurred_at=EXCLUDED.occurred_at",
+        "ON CONFLICT (id) DO NOTHING",
         (
             _demo_id("timeline", slug),
             local_seed.ENTERPRISE_A,
@@ -424,13 +420,7 @@ def _seed_findings(
             "id,enterprise_id,service_case_id,site_visit_id,title,description,"
             "severity,responsible_user_id,due_at,status,created_by_user_id,"
             "created_at,updated_at) VALUES (%s,%s,%s,NULL,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
-            "ON CONFLICT (id) DO UPDATE SET "
-            "service_case_id=EXCLUDED.service_case_id,site_visit_id=NULL,"
-            "title=EXCLUDED.title,description=EXCLUDED.description,"
-            "severity=EXCLUDED.severity,responsible_user_id=EXCLUDED.responsible_user_id,"
-            "due_at=EXCLUDED.due_at,status=EXCLUDED.status,"
-            "created_by_user_id=EXCLUDED.created_by_user_id,"
-            "created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at",
+            "ON CONFLICT (id) DO NOTHING",
             (
                 finding_id,
                 local_seed.ENTERPRISE_A,
@@ -480,10 +470,7 @@ def _seed_findings(
                 "INSERT INTO f1.corrective_action ("
                 "id,enterprise_id,finding_id,revision,description,"
                 "submitted_by_user_id,submitted_at) VALUES (%s,%s,%s,1,%s,%s,%s) "
-                "ON CONFLICT (id) DO UPDATE SET finding_id=EXCLUDED.finding_id,"
-                "revision=EXCLUDED.revision,description=EXCLUDED.description,"
-                "submitted_by_user_id=EXCLUDED.submitted_by_user_id,"
-                "submitted_at=EXCLUDED.submitted_at",
+                "ON CONFLICT (id) DO NOTHING",
                 (
                     corrective_id,
                     local_seed.ENTERPRISE_A,
@@ -527,9 +514,7 @@ def _seed_findings(
                 "INSERT INTO f1.finding_review ("
                 "id,enterprise_id,finding_id,decision,comment,reviewer_user_id,created_at"
                 ") VALUES (%s,%s,%s,%s,%s,%s,%s) "
-                "ON CONFLICT (id) DO UPDATE SET finding_id=EXCLUDED.finding_id,"
-                "decision=EXCLUDED.decision,comment=EXCLUDED.comment,"
-                "reviewer_user_id=EXCLUDED.reviewer_user_id,created_at=EXCLUDED.created_at",
+                "ON CONFLICT (id) DO NOTHING",
                 (
                     review_id,
                     local_seed.ENTERPRISE_A,
@@ -568,12 +553,7 @@ def _seed_policy_sources(connection: Any, *, actor_id: uuid.UUID) -> None:
             "id,enterprise_id,title,publisher,source_type,jurisdiction,"
             "source_reference,status,created_by_user_id,created_at,updated_at"
             ") VALUES (%s,%s,%s,'A-Eco 测试服务组','internal','内部测试',%s,"
-            "'active',%s,%s,%s) ON CONFLICT (id) DO UPDATE SET "
-            "title=EXCLUDED.title,publisher=EXCLUDED.publisher,"
-            "source_type=EXCLUDED.source_type,jurisdiction=EXCLUDED.jurisdiction,"
-            "source_reference=EXCLUDED.source_reference,status=EXCLUDED.status,"
-            "created_by_user_id=EXCLUDED.created_by_user_id,"
-            "created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at",
+            "'active',%s,%s,%s) ON CONFLICT (id) DO NOTHING",
             (
                 source_id,
                 local_seed.ENTERPRISE_A,
@@ -584,6 +564,10 @@ def _seed_policy_sources(connection: Any, *, actor_id: uuid.UUID) -> None:
                 item["created_at"],
             ),
         )
+        # f1_0008's p5_guard_policy_version_update makes policy_version rows
+        # immutable once written (and re-updating them back to 'draft' is not
+        # a legal transition).  Seed insert-only: an existing row is left
+        # exactly as-is, so reruns stay idempotent without touching the guard.
         connection.execute(
             "INSERT INTO f1.policy_version ("
             "id,enterprise_id,source_id,version_number,title,domain,effect_status,"
@@ -593,15 +577,7 @@ def _seed_policy_sources(connection: Any, *, actor_id: uuid.UUID) -> None:
             "created_by_user_id,created_at,updated_at) VALUES ("
             "%s,%s,%s,1,%s,%s,'unknown',NULL,NULL,NULL,%s,NULL,NULL,'draft',"
             "NULL,NULL,NULL,NULL,NULL,NULL,%s,%s,%s) "
-            "ON CONFLICT (id) DO UPDATE SET source_id=EXCLUDED.source_id,"
-            "version_number=EXCLUDED.version_number,title=EXCLUDED.title,"
-            "domain=EXCLUDED.domain,effect_status=EXCLUDED.effect_status,"
-            "issued_on=NULL,effective_from=NULL,effective_to=NULL,summary=EXCLUDED.summary,"
-            "document_version_id=NULL,document_sha256=NULL,workflow_status='draft',"
-            "submitted_by_user_id=NULL,submitted_at=NULL,approved_by_user_id=NULL,"
-            "approved_at=NULL,published_by_user_id=NULL,published_at=NULL,"
-            "created_by_user_id=EXCLUDED.created_by_user_id,"
-            "created_at=EXCLUDED.created_at,updated_at=EXCLUDED.updated_at",
+            "ON CONFLICT (id) DO NOTHING",
             (
                 version_id,
                 local_seed.ENTERPRISE_A,
@@ -720,13 +696,7 @@ def _seed_database(
                 "id,enterprise_id,plant_id,client_account_id,title,description,"
                 "service_type,status,planned_start_at,planned_end_at,created_by_user_id"
                 ") VALUES (%s,%s,NULL,%s,%s,%s,%s,%s,%s,%s,%s) "
-                "ON CONFLICT (id) DO UPDATE SET plant_id=NULL,"
-                "client_account_id=EXCLUDED.client_account_id,title=EXCLUDED.title,"
-                "description=EXCLUDED.description,service_type=EXCLUDED.service_type,"
-                "status=EXCLUDED.status,planned_start_at=EXCLUDED.planned_start_at,"
-                "planned_end_at=EXCLUDED.planned_end_at,"
-                "created_by_user_id=EXCLUDED.created_by_user_id,"
-                "updated_at=statement_timestamp()",
+                "ON CONFLICT (id) DO NOTHING",
                 (
                     case_id, local_seed.ENTERPRISE_A, fixture.CRM_ACCOUNT_ID,
                     title, description, service_type, status, starts, ends, actor_id,
@@ -886,7 +856,7 @@ def _publish_report(
     current_version = report.get("current_version_id")
     if status == "published" and current_version:
         return report_id, uuid.UUID(str(current_version))
-    if status != "empty":
+    if status not in ("empty", "draft", "review_pending", "approved", "withdrawn"):
         raise RuntimeError(f"DONGSHENG_DEMO_REPORT_STATE_UNEXPECTED:{status}")
 
     generated = _request(
@@ -900,7 +870,7 @@ def _publish_report(
     )
     job_id = uuid.UUID(str(generated["job_id"]))
     version_id = uuid.UUID(str(generated["version_id"]))
-    deadline = time.monotonic() + 55
+    deadline = time.monotonic() + 240
     while True:
         job = _request(
             origin,
@@ -1019,6 +989,24 @@ def _seed_health(
             "WHERE enterprise_id=%s AND version_id=%s",
             (local_seed.ENTERPRISE_A, version_id),
         ).fetchone()
+        if existing is not None:
+            if str(existing[0]) != digest:
+                raise RuntimeError("DONGSHENG_DEMO_HEALTH_CONFLICT")
+            connection.commit()
+            return
+        # f1_0023's health-insert guard only accepts snapshots written while
+        # the published version is still "fresh" (updated_at >= now).  On a
+        # replay against an older published version the guard would reject a
+        # new snapshot, so skip instead of fabricating one.
+        fresh = connection.execute(
+            "SELECT 1 FROM f1.analysis_report_version "
+            "WHERE enterprise_id=%s AND id=%s "
+            "AND updated_at>=transaction_timestamp()",
+            (local_seed.ENTERPRISE_A, version_id),
+        ).fetchone()
+        if fresh is None:
+            connection.commit()
+            return
         if existing is None:
             connection.execute(
                 "INSERT INTO f1.analysis_report_health_snapshot ("
@@ -1062,20 +1050,26 @@ def _verify_portal(origin: str, paths: dict[str, Path]) -> dict[str, int]:
     report_items = reports.get("reports")
     service_items = services.get("items")
     snapshot = health_payload.get("snapshot")
+    # The health snapshot is only writable immediately after publishing
+    # (f1_0023 freshness guard).  On a replay the snapshot either already
+    # exists (kept) or is legitimately absent (skipped) — both are fine.
+    health_ok = snapshot is None or (
+        isinstance(snapshot, dict)
+        and snapshot.get("score") == 60
+        and snapshot.get("evidence_mode") == "evidence_local"
+    )
     if (
         not isinstance(report_items, list)
         or len(report_items) < 1
         or not isinstance(service_items, list)
         or len(service_items) < 4
-        or not isinstance(snapshot, dict)
-        or snapshot.get("score") != 60
-        or snapshot.get("evidence_mode") != "evidence_local"
+        or not health_ok
     ):
         raise RuntimeError("DONGSHENG_DEMO_PORTAL_VERIFY_FAILED")
     return {
         "published_reports": len(report_items),
         "service_cases": len(service_items),
-        "health_score": int(snapshot["score"]),
+        "health_score": int(snapshot["score"]) if isinstance(snapshot, dict) else None,
     }
 
 
