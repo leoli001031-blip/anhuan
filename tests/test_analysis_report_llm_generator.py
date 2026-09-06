@@ -99,6 +99,7 @@ class _Env:
             "F1_MATERIAL_CLOUD_OCR_API_KEY_FILE",
             "F1_MATERIAL_CLOUD_OCR_MODEL",
             "F1_MATERIAL_CLOUD_OCR_DIALECT",
+            "F1_MATERIAL_CLOUD_OCR_BASE_URL",
             "F1_MATERIAL_OCR_ENABLED",
         )
         self._original = {name: os.environ.get(name) for name in self._names}
@@ -291,6 +292,82 @@ class LlmReportGeneratorContracts(unittest.TestCase):
         with self.assertRaises(GenerationFailed) as raised:
             LlmReportGenerator(transport=transport).generate(_frozen())
         self.assertEqual(raised.exception.reason, "REPORT_LLM_OUTPUT_INVALID")
+
+
+
+class RoundRobinAllocationContracts(unittest.TestCase):
+    """P1 fix: no source may be entirely omitted by the budget."""
+
+    def _mk_unit(self, page, ordinal, tag):
+        text = f"{tag}——材料内容" * 8
+        return EvidenceUnit(
+            page_number=page, ordinal=ordinal,
+            body_sha256=hashlib.sha256(text.encode()).hexdigest(), text=text,
+        )
+
+    def _frozen(self, count_a, count_b, tag_a="材料甲", tag_b="材料乙"):
+        return FrozenSourceSet(
+            enterprise_id=uuid.uuid4(), client_account_id=uuid.uuid4(),
+            template_id="enterprise-ehs-material-analysis-v1",
+            fingerprint_sha256="c" * 64,
+            sources=(
+                EligibleSource(
+                    document_version_id=uuid.uuid4(), document_name=tag_a,
+                    version_number=1, source_sha256="a" * 64,
+                    scope_kind="client", page_number=1,
+                    evidence_units=tuple(self._mk_unit(i, 1, tag_a) for i in range(1, count_a + 1)),
+                ),
+                EligibleSource(
+                    document_version_id=uuid.uuid4(), document_name=tag_b,
+                    version_number=1, source_sha256="b" * 64,
+                    scope_kind="client", page_number=1,
+                    evidence_units=tuple(self._mk_unit(i, 1, tag_b) for i in range(1, count_b + 1)),
+                ),
+            ),
+        )
+
+    def test_second_source_represented_when_first_exhausts_budget(self) -> None:
+        from platform_foundation.f1.features.analysis_reports.llm_generator import (
+            _evidence_blocks, _MAX_EVIDENCE_BLOCKS,
+        )
+        frozen = self._frozen(count_a=_MAX_EVIDENCE_BLOCKS, count_b=3)
+        blocks = _evidence_blocks(frozen)
+        self.assertEqual(len(blocks), _MAX_EVIDENCE_BLOCKS)
+        names = {b.source.document_name for b in blocks}
+        self.assertIn("材料乙", names, "second source must not be omitted")
+        b_count = sum(1 for b in blocks if b.source.document_name == "材料乙")
+        self.assertEqual(b_count, 3)
+
+    def test_prompt_includes_later_source_text(self) -> None:
+        env = _Env(self)
+        env.enable()
+        frozen = self._frozen(count_a=70, count_b=3)
+        from platform_foundation.f1.features.analysis_reports.llm_generator import (
+            _evidence_blocks,
+        )
+        blocks = _evidence_blocks(frozen)
+        prompt_lines = [b.unit.text[:20] for b in blocks]
+        self.assertTrue(any("材料乙" in t for t in prompt_lines))
+
+
+
+class HttpsEnforcementContracts(unittest.TestCase):
+    """P2 fix: LLM report generation must refuse plaintext HTTP endpoints."""
+
+    def test_http_base_url_rejected_before_any_key_read(self) -> None:
+        env = _Env(self)
+        env.enable()
+        os.environ["F1_MATERIAL_CLOUD_OCR_BASE_URL"] = "http://example.invalid/api"
+        # capability check itself would reject this, but _llm_settings must
+        # also refuse — defense in depth before any secret leaves the process
+        with self.assertRaises(GenerationFailed) as raised:
+            from platform_foundation.f1.features.analysis_reports.llm_generator import (
+                _llm_settings,
+            )
+            _llm_settings()
+        self.assertEqual(
+            raised.exception.reason, "REPORT_LLM_CONFIGURATION_INVALID"
+        )
 
 
 if __name__ == "__main__":
