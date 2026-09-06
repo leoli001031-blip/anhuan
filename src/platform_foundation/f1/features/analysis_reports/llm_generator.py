@@ -89,16 +89,35 @@ class _EvidenceBlock:
 
 
 def _evidence_blocks(frozen: FrozenSourceSet) -> list[_EvidenceBlock]:
+    """Round-robin allocation so every source gets representation.
+
+    Iterating source-by-source means a large first document can exhaust
+    the budget before later sources contribute anything at all.  Instead,
+    take one unit from each source in turn, cycling until either all
+    units are consumed or the budget is reached.  This guarantees at
+    least ``budget // source_count`` units per source when every source
+    has enough material, while long documents still fill the remainder.
+    """
+    queues: list[list[EvidenceUnit]] = [
+        list(source.evidence_units) for source in frozen.sources
+    ]
     blocks: list[_EvidenceBlock] = []
-    for source in frozen.sources:
-        for unit in source.evidence_units:
+    active = [i for i, q in enumerate(queues) if q]
+    while blocks.__len__() < _MAX_EVIDENCE_BLOCKS and active:
+        next_active: list[int] = []
+        for qi in active:
             if len(blocks) >= _MAX_EVIDENCE_BLOCKS:
-                return blocks
+                break
+            unit = queues[qi].pop(0)
+            source = frozen.sources[qi]
             blocks.append(
                 _EvidenceBlock(
                     index=len(blocks) + 1, source=source, unit=unit
                 )
             )
+            if queues[qi]:
+                next_active.append(qi)
+        active = next_active
     return blocks
 
 
@@ -112,6 +131,11 @@ def _llm_settings() -> tuple[CloudOcrConfig, str]:
         or not config.configuration_valid
         or not model
     ):
+        raise GenerationFailed("REPORT_LLM_CONFIGURATION_INVALID")
+    # The report generator carries the API key and frozen evidence text
+    # in the request body; reject a plaintext HTTP endpoint before any
+    # secret is read or any material leaves the process.
+    if not config.base_url.startswith("https://"):
         raise GenerationFailed("REPORT_LLM_CONFIGURATION_INVALID")
     return config, model
 

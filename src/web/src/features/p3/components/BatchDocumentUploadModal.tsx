@@ -86,6 +86,7 @@ export default function BatchDocumentUploadModal({
   const [items, setItems] = useState<BatchItem[]>([]);
   const [uploading, setUploading] = useState(false);
   const activeControllers = useRef(new Set<AbortController>());
+  const batchEpoch = useRef(0);
 
   useEffect(() => {
     if (open) {
@@ -95,6 +96,7 @@ export default function BatchDocumentUploadModal({
     }
     for (const controller of activeControllers.current) controller.abort();
     activeControllers.current.clear();
+    batchEpoch.current += 1;
     setUploading(false);
   }, [open, defaultMaterialKind, knowledgeScope.client_account_id, knowledgeScope.kind]);
 
@@ -102,6 +104,7 @@ export default function BatchDocumentUploadModal({
     () => () => {
       for (const controller of activeControllers.current) controller.abort();
       activeControllers.current.clear();
+      batchEpoch.current += 1;
     },
     [],
   );
@@ -160,8 +163,10 @@ export default function BatchDocumentUploadModal({
     setUploading(true);
     let cursor = 0;
     let succeeded = 0;
+    const epoch = batchEpoch.current;
     const worker = async () => {
       while (cursor < uploadable.length) {
+        if (batchEpoch.current !== epoch) return;
         const item = uploadable[cursor];
         cursor += 1;
         updateItem(item.uid, {
@@ -181,6 +186,7 @@ export default function BatchDocumentUploadModal({
             item.declaredMaterialKind,
             knowledgeScope,
           );
+          if (batchEpoch.current !== epoch) return;
           succeeded += 1;
           updateItem(item.uid, {
             status: "succeeded",
@@ -189,7 +195,7 @@ export default function BatchDocumentUploadModal({
             versionId: document.latest_version?.id ?? null,
           });
         } catch (reason) {
-          if (!controller.signal.aborted) {
+          if (!controller.signal.aborted && batchEpoch.current === epoch) {
             updateItem(item.uid, {
               status: "failed",
               error: userFacingIngestionError(reason),

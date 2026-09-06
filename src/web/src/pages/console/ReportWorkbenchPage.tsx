@@ -149,7 +149,8 @@ export default function ReportWorkbenchPage() {
     return () => {
       active = false;
     };
-  }, [api, clientId, reportId, bound]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- nonce drives retry
+  }, [api, clientId, reportId, bound, nonce]);
 
   // 版本历史（绑定后才读取）
   useEffect(() => {
@@ -269,7 +270,14 @@ export default function ReportWorkbenchPage() {
     };
   }, [api, job, jobStorageKey, requestStorageKey, reportId, bound]);
 
-  const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  const refresh = useCallback(() => {
+    setNonce((n) => n + 1);
+    // A failed first load leaves listError set and bound=false; the
+    // ownership effect only runs when bound flips, so explicitly clear
+    // and re-trigger it here or the retry button does nothing.
+    setListError(null);
+    setBound(false);
+  }, []);
 
   const current = versions?.find((v) => v.version_id === selectedId) ?? null;
   const status = current?.status ?? (versions && versions.length === 0 ? "empty" : null);

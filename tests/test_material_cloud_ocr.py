@@ -577,5 +577,81 @@ class CloudOcrAnalyzerContracts(unittest.TestCase):
         self.assertEqual(str(raised.exception), "MATERIAL_OCR_ENGINE_INVALID")
 
 
+
+class CloudOcrMultiImagePageContracts(unittest.TestCase):
+    """P1 fix: every DCTDecode image on a page must reach the model."""
+
+    def _two_image_pdf(self) -> bytes:
+        jpeg_a = b"\xff\xd8\xff\xe0fake-jpeg-A" + b"A" * 200
+        jpeg_b = b"\xff\xd8\xff\xe0fake-jpeg-B" + b"B" * 200
+        objects = {
+            1: b"<< /Type /Catalog /Pages 2 0 R >>",
+            2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            3: (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1024 768] "
+                b"/Resources << /XObject << /ImA 4 0 R /ImB 5 0 R >> >> >>"),
+            4: (f"<< /Type /XObject /Subtype /Image /Width 800 /Height 600 "
+                f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode "
+                f"/Length {len(jpeg_a)} >>\nstream\n").encode() + jpeg_a + b"\nendstream",
+            5: (f"<< /Type /XObject /Subtype /Image /Width 400 /Height 300 "
+                f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode "
+                f"/Length {len(jpeg_b)} >>\nstream\n").encode() + jpeg_b + b"\nendstream",
+        }
+        out = bytearray(b"%PDF-1.7\n"); offs = {}
+        for n in sorted(objects):
+            offs[n] = len(out)
+            out.extend(f"{n} 0 obj\n".encode()); out.extend(objects[n]); out.extend(b"\nendobj\n")
+        x = len(out)
+        out.extend(b"xref\n0 6\n0000000000 65535 f \n")
+        for n in range(1, 6): out.extend(f"{offs[n]:010d} 00000 n \n".encode())
+        out.extend(f"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n".encode())
+        return bytes(out)
+
+    def test_both_images_sent_and_text_merged(self) -> None:
+        env = _Env(self)
+        env.enable()
+        source = self._two_image_pdf()
+        responses = [
+            json.dumps({"choices": [{"message": {"content": "A" * 30 + "图像A文本" * 5}}]}).encode(),
+            json.dumps({"choices": [{"message": {"content": "B" * 30 + "图像B附表" * 5}}]}).encode(),
+        ]
+        calls = []
+        def transport(url, headers, body, timeout):
+            calls.append(bytes(body))
+            return responses[len(calls) - 1] if len(calls) <= len(responses) else responses[-1]
+        results = cloud_ocr_pdf_pages(source, page_numbers=[1],
+            expected_sha256=hashlib.sha256(source).hexdigest(), transport=transport)
+        self.assertEqual(len(calls), 2, "both page images must be sent")
+        self.assertTrue(results[0].ocr_applied)
+        self.assertIn("图像A文本", results[0].text)
+        self.assertIn("图像B附表", results[0].text)
+        self.assertGreater(results[0].character_count, 40)
+
+    def test_single_image_page_unaffected(self) -> None:
+        env = _Env(self)
+        env.enable()
+        source = _scanned_pdf(b"\xff\xd8\xff\xd9single")
+        calls = []
+        def transport(url, headers, body, timeout):
+            calls.append(1)
+            return json.dumps({"choices": [{"message": {"content": _LONG_TEXT}}]}).encode()
+        results = cloud_ocr_pdf_pages(source, page_numbers=[1], transport=transport)
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(results[0].ocr_applied)
+
+    def test_second_image_failure_fails_closed(self) -> None:
+        env = _Env(self)
+        env.enable()
+        source = self._two_image_pdf()
+        def transport(url, headers, body, timeout):
+            if len(url) > 0 and transport.count < 1:
+                transport.count += 1
+                return json.dumps({"choices": [{"message": {"content": "A" * 60}}]}).encode()
+            raise OSError("network died")
+        transport.count = 0
+        results = cloud_ocr_pdf_pages(source, page_numbers=[1], transport=transport)
+        self.assertFalse(results[0].ocr_applied)
+        self.assertEqual(results[0].reason_code, "OCR_UNAVAILABLE")
+
+
 if __name__ == "__main__":
     unittest.main()

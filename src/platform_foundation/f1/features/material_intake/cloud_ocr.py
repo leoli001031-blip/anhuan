@@ -368,23 +368,25 @@ def _default_transport(
     return b"".join(chunks)
 
 
-def _largest_page_jpeg(reader: PdfReader, page: object) -> bytes | None:
-    """Return the page's largest DCTDecode image without decoding it.
+def _page_jpegs(reader: PdfReader, page: object) -> list[bytes]:
+    """Return every distinct DCTDecode image on the page, largest first.
 
     ``DCTDecode`` streams are JPEG bytes verbatim, so no imaging dependency is
     required.  Every other filter (Flate bitmaps, CCITT, JPX) is deliberately
     unsupported: those pages fail closed with ``OCR_UNAVAILABLE`` instead of
-    silently degrading.
+    silently degrading.  A page with no image XObjects at all also returns an
+    empty list so the caller fails closed rather than silently skipping.
     """
     try:
         resources = page["/Resources"]
         if resources is None:
-            return None
+            return []
         xobjects = resources.get("/XObject")
         if xobjects is None:
-            return None
-        best: bytes | None = None
-        best_area = 0
+            return []
+        found: list[tuple[int, bytes]] = []
+        seen_hashes: set[bytes] = set()
+        non_image_count = 0
         for reference in xobjects.values():
             image = (
                 reference.get_object()
@@ -393,6 +395,7 @@ def _largest_page_jpeg(reader: PdfReader, page: object) -> bytes | None:
             )
             try:
                 if image.get("/Subtype") != "/Image":
+                    non_image_count += 1
                     continue
                 filters = image.get("/Filter")
                 if isinstance(filters, list):
@@ -402,23 +405,29 @@ def _largest_page_jpeg(reader: PdfReader, page: object) -> bytes | None:
                 else:
                     normalized = (str(filters),)
                 if normalized != ("/DCTDecode",):
+                    non_image_count += 1
                     continue
                 width = int(image.get("/Width", 0))
                 height = int(image.get("/Height", 0))
                 if width <= 0 or height <= 0:
+                    non_image_count += 1
                     continue
                 data = image.get_data()
             except Exception:
+                non_image_count += 1
                 continue
             if not isinstance(data, bytes) or not 1 <= len(data) <= _MAX_PAGE_IMAGE_BYTES:
+                non_image_count += 1
                 continue
-            area = width * height
-            if area > best_area:
-                best_area = area
-                best = data
-        return best
+            digest = hashlib.sha256(data).digest()
+            if digest in seen_hashes:
+                continue
+            seen_hashes.add(digest)
+            found.append((width * height, data))
+        found.sort(key=lambda item: item[0], reverse=True)
+        return [data for _, data in found]
     except Exception:
-        return None
+        return []
 
 
 def _chat_response_text(raw: bytes, dialect: str = "chat") -> str:
@@ -623,59 +632,74 @@ def cloud_ocr_pdf_pages(
                 )
             )
             continue
-        image = _largest_page_jpeg(reader, reader.pages[page_number - 1])
+        images = _page_jpegs(reader, reader.pages[page_number - 1])
         result: OcrPageResult | None = None
-        if image is not None:
-            payload = _build_page_request(
-                dialect=active.dialect, model=active.model, image=image
-            )
-            try:
-                raw = active_transport(
-                    url,
-                    headers,
-                    payload,
-                    min(
-                        remaining,
-                        active.request_timeout_seconds,
-                    ),
+        if images:
+            texts: list[str] = []
+            total_characters = 0
+            ok = True
+            for image in images:
+                payload = _build_page_request(
+                    dialect=active.dialect, model=active.model, image=image
                 )
-                if not 1 <= len(raw) <= MAX_CLOUD_OCR_RESPONSE_BYTES:
-                    raise CloudOcrError("OCR_UNAVAILABLE")
-                text = _chat_response_text(raw, active.dialect)
-            except (CloudOcrError, HTTPError, URLError, OSError, ValueError):
-                result = None
-            else:
+                try:
+                    raw = active_transport(
+                        url,
+                        headers,
+                        payload,
+                        min(
+                            remaining,
+                            active.request_timeout_seconds,
+                        ),
+                    )
+                    if not 1 <= len(raw) <= MAX_CLOUD_OCR_RESPONSE_BYTES:
+                        raise CloudOcrError("OCR_UNAVAILABLE")
+                    text = _chat_response_text(raw, active.dialect)
+                except (CloudOcrError, HTTPError, URLError, OSError, ValueError):
+                    ok = False
+                finally:
+                    payload[:] = b"\0" * len(payload)
+                    payload.clear()
+                if not ok:
+                    break
                 characters = sum(
                     not character.isspace() for character in text
                 )
                 if characters > MAX_OCR_PAGE_TEXT_CHARACTERS:
-                    result = None
-                elif characters < 40:
-                    result = OcrPageResult(
-                        page_number=page_number,
-                        text=text,
-                        status="insufficient_text",
-                        reason_code="OCR_OUTPUT_INSUFFICIENT",
-                        ocr_applied=False,
-                        character_count=characters,
-                        parser_backend=CLOUD_OCR_PARSER_BACKEND,
-                    )
-                else:
-                    result = OcrPageResult(
-                        page_number=page_number,
-                        text=text,
-                        status="applied",
-                        reason_code="OCR_APPLIED",
-                        ocr_applied=True,
-                        character_count=characters,
-                        parser_backend=CLOUD_OCR_PARSER_BACKEND,
-                        source_unit_id=_source_unit_id(
-                            source_sha256, page_number, CLOUD_OCR_PARSER_BACKEND
-                        ),
-                    )
-            finally:
-                payload[:] = b"\0" * len(payload)
-                payload.clear()
+                    ok = False
+                    break
+                texts.append(text)
+                total_characters += characters
+                remaining = document_deadline - time.monotonic()
+                if remaining <= 0:
+                    ok = False
+                    break
+            if ok and total_characters >= 40:
+                combined = "\n".join(texts)
+                result = OcrPageResult(
+                    page_number=page_number,
+                    text=combined,
+                    status="applied",
+                    reason_code="OCR_APPLIED",
+                    ocr_applied=True,
+                    character_count=total_characters,
+                    parser_backend=CLOUD_OCR_PARSER_BACKEND,
+                    source_unit_id=_source_unit_id(
+                        source_sha256, page_number, CLOUD_OCR_PARSER_BACKEND
+                    ),
+                )
+            elif ok and total_characters < 40:
+                result = OcrPageResult(
+                    page_number=page_number,
+                    text="\n".join(texts),
+                    status="insufficient_text",
+                    reason_code="OCR_OUTPUT_INSUFFICIENT",
+                    ocr_applied=False,
+                    character_count=total_characters,
+                    parser_backend=CLOUD_OCR_PARSER_BACKEND,
+                )
+            # If not ok, result stays None and falls through to the
+            # fail-closed fallback below.
         if result is None:
             result = _cloud_fallback_result(
                 page_number,
