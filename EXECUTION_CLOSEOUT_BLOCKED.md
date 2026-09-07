@@ -6,9 +6,9 @@
 
 | # | 事项 | 需要什么 | 当前状态 |
 |---|---|---|---|
-| 1 | 真实模型质量验收（T4） | 专业人员对报告内容的人工评审结论 | 离线评测器与样本规范已实现；`OCR_ACCURACY_NOT_EVALUATED / CONTENT_QUALITY_NOT_HUMAN_REVIEWED` |
+| 1 | 真实模型质量验收（T4） | 专业人员对报告内容的人工评审结论 | 离线评测器框架部分就绪，完整独立预期清单未建立；`OCR_ACCURACY_NOT_EVALUATED / CONTENT_QUALITY_NOT_HUMAN_REVIEWED` |
 | 2 | 公网 HTTPS 入口（T5） | 域名、DNS、TLS 证书 | 预检配置模板已就绪；当前公网试用仍为明文 HTTP |
 | 3 | 服务器部署指纹核对（T5） | SSH 访问权限（已有）或控制台操作 | 未执行部署——本轮未获部署新授权；公网 readyz=200 不等于部署验收 |
 | 4 | 凭据轮换（T5） | 用户在控制台操作 | 未执行——用户明确暂缓 |
 | 5 | 真实客户资料验证（T1/T4） | 甲方提供脱敏或授权材料 | 使用合成数据完成本地验证 |
-| 6 | CI 真实运行（T7） | GitHub Actions runner | workflow 配置文件已提交；本地入口已可运行并验证会红会绿 |
+| 6 | CI 真实运行（T7） | GitHub Actions runner | `.github/workflows/` 目录尚未创建；本地入口已可运行但存在非零退出误判（已修复） |

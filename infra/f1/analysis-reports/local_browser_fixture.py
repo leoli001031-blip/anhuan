@@ -192,7 +192,7 @@ def _preflight_target_identity(
         "SELECT string_agg(version_num, ',' ORDER BY version_num), count(*) "
         "FROM f1.alembic_version"
     ).fetchone()
-    if head is None or tuple(head) != ("f1_0024", 1):
+    if head is None or tuple(head) != ("f1_0025", 1):
         raise RuntimeError("LOCAL_REPORT_FIXTURE_HEAD_MISMATCH")
 
 

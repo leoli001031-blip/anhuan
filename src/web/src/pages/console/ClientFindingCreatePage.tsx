@@ -2,7 +2,7 @@
 // 在客户工作区内选择该客户的服务事项并录入问题。
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { Alert, Button, Form, Input, Select, Spin, Typography, message } from "antd";
+import { Alert, Button, DatePicker, Form, Input, Select, Spin, Typography, message } from "antd";
 import { useAuth } from "../../auth/OidcProvider";
 import ErrorState from "../../components/ErrorState";
 import { listClientServiceCases, type ServiceCase } from "../../p2Api";
@@ -50,7 +50,8 @@ export default function ClientFindingCreatePage() {
     service_case_id: string;
     title: string;
     severity: string;
-    description?: string;
+    description: string;
+    due_at: { toISOString: () => string };
   }) => {
     setSubmitting(true);
     try {
@@ -58,9 +59,9 @@ export default function ClientFindingCreatePage() {
         service_case_id: values.service_case_id,
         title: values.title,
         severity: values.severity,
-        description: values.description ?? "",
+        description: values.description,
         responsible_user_id: null,
-        due_at: "",
+        due_at: values.due_at.toISOString(),
       });
       message.success("问题已创建");
       navigate(`/console/clients/${clientId}/rectification/${finding.id}`);
@@ -120,8 +121,19 @@ export default function ClientFindingCreatePage() {
               ))}
             </Select>
           </Form.Item>
-          <Form.Item name="description" label="详细描述">
-            <Input.TextArea rows={4} placeholder="问题的详细说明（可选）" />
+          <Form.Item
+            name="description"
+            label="详细描述"
+            rules={[{ required: true, message: "请输入问题描述" }]}
+          >
+            <Input.TextArea rows={4} placeholder="问题的详细说明" />
+          </Form.Item>
+          <Form.Item
+            name="due_at"
+            label="整改期限"
+            rules={[{ required: true, message: "请选择整改期限" }]}
+          >
+            <DatePicker showTime style={{ width: "100%" }} placeholder="选择整改截止时间" />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={submitting}>
             创建问题

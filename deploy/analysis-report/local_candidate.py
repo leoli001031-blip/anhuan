@@ -39,7 +39,7 @@ _EXPECTED_GENERATOR = (
 EXPECTED_STATUS = {
     "ark_calls": 0,
     "client_login_ready": 1,
-    "f1_head": "f1_0024",
+    "f1_head": "f1_0025",
     "generator": _EXPECTED_GENERATOR,
     "mock_data": 0,
     "provider_login_ready": 1,
