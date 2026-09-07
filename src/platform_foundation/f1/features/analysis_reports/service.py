@@ -1034,6 +1034,25 @@ async def archive_report(
                 "reason": reason,
             },
         )
+        # Same-transaction audit event: the insert guard re-authenticates the
+        # actor and proves the report row was archived in this transaction.
+        # Idempotent repeats (already archived) never reach this branch, so
+        # one logical operation yields exactly one event.
+        await session.execute(
+            text(
+                "INSERT INTO f1.analysis_report_management_event "
+                "(id, enterprise_id, report_id, actor_user_id, action, reason) "
+                "VALUES (:event_id, :enterprise_id, :report_id, :actor_id, "
+                "'report_archived', :reason)"
+            ),
+            {
+                "event_id": uuid.uuid4(),
+                "enterprise_id": tenant.enterprise_id,
+                "report_id": report_id,
+                "actor_id": actor_id,
+                "reason": reason,
+            },
+        )
         await session.commit()
     return {"report_id": str(report_id), "archived": True, "already_archived": False}
 
@@ -1067,6 +1086,28 @@ async def unarchive_report(
                 "WHERE enterprise_id=:enterprise_id AND id=:report_id"
             ),
             {"enterprise_id": tenant.enterprise_id, "report_id": report_id},
+        )
+        # Same-transaction audit event for the restore: the report-level marks
+        # are cleared, but who restored (and the earlier archive events) stay
+        # queryable in the immutable management-event stream.
+        actor_id = await repository.actor_user_id(
+            session, tenant.enterprise_id, tenant.sub
+        )
+        if actor_id is None:
+            raise ReportNotFound()
+        await session.execute(
+            text(
+                "INSERT INTO f1.analysis_report_management_event "
+                "(id, enterprise_id, report_id, actor_user_id, action) "
+                "VALUES (:event_id, :enterprise_id, :report_id, :actor_id, "
+                "'report_unarchived')"
+            ),
+            {
+                "event_id": uuid.uuid4(),
+                "enterprise_id": tenant.enterprise_id,
+                "report_id": report_id,
+                "actor_id": actor_id,
+            },
         )
         await session.commit()
     return {"report_id": str(report_id), "archived": False, "already_unarchived": False}

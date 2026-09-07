@@ -27,6 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "infra/f1/alembic/versions/f1_0025_report_soft_archive.py"
+MIGRATION_AUDIT = ROOT / "infra/f1/alembic/versions/f1_0026_report_management_audit.py"
 SERVICE = ROOT / "src/platform_foundation/f1/features/analysis_reports/service.py"
 REPOSITORY = ROOT / "src/platform_foundation/f1/features/analysis_reports/repository.py"
 ROUTER = ROOT / "src/platform_foundation/f1/api/routers/analysis_reports.py"
@@ -218,6 +219,100 @@ class RouterContracts(unittest.TestCase):
         self.assertIn("include_archived=include_archived", endpoint)
 
 
+class ManagementAuditMigrationContracts(unittest.TestCase):
+    """f1_0026: immutable archive/unarchive audit stream."""
+
+    def setUp(self) -> None:
+        self.source = _source(MIGRATION_AUDIT)
+
+    def test_insert_only_event_table_with_guard(self) -> None:
+        self.assertIn(
+            "CREATE TABLE f1.analysis_report_management_event",
+            self.source,
+        )
+        # Only SELECT + column-scoped INSERT are granted; no UPDATE/DELETE
+        # grant exists anywhere, making the trail immutable for f1_api.
+        self.assertIn(
+            "GRANT INSERT (id, enterprise_id, report_id, actor_user_id, ",
+            self.source,
+        )
+        self.assertIn('"ON f1.analysis_report_management_event TO f1_api"', self.source)
+        grants = _between(self.source, "GRANT SELECT ON", "CREATE FUNCTION")
+        self.assertNotIn("GRANT UPDATE", grants)
+        self.assertNotIn("GRANT DELETE", grants)
+        self.assertIn(
+            "CREATE TRIGGER analysis_report_management_insert_guard",
+            self.source,
+        )
+
+    def test_guard_binds_event_to_same_transaction_report_write(self) -> None:
+        guard = _between(
+            self.source,
+            "CREATE FUNCTION f1.guard_analysis_report_management_insert()",
+            "def downgrade()",
+        )
+        # Actor re-authentication + session enterprise binding.
+        self.assertIn("REPORT_MANAGEMENT_EVENT_ACTOR_INVALID", guard)
+        self.assertIn("current_setting('f1.enterprise_id',true)", guard)
+        # Same-transaction proof (same technique as the version audit guard).
+        self.assertIn("report.updated_at>=transaction_timestamp()", guard)
+        # report_archived must match the archived_by/reason actually written.
+        self.assertIn("report.archived_reason IS NOT DISTINCT FROM NEW.reason", guard)
+        # report_unarchived carries no reason and requires the mark cleared.
+        self.assertIn("NEW.reason IS NOT NULL", guard)
+        # Actions are a closed set.
+        self.assertIn("'report_archived'", self.source)
+        self.assertIn("'report_unarchived'", self.source)
+
+    def test_rls_forced_with_provider_admin_policies(self) -> None:
+        self.assertIn(
+            '"ALTER TABLE f1.analysis_report_management_event "',
+            self.source,
+        )
+        self.assertIn('"ENABLE ROW LEVEL SECURITY"', self.source)
+        self.assertIn('"FORCE ROW LEVEL SECURITY"', self.source)
+        self.assertIn(
+            "CREATE POLICY analysis_report_management_event_insert",
+            self.source,
+        )
+
+    def test_migration_is_linear_head_after_0025(self) -> None:
+        self.assertIn('revision: str = "f1_0026"', self.source)
+        self.assertIn('down_revision: str | None = "f1_0025"', self.source)
+
+
+class ArchiveAuditServiceContracts(unittest.TestCase):
+    def setUp(self) -> None:
+        self.source = _source(SERVICE)
+
+    def test_archive_writes_audit_event_in_same_transaction(self) -> None:
+        body = _between(
+            self.source, "async def archive_report(", "async def unarchive_report("
+        )
+        update = body.index("UPDATE f1.analysis_report SET")
+        event = body.index("INSERT INTO f1.analysis_report_management_event")
+        commit = body.index("await session.commit()")
+        self.assertLess(update, event)
+        self.assertLess(event, commit)
+        self.assertIn("'report_archived'", body)
+        # The idempotent early return must stay BEFORE the update/event pair,
+        # so a repeated archive never duplicates the audit event.
+        early = body.index("already_archived")
+        self.assertLess(early, update)
+
+    def test_unarchive_writes_audit_event_in_same_transaction(self) -> None:
+        body = self.source.split("async def unarchive_report(", 1)[1]
+        update = body.index("UPDATE f1.analysis_report SET")
+        event = body.index("INSERT INTO f1.analysis_report_management_event")
+        commit = body.index("await session.commit()")
+        self.assertLess(update, event)
+        self.assertLess(event, commit)
+        self.assertIn("'report_unarchived'", body)
+        early = body.index("already_unarchived")
+        self.assertLess(early, update)
+
+
+
 class FindingDetailLifecycleContracts(unittest.TestCase):
     """Stale submissions must not clear the next client's form or loading."""
 
@@ -298,6 +393,40 @@ class ClientReportsPageContracts(unittest.TestCase):
         self.assertIn("maxLength={500}", source)
         # Archived rows never link into the workbench.
         self.assertIn("{r.archived_at ? (", source)
+
+    def test_page_binds_rows_targets_and_actions_to_client_context(self) -> None:
+        # Sixth-review finding: a stale archive modal / stale rows must not
+        # operate on the previous client's reports after a route switch.
+        source = _source(CLIENT_REPORTS_PAGE)
+        reset = _between(
+            source,
+            "// 切客户立即清空客户绑定的瞬时状态",
+            "}, [clientId]);",
+        )
+        for setter in (
+            "setRows(null)",
+            "setArchiveTarget(null)",
+            'setArchiveReason("")',
+            "setActionReportId(null)",
+            "createRequestId.current = null",
+        ):
+            self.assertIn(setter, reset)
+        # Context epoch increments on switch/unmount only.
+        self.assertIn("const contextEpoch = useRef(0);", source)
+        self.assertIn("++contextEpoch.current;", source)
+        # Pre-submit ownership check: no write request may leave a dead target.
+        submit = _between(source, "const submitArchive = async () => {", "const restore = async")
+        self.assertIn(
+            "if (contextEpoch.current !== targetEpoch.current) {", submit
+        )
+        precheck = submit.index("contextEpoch.current !== targetEpoch.current")
+        api_call = submit.index("api.archiveReport(")
+        self.assertLess(precheck, api_call)
+        # List responses only land on the context that fetched them.
+        listing = _between(
+            source, "useEffect(() => {", "}, [api, clientId, nonce, showArchived];"
+        )
+        self.assertIn("contextEpoch.current === epoch", listing)
 
 
 class FrontendAdapterContracts(unittest.TestCase):

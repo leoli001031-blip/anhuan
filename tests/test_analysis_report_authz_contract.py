@@ -212,7 +212,7 @@ class AnalysisReportMigratorCatalogContracts(unittest.TestCase):
         self.assertEqual(len(expected), 47)
         self.assertEqual(len(set(expected)), 47)
         source = _source(MIGRATOR)
-        self.assertIn('"f1_0025"', source)
+        self.assertIn('"f1_0026"', source)
         self.assertIn("F1_ANALYSIS_REPORT_MIGRATE_TARGET", source)
         self.assertNotIn("local_migrate.P2_P7_TABLES", source)
         self.assertIn("relforcerowsecurity", source)

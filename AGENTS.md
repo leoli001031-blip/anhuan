@@ -13,7 +13,7 @@
 ## 修改边界
 
 - 修改前检查 `git status --short --branch` 和 `git worktree list`，保留其他 worktree 的用户改动。
-- Alembic 只允许一条线性源码 head，当前为 `f1_0025`；`migrate_f1` 目标闭集为 `f1_0014..f1_0025`。默认工程/verify/seed/backup 仍锁 `f1_0014 / 35`，material-RAG 专属目标为 `f1_0016`，只有 analysis-report 专属 migrator 请求 `f1_0025`。不得把专属目标写回默认栈；分析报告远端迁移只能在精确 `f1_0017` 的 pre-0023 备份点上线性前向到 `f1_0025`，失败走恢复式回滚，不做 downgrade。`f1_0025` 的 analysis_report guard 为三分支（归档/恢复/业务）：已归档或恢复中的报告仅允许归档列变化，混入业务字段即拒；归档状态下 submit/return/approve/publish 与两条 generate 派发路径（新请求 + 精确请求恢复/重投）均在报告行锁下拒绝（withdraw 例外为契约行为）。
+- Alembic 只允许一条线性源码 head，当前为 `f1_0026`；`migrate_f1` 目标闭集为 `f1_0014..f1_0026`。默认工程/verify/seed/backup 仍锁 `f1_0014 / 35`，material-RAG 专属目标为 `f1_0016`，只有 analysis-report 专属 migrator 请求 `f1_0026`。不得把专属目标写回默认栈；分析报告远端迁移只能在精确 `f1_0017` 的 pre-0023 备份点上线性前向到 `f1_0026`，失败走恢复式回滚，不做 downgrade。`f1_0025` 的 analysis_report guard 为三分支（归档/恢复/业务）：已归档或恢复中的报告仅允许归档列变化，混入业务字段即拒；归档状态下 submit/return/approve/publish 与两条 generate 派发路径（新请求 + 精确请求恢复/重投）均在报告行锁下拒绝（withdraw 例外为契约行为）。`f1_0026` 的 `analysis_report_management_event` 是归档/恢复的只插审计流（f1_api 无 UPDATE/DELETE 权限），事件插入 guard 要求与报告行更新同事务（`report.updated_at>=transaction_timestamp()`）。
 - 复用现有租户上下文和 RLS；跨租户详情返回 404、集合零行；关键状态变化与 timeline/audit 同事务。
 - 不修改历史 F0/F1 证据、REJECTED 批次或冻结原件，不清理共享数据库、对象、卷、容器或 secret 目录。
 - 未经明确授权不 commit、push、deploy、删除文件或写生产。
