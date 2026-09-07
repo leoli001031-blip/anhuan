@@ -3,6 +3,12 @@
 Soft archive is an internal management attribute, not a publication state.
 Archiving a published report requires explicit withdrawal first.  Recovery
 does not auto-publish.  Versions, citations, and audit trails are preserved.
+
+The guard enforces archived-as-precondition: once archived, no business
+write (version pointer advance, visibility change, generic update) is
+allowed — only archive/unarchive column changes. This prevents the
+archive → generate → publish bypass that was possible when archive checks
+lived in a separate branch after version/visibility branches returned early.
 """
 from __future__ import annotations
 
@@ -41,18 +47,10 @@ def upgrade() -> None:
         "ADD CONSTRAINT analysis_report_archived_reason_ck "
         "CHECK (archived_reason IS NULL OR char_length(archived_reason) BETWEEN 1 AND 500)"
     )
-    # f1_0023 revoked table-level sensitive DML and granted only specific
-    # columns to f1_api.  Soft-archive adds three more management columns;
-    # grant UPDATE on exactly those columns, not the whole table.
     op.execute(
         "GRANT UPDATE (archived_at, archived_by_user_id, archived_reason) "
         "ON f1.analysis_report TO f1_api"
     )
-    # The f1_0023 guard fall-through requires a published version for any
-    # update that doesn't change version/visibility — but archive targets
-    # exactly the non-published reports.  Add an archive-column branch
-    # before that fall-through that allows archive/unarchive when no
-    # version is in an active or published state.
     op.execute(
         """
         CREATE OR REPLACE FUNCTION f1.guard_analysis_report_write()
@@ -93,6 +91,39 @@ def upgrade() -> None:
             RAISE EXCEPTION 'ANALYSIS_REPORT_IDENTITY_IMMUTABLE';
           END IF;
 
+          -- ARCHIVED-AS-PRECONDITION: placed before all business branches
+          -- so that version-pointer/visibility/generic updates on an
+          -- archived report are rejected regardless of which branch they
+          -- would otherwise match.  Only archive-column changes are
+          -- allowed on archived rows.
+          IF NEW.archived_at IS NOT NULL THEN
+            IF NEW.current_version_id IS DISTINCT FROM OLD.current_version_id
+               OR NEW.current_version_no IS DISTINCT FROM OLD.current_version_no
+               OR NEW.client_visible IS DISTINCT FROM OLD.client_visible THEN
+              RAISE EXCEPTION 'ANALYSIS_REPORT_ARCHIVED_IMMUTABLE';
+            END IF;
+            IF NEW.archived_by_user_id IS NOT NULL
+               AND NEW.archived_by_user_id <> v_actor_id THEN
+              RAISE EXCEPTION 'ANALYSIS_REPORT_ARCHIVE_ACTOR_INVALID';
+            END IF;
+            IF NEW.archived_at IS DISTINCT FROM OLD.archived_at
+               OR NEW.archived_by_user_id IS DISTINCT FROM OLD.archived_by_user_id
+               OR NEW.archived_reason IS DISTINCT FROM OLD.archived_reason THEN
+              IF EXISTS (
+                SELECT 1 FROM f1.analysis_report_version AS version
+                WHERE version.enterprise_id=NEW.enterprise_id
+                  AND version.report_id=NEW.id
+                  AND version.status IN
+                  ('queued','generating','review_pending','approved','published')
+              ) THEN
+                RAISE EXCEPTION 'ANALYSIS_REPORT_ARCHIVE_ACTIVE';
+              END IF;
+            END IF;
+            RETURN NEW;
+          END IF;
+
+          -- Report is NOT archived (or is being unarchived): business
+          -- writes follow the original f1_0023 rules below.
           IF NEW.current_version_id IS DISTINCT FROM OLD.current_version_id THEN
             IF NEW.current_version_no<>OLD.current_version_no+1
                OR NEW.client_visible IS DISTINCT FROM OLD.client_visible
@@ -129,27 +160,6 @@ def upgrade() -> None:
             END IF;
             RETURN NEW;
           END IF;
-
-          -- Soft-archive branch: only archive columns changed
-          IF NEW.archived_at IS DISTINCT FROM OLD.archived_at
-             OR NEW.archived_by_user_id IS DISTINCT FROM OLD.archived_by_user_id
-             OR NEW.archived_reason IS DISTINCT FROM OLD.archived_reason THEN
-            IF NEW.archived_by_user_id IS NOT NULL
-               AND NEW.archived_by_user_id <> v_actor_id THEN
-              RAISE EXCEPTION 'ANALYSIS_REPORT_ARCHIVE_ACTOR_INVALID';
-            END IF;
-            IF EXISTS (
-              SELECT 1 FROM f1.analysis_report_version AS version
-              WHERE version.enterprise_id=NEW.enterprise_id
-                AND version.report_id=NEW.id
-                AND version.status IN
-                ('generating','review_pending','approved','published')
-            ) THEN
-              RAISE EXCEPTION 'ANALYSIS_REPORT_ARCHIVE_ACTIVE';
-            END IF;
-            RETURN NEW;
-          END IF;
-
           IF NEW.current_version_id IS NULL OR NOT EXISTS (
             SELECT 1 FROM f1.analysis_report_version AS version
             WHERE version.enterprise_id=NEW.enterprise_id

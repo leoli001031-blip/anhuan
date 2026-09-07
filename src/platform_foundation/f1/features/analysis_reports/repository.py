@@ -301,7 +301,8 @@ async def lock_report_for_generation(
             text(
                 "SELECT report.id, report.enterprise_id, report.client_account_id, "
                 "report.current_version_id, report.current_version_no, "
-                "report.updated_at, version.status AS current_status, "
+                "report.updated_at, report.archived_at, "
+                "version.status AS current_status, "
                 "version.source_fingerprint_sha256 AS current_source_fingerprint "
                 "FROM f1.analysis_report AS report "
                 "LEFT JOIN f1.analysis_report_version AS version "

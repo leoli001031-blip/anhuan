@@ -420,6 +420,24 @@ async def _resume_generation(
     return payload
 
 
+async def _check_not_archived(
+    session: AsyncSession, enterprise_id: uuid.UUID, report_id: uuid.UUID
+) -> None:
+    row = (
+        await session.execute(
+            text(
+                "SELECT archived_at FROM f1.analysis_report "
+                "WHERE enterprise_id=:enterprise_id AND id=:report_id"
+            ),
+            {"enterprise_id": enterprise_id, "report_id": report_id},
+        )
+    ).first()
+    if row is None:
+        raise ReportNotFound()
+    if row.archived_at is not None:
+        raise ReportTransitionInvalid()
+
+
 async def generate_report(
     tenant: Tenant,
     client_account_id: uuid.UUID,
@@ -477,6 +495,8 @@ async def generate_report(
                 or locked_report["client_account_id"] != client_account_id
             ):
                 raise ReportNotFound()
+            if locked_report.get("archived_at") is not None:
+                raise ReportTransitionInvalid()
             # Recheck after taking the report lock so concurrent exact requests
             # preserve idempotency and different request ids cannot duplicate a
             # deterministic failure for the same source fingerprint.
@@ -963,7 +983,7 @@ async def archive_report(
                 text(
                     "SELECT 1 FROM f1.analysis_report_version "
                     "WHERE enterprise_id=:enterprise_id AND report_id=:report_id "
-                    "AND status IN ('generating','review_pending','approved') LIMIT 1"
+                    "AND status IN ('queued','generating','review_pending','approved','published') LIMIT 1"
                 ),
                 {"enterprise_id": tenant.enterprise_id, "report_id": report_id},
             )

@@ -98,16 +98,27 @@ export default function ClientFindingDetailPage() {
 
   const refreshEpoch = useRef(0);
 
+  // Any route/context change increments the epoch, invalidating all in-flight
+  // reads and actions from the previous clientId/findingId. Stale responses
+  // compare against a dead epoch and are dropped before touching state.
+  useEffect(() => {
+    ++refreshEpoch.current;
+    return () => {
+      ++refreshEpoch.current;
+    };
+  }, [clientId, findingId]);
+
   const refresh = useCallback(async () => {
     if (!findingId || !clientId) return;
+    const epoch = ++refreshEpoch.current;
     setLoading(true);
     setError(null);
     try {
       const token = getAccessToken();
       if (!token) return;
       const f = await getFinding(token, findingId);
-      // 客户归属校验：finding 所属的 service case 必须属于当前客户
       const cases = await listClientServiceCases(token, clientId);
+      if (refreshEpoch.current !== epoch) return;
       const caseIds = new Set(cases.items.map((c: ServiceCase) => c.id));
       if (!caseIds.has(f.service_case_id)) {
         setError(new Error("该问题不属于当前客户"));
@@ -117,15 +128,19 @@ export default function ClientFindingDetailPage() {
       setFinding(f);
       setServiceCases(cases.items);
     } catch (e) {
+      if (refreshEpoch.current !== epoch) return;
       setError(e);
       setFinding(null);
     } finally {
-      setLoading(false);
+      if (refreshEpoch.current === epoch) setLoading(false);
     }
   }, [findingId, clientId, getAccessToken]);
 
   useEffect(() => {
     void refresh();
+    return () => {
+      ++refreshEpoch.current;
+    };
   }, [refresh]);
 
   const runAction = async (
@@ -146,7 +161,7 @@ export default function ClientFindingDetailPage() {
       setError(reason);
       message.error(String(reason));
     } finally {
-      if (refreshEpoch.current === epoch) setActionLoading(null);
+      setActionLoading(null);
     }
   };
 
