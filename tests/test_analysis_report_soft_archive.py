@@ -245,7 +245,7 @@ class ManagementAuditMigrationContracts(unittest.TestCase):
             self.source,
         )
 
-    def test_guard_binds_event_to_same_transaction_report_write(self) -> None:
+    def test_guard_binds_event_to_transaction_identity_not_timestamps(self) -> None:
         guard = _between(
             self.source,
             "CREATE FUNCTION f1.guard_analysis_report_management_insert()",
@@ -254,8 +254,18 @@ class ManagementAuditMigrationContracts(unittest.TestCase):
         # Actor re-authentication + session enterprise binding.
         self.assertIn("REPORT_MANAGEMENT_EVENT_ACTOR_INVALID", guard)
         self.assertIn("current_setting('f1.enterprise_id',true)", guard)
-        # Same-transaction proof (same technique as the version audit guard).
-        self.assertIn("report.updated_at>=transaction_timestamp()", guard)
+        # Transaction identity: the report row must have been WRITTEN by
+        # this transaction (xmin equality).  Timestamp ordering is NOT a
+        # same-transaction proof and must not appear at all.
+        self.assertIn("report.xmin::text::bigint", guard)
+        self.assertIn("pg_current_xact_id()::text::bigint & 4294967295", guard)
+        self.assertIn("REPORT_MANAGEMENT_EVENT_TX_MISMATCH", guard)
+        self.assertNotIn("transaction_timestamp()", guard)
+        self.assertNotIn("updated_at>=", guard)
+        # One transition, one event: duplicate consumption inside the same
+        # transaction (different event ids) is rejected.
+        self.assertIn("REPORT_MANAGEMENT_EVENT_DUPLICATE", guard)
+        self.assertIn("event.xmin::text::bigint=v_self_xid", guard)
         # report_archived must match the archived_by/reason actually written.
         self.assertIn("report.archived_reason IS NOT DISTINCT FROM NEW.reason", guard)
         # report_unarchived carries no reason and requires the mark cleared.
