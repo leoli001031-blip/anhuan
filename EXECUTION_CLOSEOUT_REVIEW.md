@@ -2,9 +2,9 @@
 
 ## 结论
 
-**截至 2026-09-08 第五轮独立复核后的返工（PR #19，合并提交 `3232544`）：复核提出的 4 项缺陷全部关闭并有实库/探针证据。T0/T1/T3 的已知缺陷清单清空；T2/T4/T5/T6/T7 的范围性工作仍未完成。整体状态 = `WORK_IN_PROGRESS / NOT_DEPLOYED / NOT_PRODUCTION`。**
+**截至 2026-09-08 第六轮独立复核后的返工（PR #21，合并提交 `6867947`）：上轮 4 项经复核确认关闭；本轮新发现的 2 项（报告页旧客户归档目标、归档审计未实现）已全部关闭并有实库/探针证据。迁移 head 升至 f1_0026（归档审计表）。T2/T4/T5/T6/T7 的范围性工作仍未完成。整体状态 = `WORK_IN_PROGRESS / NOT_DEPLOYED / NOT_PRODUCTION`。**
 
-五轮独立复核与对应修复：
+六轮独立复核与对应修复：
 
 | 轮次 | 发现 | 修复 PR |
 |---|---|---|
@@ -13,6 +13,7 @@
 | 第三轮（5 项） | 创建空日期/迟到响应串客户/归档三层阻断/迁移目标失配/验收入口退出码 | #17 |
 | 第四轮（2 项） | refreshEpoch 从未递增/归档后仍可生成发布 | #18 |
 | 第五轮（4 项） | 恢复归档回归/归档草稿仍可提交审批/旧提交清空新客户表单/列表未过滤 | #19 |
+| 第六轮（2 项） | 报告页保留旧客户归档目标可跨客户提交/归档审计未实现且恢复抹掉历史 | #21 |
 
 以下按任务逐项列出变更、实际行为、命令、证据与限制。
 
@@ -24,9 +25,9 @@
 |---|---|
 | HEAD | `fef4a51` → 后续推进至当前提交 |
 | 分支 | `codex/material-report-aeco-polish` |
-| origin/main | `150b71c`（PR #15 合并） |
+| origin/main | `6867947`（PR #21 已合并） |
 | 工作树 | 干净（开始时） |
-| 迁移 head | `f1_0024` → `f1_0025`（本轮新增） |
+| 迁移 head | `f1_0025` → `f1_0026`（第六轮新增审计表） |
 | 基线 12 组 | `Ran 120 / OK` |
 | 验收入口 | `scripts/acceptance_gate.py` |
 
@@ -78,7 +79,11 @@
 
 ---
 
-## T3：报告软归档与恢复 ✅（PR #19 后完整：guard 三分支 + 审核/生成全冻结 + 列表过滤 + 前端筛选恢复入口）
+## T3：报告软归档与恢复 ✅（PR #21 后完整：guard 三分支 + 审核/生成全冻结 + 列表过滤 + 前端筛选恢复入口 + 上下文绑定 + 只插审计）
+
+### 第六轮复核修复（PR #21）
+- **报告页上下文绑定**：列表数据、待归档目标与动作绑定客户上下文代次（contextEpoch）；切客户立即清空旧列表/弹窗/目标/request ID（旧行不可点）；`submitArchive` 提交前校验目标绑定代次，弹窗残留直接丢弃不发起写请求；完成回调按代次 + 动作序号双重校验。探针 6/6：A 弹窗→切 B→确认零 API 调用、B 加载期间旧行消失、迟到列表抑制、正常流程/卸载行为保持。
+- **归档审计（f1_0026）**：新表 `f1.analysis_report_management_event`（FORCE RLS、provider-admin 策略、对 f1_api 只授 SELECT + 列级 INSERT，无 UPDATE/DELETE）。插入 guard 重验 actor、绑定会话企业，并以 `report.updated_at>=transaction_timestamp()` 证明与报告行更新同事务；`report_archived` 的 reason 必须与报告行一致。archive/unarchive 在 UPDATE 与 commit 之间写事件；幂等早退不重复记录。实库 17/17：归档恰好 1 条带 reason/actor 事件、重复归档/重复恢复零新增、空报告（无版本）两事件齐全、f1_api 篡改被拒、脱离事务伪造事件被拒。
 
 ### 变更文件（累计）
 | 文件 | 变更 |
@@ -98,10 +103,10 @@
 - 客户侧 published 列表/详情/健康分不含归档报告
 - 幂等：重复归档 `already_archived: true`；恢复不自动发布/生成；恢复后可继续合法流程
 
-### 验证（PR #19 HEAD `501151b`）
+### 验证（PR #19 HEAD `501151b`；PR #21 HEAD `3caec47` 扩展至 17/17）
 - 实库重放（完整迁移 f1_0025、真实 service/RLS/delivery/worker、确定性生成器）10/10 PASS：空报告归档→恢复 ✓；默认列表隐藏/显式含归档可见且带时间戳 ✓；归档后 submit/approve/publish 全拒且状态零漂移 ✓；新请求 generate 拒 ✓；同请求 resume 拒 ✓；queued 阻止归档 ✓；恢复后 submit→approve→publish 成功且客户可见 ✓；容器/卷/网络残留 0
 - 新增 20 项离线合同测试（`tests.test_analysis_report_soft_archive`，已注册进验收入口）
-- 离线门 177/177 OK + 前端 lint/build/verify OK
+- 离线门 184/184 OK + 前端 lint/build/verify OK（PR #21）
 
 ### 限制
 - 归档并发竞态（两管理员同时归档/恢复）未做实库竞态注入
@@ -168,7 +173,7 @@ python scripts/acceptance_gate.py --mode offline
 
 # 实库归档生命周期重放（第五轮复核场景 1:1 复现）
 python out/soft_archive_fix_verify_2026-09-08/replay_probe.py
-# 结果：10/10 PASS，迁移 head=f1_0025，容器/卷/网络残留 0
+# 结果（PR #21 后）：17/17 PASS，迁移 head=f1_0026，容器/卷/网络残留 0
 
 # 详情页生命周期探针（实际 TSX + hooked React）
 node out/soft_archive_fix_verify_2026-09-08/probe_frontend_fix.cjs
@@ -185,14 +190,14 @@ cd src/web && npm run lint   # 0 errors, 22 warnings (pre-existing)
 
 | 维度 | 值 |
 |---|---|
-| 本轮 HEAD | `501151b`（PR #19，合并提交 `3232544`） |
-| origin/main | `3232544`（PR #19 已合并） |
-| 迁移 head | `f1_0025`（单一 head） |
+| 本轮 HEAD | `3caec47`（PR #21，合并提交 `6867947`） |
+| origin/main | `6867947`（PR #21 已合并） |
+| 迁移 head | `f1_0026`（单一 head） |
 | 默认工程栈 | 锁 `f1_0014`（不变） |
 | material-RAG 目标 | 锁 `f1_0016`（不变） |
-| analysis-report 目标 | `f1_0025` |
-| 离线测试 | 177（15 组：原 12 组 120 + closeout 迁移 + p2_wave1 + soft_archive 20） |
-| 实库重放 | 第五轮 4 项缺陷场景 10/10 PASS |
+| analysis-report 目标 | `f1_0026` |
+| 离线测试 | 184（15 组：原 12 组 120 + closeout 迁移 + p2_wave1 + soft_archive 27） |
+| 实库重放 | 第五+六轮缺陷场景 17/17 PASS（含审计生命周期/幂等/不可变/同事务绑定） |
 | 前端 | build clean / lint 0 errors / tsc clean |
 | 集成套件 | `test_analysis_report_postgres_integration` 仍与现役 delivery 契约失配（20 项过期断言），待同步 |
 | 部署 | 未执行（无新授权）；服务器 demo 栈未变更 |
