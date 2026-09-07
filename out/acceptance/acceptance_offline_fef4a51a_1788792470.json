@@ -1,0 +1,53 @@
+{
+  "sha": "fef4a51a857000c090e2cea16faa8f92082465d1",
+  "mode": "offline",
+  "timestamp": "2026-09-07T14:47:47Z",
+  "backend": {
+    "suites": [
+      "tests.test_material_cloud_ocr",
+      "tests.test_analysis_report_llm_generator",
+      "tests.test_analysis_report_pdf_artifact",
+      "tests.test_analysis_reports",
+      "tests.test_analysis_report_workflow_contract",
+      "tests.test_analysis_report_stage_b_contract",
+      "tests.test_analysis_report_authz_contract",
+      "tests.test_analysis_report_wave9_contract",
+      "tests.test_p3_controlled_ingestion",
+      "tests.test_material_rag_local_extractive",
+      "tests.test_aeco_wave7_backend_contracts",
+      "tests.test_aeco_wave7_frontend_contracts"
+    ],
+    "command": "python -B -m unittest tests.test_material_cloud_ocr tests.test_analysis_report_llm_generator tests.test_analysis_report_pdf_artifact tests.test_analysis_reports tests.test_analysis_report_workflow_contract tests.test_analysis_report_stage_b_contract tests.test_analysis_report_authz_contract tests.test_analysis_report_wave9_contract tests.test_p3_controlled_ingestion tests.test_material_rag_local_extractive tests.test_aeco_wave7_backend_contracts tests.test_aeco_wave7_frontend_contracts",
+    "exit_code": 0,
+    "total": 120,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "ok": true,
+    "stdout_tail": "\n........................................................................................................................\n----------------------------------------------------------------------\nRan 120 tests in 0.571s\n\nOK\n"
+  },
+  "frontend": {
+    "status": "PASSED",
+    "commands": [
+      {
+        "name": "lint",
+        "exit_code": 0,
+        "ok": true,
+        "stdout_tail": "!primaryError) throw cleanupError;\n      :                          ^^^^^^^^^^^^^^^^^^^\n 2909 |     }\n      `----\n  help: Control flow inside `try` or `catch` blocks will be overwritten by this statement.\n\nFound 19 warnings and 0 errors.\nFinished in 8ms on 170 files with 104 rules using 18 threads.\n"
+      },
+      {
+        "name": "build",
+        "exit_code": 0,
+        "ok": true,
+        "stdout_tail": "                  66.31 kB │ gzip:  22.92 kB\ndist/assets/table-CVHzS3Ed.js                      177.15 kB │ gzip:  55.02 kB\ndist/assets/index-BH6mHfOv.js                      279.63 kB │ gzip:  72.65 kB\ndist/assets/api-C6rtqhzb.js                        527.56 kB │ gzip: 168.30 kB\n\n✓ built in 183ms\n"
+      },
+      {
+        "name": "verify:material-automation",
+        "exit_code": 0,
+        "ok": true,
+        "stdout_tail": "\n> web@0.0.0 verify:material-automation\n> node scripts/material-automation-contract-verify.mjs\n\nmaterial automation frontend contracts: ok\n"
+      }
+    ]
+  },
+  "status": "PASSED"
+}
