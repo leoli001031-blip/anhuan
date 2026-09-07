@@ -1,7 +1,19 @@
 // 运营台 · 客户报告列表：版本状态一眼可读；新建报告为幂等创建（request_id 由前端生成）。
+// 已归档报告默认不展示；勾选“显示已归档”后拉取，仅提供恢复入口，不再进入工作台。
 // <768px 切换为列表形态：不逐字换行、不依赖横向拖动。
 import { useEffect, useRef, useState } from "react";
-import { Button, Spin, Table, Typography, message } from "antd";
+import {
+  Button,
+  Checkbox,
+  Input,
+  Modal,
+  Popconfirm,
+  Spin,
+  Table,
+  Tag,
+  Typography,
+  message,
+} from "antd";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useApi } from "../../adapters";
 import { errorKind } from "../../adapters/errors";
@@ -36,13 +48,18 @@ export default function ClientReportsPage() {
   const [error, setError] = useState<unknown>(null);
   const [nonce, setNonce] = useState(0);
   const [creating, setCreating] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  // 归档动作上下文：待归档报告与其理由输入；动作完成后整表刷新。
+  const [archiveTarget, setArchiveTarget] = useState<ProviderReportSummaryV1 | null>(null);
+  const [archiveReason, setArchiveReason] = useState("");
+  const [actionReportId, setActionReportId] = useState<string | null>(null);
   const createRequestId = useRef<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setError(null);
     api
-      .listClientReports(clientId)
+      .listClientReports(clientId, { includeArchived: showArchived })
       .then((items) => {
         if (active) setRows(items);
       })
@@ -52,7 +69,7 @@ export default function ClientReportsPage() {
     return () => {
       active = false;
     };
-  }, [api, clientId, nonce]);
+  }, [api, clientId, nonce, showArchived]);
 
   const create = async () => {
     setCreating(true);
@@ -75,13 +92,108 @@ export default function ClientReportsPage() {
     }
   };
 
+  const submitArchive = async () => {
+    if (!archiveTarget) return;
+    const target = archiveTarget;
+    const reason = archiveReason.trim();
+    setActionReportId(target.report_id);
+    try {
+      await api.archiveReport(target.report_id, reason.length > 0 ? reason : undefined);
+      message.success("报告已归档，可在“显示已归档”中恢复");
+      setArchiveTarget(null);
+      setArchiveReason("");
+      setNonce((n) => n + 1);
+    } catch (e) {
+      if (errorKind(e) === "conflict") {
+        message.error("报告存在进行中的生成/审核/发布，不能归档");
+      } else {
+        message.error("归档失败，请重试");
+      }
+    } finally {
+      setActionReportId(null);
+    }
+  };
+
+  const restore = async (row: ProviderReportSummaryV1) => {
+    setActionReportId(row.report_id);
+    try {
+      await api.unarchiveReport(row.report_id);
+      message.success("报告已恢复，可继续正常流程");
+      setNonce((n) => n + 1);
+    } catch (e) {
+      message.error("恢复失败，请重试");
+    } finally {
+      setActionReportId(null);
+    }
+  };
+
+  const rowActions = (row: ProviderReportSummaryV1) =>
+    row.archived_at ? (
+      <Popconfirm
+        title="恢复该报告？"
+        description="恢复后可继续生成、审核与发布流程。"
+        okText="恢复"
+        cancelText="取消"
+        onConfirm={() => void restore(row)}
+      >
+        <Button
+          type="link"
+          size="small"
+          loading={actionReportId === row.report_id}
+          disabled={actionReportId !== null && actionReportId !== row.report_id}
+        >
+          恢复
+        </Button>
+      </Popconfirm>
+    ) : (
+      <>
+        <Link to={`/console/clients/${clientId}/reports/${row.report_id}`}>打开工作台</Link>
+        <Button
+          type="link"
+          size="small"
+          danger
+          loading={actionReportId === row.report_id}
+          disabled={actionReportId !== null && actionReportId !== row.report_id}
+          onClick={() => {
+            setArchiveReason("");
+            setArchiveTarget(row);
+          }}
+        >
+          归档
+        </Button>
+      </>
+    );
+
+  const statusCell = (status: ReportStatus, archived: string | null) =>
+    archived ? (
+      <Tag color="default">已归档</Tag>
+    ) : (
+      <StatusDot
+        tone={REPORT_STATUS_TONE[status]}
+        label={REPORT_STATUS_LABEL[status]}
+      />
+    );
+
   return (
     <ClientShell clientId={clientId}>
       {error ? (
         <ErrorState error={error} onRetry={() => setNonce((n) => n + 1)} />
       ) : (
         <>
-          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: 12,
+            }}
+          >
+            <Checkbox
+              checked={showArchived}
+              onChange={(e) => setShowArchived(e.target.checked)}
+            >
+              显示已归档
+            </Checkbox>
             <Button type="primary" loading={creating} onClick={() => void create()}>
               新建报告
             </Button>
@@ -90,32 +202,31 @@ export default function ClientReportsPage() {
             rows === null ? (
               <Spin style={{ display: "block", margin: "48px auto" }} />
             ) : rows.length === 0 ? (
-              <Typography.Text type="secondary">暂无报告，点击右上角新建</Typography.Text>
+              <Typography.Text type="secondary">
+                {showArchived ? "暂无报告" : "暂无报告，点击右上角新建"}
+              </Typography.Text>
             ) : (
               <div>
                 {rows.map((r) => (
                   <div key={r.report_id} className="client-mobile-item">
-                    <Link
-                      to={`/console/clients/${clientId}/reports/${r.report_id}`}
-                      style={{ fontSize: 15 }}
-                    >
-                      {r.title}
-                      {r.version_number > 0 ? ` · 第 ${r.version_number} 版` : ""}
-                    </Link>
+                    {r.archived_at ? (
+                      <Typography.Text style={{ fontSize: 15 }}>{r.title}</Typography.Text>
+                    ) : (
+                      <Link
+                        to={`/console/clients/${clientId}/reports/${r.report_id}`}
+                        style={{ fontSize: 15 }}
+                      >
+                        {r.title}
+                        {r.version_number > 0 ? ` · 第 ${r.version_number} 版` : ""}
+                      </Link>
+                    )}
                     <div className="client-mobile-meta">
-                      <StatusDot
-                        tone={REPORT_STATUS_TONE[r.current_status]}
-                        label={REPORT_STATUS_LABEL[r.current_status]}
-                      />
+                      {statusCell(r.current_status, r.archived_at)}
                       <span style={{ marginLeft: 8 }}>
                         更新于 {formatDateTime(r.updated_at)}
                       </span>
                     </div>
-                    <div className="client-mobile-actions">
-                      <Link to={`/console/clients/${clientId}/reports/${r.report_id}`}>
-                        打开工作台
-                      </Link>
-                    </div>
+                    <div className="client-mobile-actions">{rowActions(r)}</div>
                   </div>
                 ))}
               </div>
@@ -139,12 +250,8 @@ export default function ClientReportsPage() {
                   title: "状态",
                   dataIndex: "current_status",
                   width: 140,
-                  render: (status: ReportStatus) => (
-                    <StatusDot
-                      tone={REPORT_STATUS_TONE[status]}
-                      label={REPORT_STATUS_LABEL[status]}
-                    />
-                  ),
+                  render: (status: ReportStatus, row) =>
+                    statusCell(status, row.archived_at),
                 },
                 {
                   title: "更新时间",
@@ -157,16 +264,37 @@ export default function ClientReportsPage() {
                 {
                   title: "操作",
                   key: "actions",
-                  width: 110,
-                  render: (_, row) => (
-                    <Link to={`/console/clients/${clientId}/reports/${row.report_id}`}>
-                      打开工作台
-                    </Link>
-                  ),
+                  width: 190,
+                  render: (_, row) => rowActions(row),
                 },
               ]}
             />
           )}
+          <Modal
+            title="归档报告"
+            open={archiveTarget !== null}
+            okText="归档"
+            cancelText="取消"
+            okButtonProps={{ danger: true }}
+            onOk={() => void submitArchive()}
+            onCancel={() => {
+              setArchiveTarget(null);
+              setArchiveReason("");
+            }}
+            destroyOnClose
+          >
+            <Typography.Paragraph type="secondary">
+              归档后报告默认从列表隐藏，客户侧不可见，不能生成、审核或发布；可在“显示已归档”中恢复。
+            </Typography.Paragraph>
+            <Input.TextArea
+              value={archiveReason}
+              onChange={(e) => setArchiveReason(e.target.value)}
+              maxLength={500}
+              showCount
+              rows={3}
+              placeholder="归档原因（选填，≤500 字，写入审计）"
+            />
+          </Modal>
         </>
       )}
     </ClientShell>

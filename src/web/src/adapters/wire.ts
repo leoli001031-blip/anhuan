@@ -2,6 +2,7 @@
 // callers must not invent defaults.
 import { ApiError } from "./errors";
 import type {
+  ArchiveResultV1,
   Capability,
   CitationV1,
   GenerationAcceptedV1,
@@ -100,6 +101,14 @@ function optUuid(row: Record<string, unknown>, key: string): string | null {
 function reqInt(row: Record<string, unknown>, key: string, min: number): number {
   const value = row[key];
   if (typeof value !== "number" || !Number.isInteger(value) || value < min) {
+    wireError("CONTRACT_FIELD_MISSING");
+  }
+  return value;
+}
+
+function reqBoolean(row: Record<string, unknown>, key: string): boolean {
+  const value = row[key];
+  if (typeof value !== "boolean") {
     wireError("CONTRACT_FIELD_MISSING");
   }
   return value;
@@ -211,6 +220,16 @@ function parseStatus(value: string): ReportStatus {
 
 export function parseProviderSummary(raw: unknown): ProviderReportSummaryV1 {
   const row = asRecord(raw, "CONTRACT_FIELD_MISSING");
+  // archived_at is an optional display hint: absent (older payloads) or null
+  // both mean "not archived".
+  const archivedRaw = row["archived_at"];
+  if (
+    archivedRaw !== undefined &&
+    archivedRaw !== null &&
+    typeof archivedRaw !== "string"
+  ) {
+    wireError("CONTRACT_FIELD_MISSING");
+  }
   return {
     report_id: reqUuid(row, "report_id"),
     current_version_id: optUuid(row, "current_version_id"),
@@ -218,6 +237,10 @@ export function parseProviderSummary(raw: unknown): ProviderReportSummaryV1 {
     version_number: reqInt(row, "version_number", 0),
     title: reqConst(row, "title", TEMPLATE_TITLE),
     updated_at: reqString(row, "updated_at"),
+    archived_at:
+      typeof archivedRaw === "string" && archivedRaw.length > 0
+        ? archivedRaw
+        : null,
   };
 }
 
@@ -225,6 +248,14 @@ export function parseProviderList(raw: unknown): ProviderReportSummaryV1[] {
   const row = asRecord(raw, "CONTRACT_FIELD_MISSING");
   reqConst(row, "schema", "anhuan-analysis-report-provider-list-v1");
   return reqArray(row, "reports").map(parseProviderSummary);
+}
+
+export function parseArchiveResult(raw: unknown): ArchiveResultV1 {
+  const row = asRecord(raw, "CONTRACT_FIELD_MISSING");
+  return {
+    report_id: reqUuid(row, "report_id"),
+    archived: reqBoolean(row, "archived"),
+  };
 }
 
 export function parseGeneration(raw: unknown): GenerationAcceptedV1 {

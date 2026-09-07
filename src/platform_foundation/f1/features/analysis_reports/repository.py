@@ -318,20 +318,28 @@ async def lock_report_for_generation(
 
 
 async def list_provider_reports(
-    session: AsyncSession, enterprise_id: uuid.UUID, client_account_id: uuid.UUID
+    session: AsyncSession,
+    enterprise_id: uuid.UUID,
+    client_account_id: uuid.UUID,
+    *,
+    include_archived: bool = False,
 ) -> list[dict[str, Any]]:
+    # Archived reports are hidden by default; the provider console opts in
+    # explicitly via include_archived to manage (and restore) them.
+    archived_filter = "" if include_archived else "AND report.archived_at IS NULL "
     rows = (
         await session.execute(
             text(
                 "SELECT report.id, report.current_version_id, report.current_version_no, "
-                "report.updated_at, version.status AS current_status "
+                "report.updated_at, report.archived_at, version.status AS current_status "
                 "FROM f1.analysis_report AS report "
                 "LEFT JOIN f1.analysis_report_version AS version "
                 "  ON version.enterprise_id = report.enterprise_id "
                 " AND version.id = report.current_version_id "
                 "WHERE report.enterprise_id = :enterprise_id "
                 "AND report.client_account_id = :client_account_id "
-                "ORDER BY report.updated_at DESC"
+                + archived_filter
+                + "ORDER BY report.updated_at DESC"
             ),
             {
                 "enterprise_id": enterprise_id,
@@ -361,6 +369,7 @@ async def list_published_for_client(
                 " AND version.report_id = report.id "
                 "WHERE version.status = 'published' "
                 "AND version.artifact_ready IS TRUE "
+                "AND report.archived_at IS NULL "
                 "ORDER BY version.published_at DESC, version.version_number DESC, version.id DESC"
             ),
             {"audience_enterprise_id": audience_enterprise_id},
@@ -388,7 +397,8 @@ async def get_published_detail(
                 " AND version.report_id = report.id "
                 "WHERE report.id = :report_id "
                 "AND version.status = 'published' "
-                "AND version.artifact_ready IS TRUE"
+                "AND version.artifact_ready IS TRUE "
+                "AND report.archived_at IS NULL"
             ),
             {
                 "report_id": report_id,

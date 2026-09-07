@@ -97,6 +97,8 @@ export default function ClientFindingDetailPage() {
   const [serviceCases, setServiceCases] = useState<ServiceCase[]>([]);
 
   const refreshEpoch = useRef(0);
+  // 动作序号：每个动作领取自己的槽位；旧动作的 finally 不得清掉新动作的 loading。
+  const actionSeq = useRef(0);
 
   // Any route/context change increments the epoch, invalidating all in-flight
   // reads and actions from the previous clientId/findingId. Stale responses
@@ -106,6 +108,15 @@ export default function ClientFindingDetailPage() {
     return () => {
       ++refreshEpoch.current;
     };
+  }, [clientId, findingId]);
+
+  // 上下文切换时显式清空表单/弹窗：新问题不带旧问题的草稿与弹窗状态。
+  useEffect(() => {
+    setCorrectionOpen(false);
+    setCorrectionText("");
+    setReviewDecision(null);
+    setReviewComment("");
+    setEditOpen(false);
   }, [clientId, findingId]);
 
   const refresh = useCallback(async () => {
@@ -143,11 +154,15 @@ export default function ClientFindingDetailPage() {
     };
   }, [refresh]);
 
+  // operation 只负责调用 API；清表单/关弹窗等本地副作用放在 onSuccess，
+  // 它在通过 epoch 上下文校验之后才执行 —— 迟到的旧提交不会碰新客户的表单。
   const runAction = async (
     key: string,
     successMessage: string,
     operation: () => Promise<Finding>,
+    onSuccess?: () => void,
   ) => {
+    const seq = ++actionSeq.current;
     const epoch = refreshEpoch.current;
     setActionLoading(key);
     setError(null);
@@ -155,13 +170,16 @@ export default function ClientFindingDetailPage() {
       await operation();
       if (refreshEpoch.current !== epoch) return;
       message.success(successMessage);
+      onSuccess?.();
       await refresh();
     } catch (reason) {
       if (refreshEpoch.current !== epoch) return;
       setError(reason);
       message.error(String(reason));
     } finally {
-      setActionLoading(null);
+      // 只有仍持有最新槽位的动作才清 loading；旧动作迟到返回时，
+      // loading 已属于新动作（或新的上下文），不得触碰。
+      if (actionSeq.current === seq) setActionLoading(null);
     }
   };
 
@@ -169,24 +187,41 @@ export default function ClientFindingDetailPage() {
 
   const submitCorrection = async () => {
     if (!findingId || !allowed.includes("submit_correction")) return;
-    await runAction("submit_correction", "整改已提交", async () => {
-      const result = await submitCorrectiveAction(getAccessToken() ?? "", findingId, correctionText.trim());
-      setCorrectionText("");
-      setCorrectionOpen(false);
-      return result;
-    });
+    await runAction(
+      "submit_correction",
+      "整改已提交",
+      () =>
+        submitCorrectiveAction(
+          getAccessToken() ?? "",
+          findingId,
+          correctionText.trim(),
+        ),
+      () => {
+        setCorrectionText("");
+        setCorrectionOpen(false);
+      },
+    );
   };
 
   const submitReview = async () => {
     if (!findingId || !reviewDecision) return;
     const expected = reviewDecision === "passed" ? "pass" : "reject";
     if (!allowed.includes(expected)) return;
-    await runAction(expected, reviewDecision === "passed" ? "复核已通过" : "整改已退回", async () => {
-      const result = await reviewFinding(getAccessToken() ?? "", findingId, reviewDecision as "passed" | "rejected", reviewComment.trim());
-      setReviewDecision(null);
-      setReviewComment("");
-      return result;
-    });
+    await runAction(
+      expected,
+      reviewDecision === "passed" ? "复核已通过" : "整改已退回",
+      () =>
+        reviewFinding(
+          getAccessToken() ?? "",
+          findingId,
+          reviewDecision as "passed" | "rejected",
+          reviewComment.trim(),
+        ),
+      () => {
+        setReviewDecision(null);
+        setReviewComment("");
+      },
+    );
   };
 
   if (loading) {
@@ -404,17 +439,19 @@ export default function ClientFindingDetailPage() {
             severity: finding.severity,
           }}
           onFinish={async (values) => {
-            await runAction("edit", "问题信息已更新", async () => {
-              const result = await updateFinding(getAccessToken() ?? "", findingId, {
-                title: values.title,
-                description: values.description ?? null,
-                severity: values.severity,
-                responsible_user_id: finding.responsible_user_id,
-                due_at: values.due_at?.toISOString() ?? finding.due_at,
-              });
-              setEditOpen(false);
-              return result;
-            });
+            await runAction(
+              "edit",
+              "问题信息已更新",
+              () =>
+                updateFinding(getAccessToken() ?? "", findingId, {
+                  title: values.title,
+                  description: values.description ?? null,
+                  severity: values.severity,
+                  responsible_user_id: finding.responsible_user_id,
+                  due_at: values.due_at?.toISOString() ?? finding.due_at,
+                }),
+              () => setEditOpen(false),
+            );
           }}
         >
           <Form.Item name="title" label="标题" rules={[{ required: true }]}>
