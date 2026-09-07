@@ -27,7 +27,21 @@
 
 ## T1：业务闭环（创建服务→录入→整改→复核→关闭）
 
-**状态：待开始**
+**状态：前端实现完成，后端验收待跑**
+
+### 已完成
+- [x] `ClientFindingDetailPage.tsx`：客户绑定的问题详情页，支持 编辑/开始整改/提交整改/复核通过/退回/关闭 全流程
+- [x] `ClientFindingCreatePage.tsx`：客户绑定的问题录入页，选择该客户的服务事项后创建
+- [x] `ClientRectificationPage.tsx`：加入「录入问题」按钮 + 行级链接跳转详情
+- [x] App.tsx 路由：`/console/clients/:clientId/rectification/new` + `/:findingId`
+- [x] 前端 build clean + lint 0 errors + 后端 120/120 OK
+
+### 待完成
+- [ ] 隔离数据库双客户 API 验收（创建→整改→复核→关闭 + 跨客户 404 + 非法操作 409）
+- [ ] 浏览器操作链验证
+
+### 提交
+- `aeece54` feat(T1): client-bound finding detail, creation, and rectification actions
 
 ---
 

@@ -142,11 +142,12 @@ F1_ALLOWED_MIGRATE_TARGETS = frozenset(
         "f1_0022",
         "f1_0023",
         "f1_0024",
+        "f1_0025",
     }
 )
 F1_DEFAULT_MIGRATE_TARGET = "f1_0014"
 F1_MATERIAL_RAG_MIGRATE_TARGET = "f1_0016"
-F1_ANALYSIS_REPORT_MIGRATE_TARGET = "f1_0024"
+F1_ANALYSIS_REPORT_MIGRATE_TARGET = "f1_0025"
 
 
 def _closed_f1_migrate_target(target: object) -> str:
@@ -157,11 +158,11 @@ def _closed_f1_migrate_target(target: object) -> str:
 
 def _definer_owners_for_target(target: str) -> dict[str, str]:
     owners = dict(ALL_DEFINER_OWNERS)
-    if target in {"f1_0020", "f1_0021", "f1_0022", "f1_0023", "f1_0024"}:
+    if target in {"f1_0020", "f1_0021", "f1_0022", "f1_0023", "f1_0024", "f1_0025"}:
         owners.update(ANALYSIS_REPORT_DEFINER_OWNERS)
-    if target in {"f1_0021", "f1_0022", "f1_0023", "f1_0024"}:
+    if target in {"f1_0021", "f1_0022", "f1_0023", "f1_0024", "f1_0025"}:
         owners.update(MATERIAL_PIPELINE_DEFINER_OWNERS)
-    if target in {"f1_0023", "f1_0024"}:
+    if target in {"f1_0023", "f1_0024", "f1_0025"}:
         owners.update(MATERIAL_INGESTION_DEFINER_OWNERS)
         owners.update(REPORT_REVOCATION_DEFINER_OWNERS)
         owners.update(REPORT_DELIVERY_DEFINER_OWNERS)
@@ -466,20 +467,20 @@ def _finalize_definer_owners(
         if current_owner == role:
             continue
         _alter_owner_by_oid(connection, resolved[signature][0], role)
-    if target in {"f1_0020", "f1_0021", "f1_0022", "f1_0023", "f1_0024"}:
+    if target in {"f1_0020", "f1_0021", "f1_0022", "f1_0023", "f1_0024", "f1_0025"}:
         # Bootstrap alone can grant a new definer access to session_authorized:
         # that function is already owned by the isolated auth definer on replay.
         connection.execute(
             "GRANT EXECUTE ON FUNCTION f1.current_enterprise_id(), "
             "f1.session_authorized(uuid) TO f1_aeco_read_definer"
         )
-    if target in {"f1_0021", "f1_0022", "f1_0023", "f1_0024"}:
+    if target in {"f1_0021", "f1_0022", "f1_0023", "f1_0024", "f1_0025"}:
         connection.execute(
             "GRANT EXECUTE ON FUNCTION f1.session_authorized(uuid), "
             "f1.resolve_current_enterprises() "
             "TO f1_material_pipeline_definer"
         )
-    if target in {"f1_0023", "f1_0024"}:
+    if target in {"f1_0023", "f1_0024", "f1_0025"}:
         connection.execute(
             "GRANT EXECUTE ON FUNCTION f1.session_authorized(uuid) "
             "TO f1_material_ingestion_definer,f1_analysis_report_definer"

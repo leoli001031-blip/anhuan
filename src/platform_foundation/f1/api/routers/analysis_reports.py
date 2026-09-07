@@ -20,8 +20,10 @@ from ...features.analysis_reports import (
     latest_health,
     list_client_reports,
     list_published,
+    archive_report,
     published_artifact,
     published_artifact_pdf,
+    unarchive_report,
     session_access,
     apply_transition,
     version_artifact,
@@ -46,6 +48,11 @@ class ReviewChecklistBody(BaseModel):
     citation_traceable: bool
     risks_complete: bool
     usage_boundary: bool
+
+
+class ArchiveBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    reason: str | None = Field(default=None, max_length=500)
 
 
 class TransitionBody(BaseModel):
@@ -163,6 +170,29 @@ async def client_get_published_artifact_pdf(
 ) -> Response:
     try:
         return _artifact_response(await published_artifact_pdf(tenant, report_id))
+    except Exception as extra:  # noqa: BLE001
+        raise _map_error(extra) from None
+
+
+@router.post("/reports/{report_id}/archive")
+async def provider_archive_report(
+    report_id: uuid.UUID,
+    body: ArchiveBody | None = None,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> dict:
+    try:
+        return await archive_report(tenant, report_id, reason=body.reason if body else None)
+    except Exception as extra:  # noqa: BLE001
+        raise _map_error(extra) from None
+
+
+@router.post("/reports/{report_id}/unarchive")
+async def provider_unarchive_report(
+    report_id: uuid.UUID,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> dict:
+    try:
+        return await unarchive_report(tenant, report_id)
     except Exception as extra:  # noqa: BLE001
         raise _map_error(extra) from None
 
