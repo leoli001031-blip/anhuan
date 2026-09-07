@@ -370,5 +370,61 @@ class HttpsEnforcementContracts(unittest.TestCase):
         )
 
 
+
+class SourceCoverageGateContracts(unittest.TestCase):
+    """Residual P1: no source may be silently omitted by budget math."""
+
+    def _sources(self, count):
+        sources = []
+        for i in range(count):
+            text = f"材料{i}——风险内容" * 8
+            unit = EvidenceUnit(
+                page_number=1, ordinal=1,
+                body_sha256=hashlib.sha256(text.encode()).hexdigest(),
+                text=text,
+            )
+            sources.append(
+                EligibleSource(
+                    document_version_id=uuid.uuid4(),
+                    document_name=f"材料{i:03d}",
+                    version_number=1, source_sha256="a" * 64,
+                    scope_kind="client", page_number=1,
+                    evidence_units=(unit,),
+                )
+            )
+        return tuple(sources)
+
+    def _frozen(self, sources):
+        return FrozenSourceSet(
+            enterprise_id=uuid.uuid4(), client_account_id=uuid.uuid4(),
+            template_id="enterprise-ehs-material-analysis-v1",
+            fingerprint_sha256="c" * 64, sources=sources,
+        )
+
+    def test_61_sources_fail_closed_not_silent_omission(self) -> None:
+        from platform_foundation.f1.features.analysis_reports.llm_generator import (
+            LlmReportGenerator,
+        )
+        env = _Env(self)
+        env.enable()
+        frozen = self._frozen(self._sources(61))  # budget is 60
+        with self.assertRaises(GenerationFailed) as raised:
+            LlmReportGenerator(transport=lambda *a: b"{}").generate(frozen)
+        self.assertIn(
+            raised.exception.reason,
+            ("REPORT_SOURCES_OVER_BUDGET", "REPORT_SOURCES_UNDER_REPRESENTED"),
+        )
+
+    def test_60_sources_still_work(self) -> None:
+        from platform_foundation.f1.features.analysis_reports.llm_generator import (
+            _evidence_blocks, _MAX_EVIDENCE_BLOCKS,
+        )
+        frozen = self._frozen(self._sources(_MAX_EVIDENCE_BLOCKS))
+        blocks = _evidence_blocks(frozen)
+        self.assertEqual(len(blocks), _MAX_EVIDENCE_BLOCKS)
+        represented = {b.source.document_version_id for b in blocks}
+        self.assertEqual(len(represented), _MAX_EVIDENCE_BLOCKS)
+
+
 if __name__ == "__main__":
     unittest.main()
