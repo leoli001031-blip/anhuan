@@ -13,6 +13,7 @@ import type {
 } from "./AnalysisReportApi";
 import { normalizeTransitionEvidence } from "./AnalysisReportApi";
 import type {
+  ArchiveResultV1,
   ClientAccount,
   ClientStage,
   ExceptionItem,
@@ -30,6 +31,7 @@ import type {
 } from "./types";
 import type { SessionAccess } from "./SessionAccess";
 import {
+  parseArchiveResult,
   parseGeneration,
   parseJobStatus,
   parseProviderList,
@@ -469,11 +471,35 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
 
   // —— 运营台 · 报告工作流（合同 §Provider） ——
 
-  async listClientReports(clientId: string): Promise<ProviderReportSummaryV1[]> {
+  async listClientReports(
+    clientId: string,
+    options: { includeArchived?: boolean } = {},
+  ): Promise<ProviderReportSummaryV1[]> {
+    // 已归档报告默认不返回；运营台显式勾选后才拉取，用于管理与恢复。
+    const suffix = options.includeArchived ? "?include_archived=true" : "";
     const { payload } = await this.request<unknown>(
-      `/v1/analysis-reports/clients/${encodeURIComponent(clientId)}/reports`,
+      `/v1/analysis-reports/clients/${encodeURIComponent(clientId)}/reports${suffix}`,
     );
     return parseProviderList(payload);
+  }
+
+  async archiveReport(
+    reportId: string,
+    reason?: string,
+  ): Promise<ArchiveResultV1> {
+    const { payload } = await this.request<unknown>(
+      `/v1/analysis-reports/reports/${encodeURIComponent(reportId)}/archive`,
+      { method: "POST", body: reason ? { reason } : undefined },
+    );
+    return parseArchiveResult(payload);
+  }
+
+  async unarchiveReport(reportId: string): Promise<ArchiveResultV1> {
+    const { payload } = await this.request<unknown>(
+      `/v1/analysis-reports/reports/${encodeURIComponent(reportId)}/unarchive`,
+      { method: "POST" },
+    );
+    return parseArchiveResult(payload);
   }
 
   async createReport(clientId: string, requestId: string): Promise<ProviderReportSummaryV1> {

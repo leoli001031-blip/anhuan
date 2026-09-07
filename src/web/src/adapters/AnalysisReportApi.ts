@@ -1,6 +1,7 @@
 // AnalysisReportApi：两套产品壳的唯一数据门面。
 // 报告域走冻结合同 /api/v1/analysis-reports/*；问答、客户、材料复用基线已有端点。
 import type {
+  ArchiveResultV1,
   ClientAccount,
   ClientStage,
   ExceptionItem,
@@ -123,13 +124,22 @@ export interface AnalysisReportApi {
   }): Promise<void>;
 
   // 运营台 · 报告工作流（合同 §Provider）
-  listClientReports(clientId: string): Promise<ProviderReportSummaryV1[]>;
+  listClientReports(
+    clientId: string,
+    options?: { includeArchived?: boolean },
+  ): Promise<ProviderReportSummaryV1[]>;
   createReport(clientId: string, requestId: string): Promise<ProviderReportSummaryV1>;
   generate(
     clientId: string,
     reportId: string,
     requestId: string,
   ): Promise<GenerationAcceptedV1>;
+  // 归档/恢复：archived=true 表示归档动作生效，false 表示恢复动作生效。
+  archiveReport(
+    reportId: string,
+    reason?: string,
+  ): Promise<ArchiveResultV1>;
+  unarchiveReport(reportId: string): Promise<ArchiveResultV1>;
   getJob(jobId: string): Promise<JobStatusV1>;
   getVersion(versionId: string): Promise<VersionDetailV1>;
   getVersionHtmlArtifact(versionId: string): Promise<HtmlReportArtifact>;

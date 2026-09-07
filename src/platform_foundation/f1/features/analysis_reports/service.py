@@ -150,6 +150,9 @@ def _summary(row: dict[str, Any]) -> dict[str, Any]:
         "version_number": int(row["current_version_no"] or 0),
         "title": TEMPLATE_TITLE,
         "updated_at": _iso(row["updated_at"]),
+        "archived_at": _iso(row["archived_at"])
+        if row.get("archived_at")
+        else None,
     }
     _forbid_leaks(payload)
     return payload
@@ -275,14 +278,22 @@ async def published_artifact(
         raise ReportNotFound() from None
 
 
-async def list_client_reports(tenant: Tenant, client_account_id: uuid.UUID) -> dict[str, Any]:
+async def list_client_reports(
+    tenant: Tenant,
+    client_account_id: uuid.UUID,
+    *,
+    include_archived: bool = False,
+) -> dict[str, Any]:
     _require_provider(tenant)
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
     ) as session:
         await _require_owned_client(session, tenant, client_account_id)
         rows = await repository.list_provider_reports(
-            session, tenant.enterprise_id, client_account_id
+            session,
+            tenant.enterprise_id,
+            client_account_id,
+            include_archived=include_archived,
         )
     payload = {
         "schema": SCHEMA_PROVIDER_LIST,
@@ -420,24 +431,6 @@ async def _resume_generation(
     return payload
 
 
-async def _check_not_archived(
-    session: AsyncSession, enterprise_id: uuid.UUID, report_id: uuid.UUID
-) -> None:
-    row = (
-        await session.execute(
-            text(
-                "SELECT archived_at FROM f1.analysis_report "
-                "WHERE enterprise_id=:enterprise_id AND id=:report_id"
-            ),
-            {"enterprise_id": enterprise_id, "report_id": report_id},
-        )
-    ).first()
-    if row is None:
-        raise ReportNotFound()
-    if row.archived_at is not None:
-        raise ReportTransitionInvalid()
-
-
 async def generate_report(
     tenant: Tenant,
     client_account_id: uuid.UUID,
@@ -469,6 +462,19 @@ async def generate_report(
         )
         frozen = _freeze(tenant.enterprise_id, client_account_id, sources)
         if existing_job is not None:
+            # Exact-request resume/requeue must honor the same archived
+            # precondition as a fresh dispatch: decide under the report row
+            # lock, before any audited requeue inside resume can commit.
+            resume_lock = await repository.lock_report_for_generation(
+                session, tenant.enterprise_id, report_id
+            )
+            if (
+                resume_lock is None
+                or resume_lock["client_account_id"] != client_account_id
+            ):
+                raise ReportNotFound()
+            if resume_lock.get("archived_at") is not None:
+                raise ReportTransitionInvalid()
             payload = await _resume_generation(
                 session,
                 tenant=tenant,
@@ -741,6 +747,16 @@ async def apply_transition(
         ):
             # Once a changed fingerprint forks a new internal work version, an
             # older review/approval may not advance or replace the current line.
+            raise ReportTransitionInvalid()
+        if (
+            action != "withdraw"
+            and locked_report is not None
+            and locked_report.get("archived_at") is not None
+        ):
+            # Archived reports freeze review too: submit/return/approve/publish
+            # are rejected under the same report-row lock. Withdraw keeps its
+            # separate contract (archiving already requires no active
+            # versions, so published-then-archived cannot occur).
             raise ReportTransitionInvalid()
         if action == "publish":
             complete = await repository.attach_sections(

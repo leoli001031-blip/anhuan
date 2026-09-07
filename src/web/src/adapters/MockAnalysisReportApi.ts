@@ -10,6 +10,7 @@ import type {
 } from "./AnalysisReportApi";
 import { normalizeTransitionEvidence } from "./AnalysisReportApi";
 import type {
+  ArchiveResultV1,
   ClientAccount,
   ClientStage,
   ExceptionItem,
@@ -50,6 +51,7 @@ interface MockReport {
   clientId: string;
   versions: MockVersion[];
   updatedAt: string;
+  archivedAt: string | null;
 }
 
 const SYNTHETIC_SECTIONS = [
@@ -175,6 +177,7 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
         reportId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         clientId: CLIENT_A_ID,
         updatedAt: now,
+        archivedAt: null,
         versions: [
           {
             versionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -196,6 +199,7 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
         reportId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2",
         clientId: CLIENT_A_ID,
         updatedAt: now,
+        archivedAt: null,
         versions: [
           {
             versionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbb3",
@@ -410,6 +414,7 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
       version_number: current ? current.versionNumber : 0,
       title: "企业安环资料分析报告",
       updated_at: report.updatedAt,
+      archived_at: report.archivedAt,
     };
   }
 
@@ -427,9 +432,43 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     throw new ApiError(404, "REPORT_NOT_FOUND", false);
   }
 
-  async listClientReports(clientId: string): Promise<ProviderReportSummaryV1[]> {
+  async listClientReports(
+    clientId: string,
+    options: { includeArchived?: boolean } = {},
+  ): Promise<ProviderReportSummaryV1[]> {
     await delay();
-    return this.reportsOf(clientId).map((r) => this.toSummary(r));
+    return this.reportsOf(clientId)
+      .filter((r) => options.includeArchived || r.archivedAt === null)
+      .map((r) => this.toSummary(r));
+  }
+
+  async archiveReport(
+    reportId: string,
+    reason?: string,
+  ): Promise<ArchiveResultV1> {
+    await delay();
+    if (reason !== undefined && !(1 <= reason.length && reason.length <= 500)) {
+      throw new ApiError(409, "REPORT_TRANSITION_INVALID", false);
+    }
+    const report = this.findReportById(reportId);
+    const current = report.versions[report.versions.length - 1];
+    if (
+      current &&
+      ["queued", "generating", "review_pending", "approved", "published"].includes(
+        current.status,
+      )
+    ) {
+      throw new ApiError(409, "REPORT_TRANSITION_INVALID", false);
+    }
+    report.archivedAt = new Date().toISOString();
+    return { report_id: reportId, archived: true };
+  }
+
+  async unarchiveReport(reportId: string): Promise<ArchiveResultV1> {
+    await delay();
+    const report = this.findReportById(reportId);
+    report.archivedAt = null;
+    return { report_id: reportId, archived: false };
   }
 
   async createReport(clientId: string, requestId: string): Promise<ProviderReportSummaryV1> {
@@ -441,6 +480,7 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
       clientId,
       versions: [],
       updatedAt: new Date().toISOString(),
+      archivedAt: null,
     };
     this.reports.push(report);
     this.createByRequest.set(`${clientId}:${requestId}`, report.reportId);

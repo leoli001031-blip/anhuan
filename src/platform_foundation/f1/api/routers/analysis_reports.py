@@ -225,10 +225,15 @@ async def client_latest_health(
 @router.get("/clients/{client_account_id}/reports")
 async def provider_list_reports(
     client_account_id: uuid.UUID,
+    include_archived: bool = False,
     tenant: Tenant = Depends(tenant_from_header),
 ) -> dict:
+    # Archived reports are excluded by default; the provider console opts in
+    # explicitly to manage and restore them.
     try:
-        return await list_client_reports(tenant, client_account_id)
+        return await list_client_reports(
+            tenant, client_account_id, include_archived=include_archived
+        )
     except Exception as exc:  # noqa: BLE001
         raise _map_error(exc) from None
 

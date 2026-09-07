@@ -52,6 +52,9 @@ OFFLINE_SUITES = [
     "tests.test_material_rag_local_extractive",
     "tests.test_aeco_wave7_backend_contracts",
     "tests.test_aeco_wave7_frontend_contracts",
+    "tests.test_engineering_closeout_migration",
+    "tests.test_p2_wave1",
+    "tests.test_analysis_report_soft_archive",
 ]
 
 INTEGRATION_SUITES = [

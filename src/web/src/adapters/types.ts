@@ -120,6 +120,13 @@ export interface ProviderReportSummaryV1 {
   version_number: number;
   title: string;
   updated_at: string;
+  archived_at: string | null;
+}
+
+// 归档/恢复动作结果：archived 为动作生效后的归档状态。
+export interface ArchiveResultV1 {
+  report_id: string;
+  archived: boolean;
 }
 
 export interface GenerationAcceptedV1 {
