@@ -568,7 +568,7 @@ def _pg_env(state: dict[str, object], paths: dict[str, Path]) -> dict[str, str]:
 
 def _seed_identities(state: dict[str, object], paths: dict[str, Path]) -> None:
     # local_seed.main() is frozen at f1_0014. This UAT migrator stops at
-    # f1_0025, so the same ensure_* helpers run on the host with that head.
+    # f1_0026, so the same ensure_* helpers run on the host with that head.
     from infra.f1 import local_seed
     from infra.f1.migrate_f1 import _bootstrap_dsn
 
@@ -583,7 +583,7 @@ def _seed_identities(state: dict[str, object], paths: dict[str, Path]) -> None:
                 "SELECT string_agg(version_num, ',' ORDER BY version_num) "
                 "FROM f1.alembic_version"
             ).fetchone()
-            if head is None or head[0] != "f1_0025":
+            if head is None or head[0] != "f1_0026":
                 raise UatError("LOCAL_ANALYSIS_REPORT_UAT_SEED_HEAD_MISMATCH")
             local_seed._ensure_enterprise(
                 connection, local_seed.ENTERPRISE_A, "Local Enterprise A", "LOCAL-A"
