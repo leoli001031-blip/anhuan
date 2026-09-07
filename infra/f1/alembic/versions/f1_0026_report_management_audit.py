@@ -11,16 +11,26 @@ without weakening that guard.  This migration adds a dedicated, insert-only
   DELETE — so events are immutable for the application role.
 * A BEFORE INSERT guard re-authenticates the actor as a provider admin of
   the report's enterprise, binds the session enterprise, and proves the
-  matching report write happened in the SAME transaction
-  (``report.updated_at >= transaction_timestamp()``, the same technique the
-  version audit guard uses).  ``report_archived`` events must match the
+  report row was written by THIS transaction via transaction identity:
+  ``report.xmin = pg_current_xact_id()`` (masked to the 32-bit xid).  A
+  timestamp ordering like ``updated_at >= transaction_timestamp()`` would
+  NOT prove this: an earlier-started transaction can observe a row updated
+  by a later one and still satisfy the comparison, which allowed forged
+  duplicate events.  ``report_archived`` events must additionally match the
   archived_by/archived_reason the report row actually carries;
   ``report_unarchived`` events carry no reason and require the archive mark
   to be cleared in this transaction.
+* One state transition yields one event: a second event with the same
+  action for the same report whose row was written by the current
+  transaction (event.xmin = current xid) is rejected as a duplicate.
 
 Unarchive may clear the current archived_by/at/reason columns on the report
 row, but the event history stays queryable — who, when, why archived, and
 who restored.
+
+Note: the pre-existing version audit guard (f1_0023) still uses the weaker
+timestamp ordering for its own ``version.updated_at`` check; correcting that
+legacy guard is out of scope here and tracked separately.
 """
 from __future__ import annotations
 
@@ -113,7 +123,7 @@ def upgrade() -> None:
         CREATE FUNCTION f1.guard_analysis_report_management_insert()
         RETURNS trigger LANGUAGE plpgsql SECURITY INVOKER
         SET search_path = pg_catalog AS $$
-        DECLARE v_actor_id uuid;
+        DECLARE v_actor_id uuid; v_report_xmin bigint; v_self_xid bigint;
         BEGIN
           SELECT membership.user_id INTO v_actor_id
           FROM f1.enterprise_user AS membership
@@ -127,6 +137,30 @@ def upgrade() -> None:
                 IS DISTINCT FROM NEW.enterprise_id THEN
             RAISE EXCEPTION 'REPORT_MANAGEMENT_EVENT_ACTOR_INVALID';
           END IF;
+          -- Transaction identity: the report row must have been WRITTEN by
+          -- this transaction.  Comparing xmin (the writing transaction id)
+          -- with the current transaction id is exact; an earlier-started
+          -- transaction that merely observes another transaction's committed
+          -- archive has a different xid and is rejected here.
+          SELECT report.xmin::text::bigint FROM f1.analysis_report AS report
+          WHERE report.enterprise_id=NEW.enterprise_id
+            AND report.id=NEW.report_id INTO v_report_xmin;
+          v_self_xid:=pg_current_xact_id()::text::bigint & 4294967295;
+          IF v_report_xmin IS NULL OR v_report_xmin<>v_self_xid THEN
+            RAISE EXCEPTION 'REPORT_MANAGEMENT_EVENT_TX_MISMATCH';
+          END IF;
+          -- One transition, one event: an event row for the same
+          -- report/action already written by this transaction means the
+          -- single state change is being consumed twice.
+          IF EXISTS (
+            SELECT 1 FROM f1.analysis_report_management_event AS event
+            WHERE event.enterprise_id=NEW.enterprise_id
+              AND event.report_id=NEW.report_id
+              AND event.action=NEW.action
+              AND event.xmin::text::bigint=v_self_xid
+          ) THEN
+            RAISE EXCEPTION 'REPORT_MANAGEMENT_EVENT_DUPLICATE';
+          END IF;
           IF NEW.action='report_archived' THEN
             IF NOT EXISTS (
               SELECT 1 FROM f1.analysis_report AS report
@@ -135,7 +169,6 @@ def upgrade() -> None:
                 AND report.archived_at IS NOT NULL
                 AND report.archived_by_user_id=NEW.actor_user_id
                 AND report.archived_reason IS NOT DISTINCT FROM NEW.reason
-                AND report.updated_at>=transaction_timestamp()
             ) THEN
               RAISE EXCEPTION 'REPORT_MANAGEMENT_EVENT_STATE_INVALID';
             END IF;
@@ -145,7 +178,6 @@ def upgrade() -> None:
               WHERE report.enterprise_id=NEW.enterprise_id
                 AND report.id=NEW.report_id
                 AND report.archived_at IS NULL
-                AND report.updated_at>=transaction_timestamp()
             ) THEN
               RAISE EXCEPTION 'REPORT_MANAGEMENT_EVENT_STATE_INVALID';
             END IF;
