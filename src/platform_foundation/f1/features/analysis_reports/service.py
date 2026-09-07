@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from ...auth import Tenant

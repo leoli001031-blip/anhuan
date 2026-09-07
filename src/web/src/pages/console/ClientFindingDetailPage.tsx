@@ -1,6 +1,6 @@
 // 运营台 · 客户问题详情（/console/clients/:clientId/rectification/:findingId）。
 // 在客户工作区内完成录入→整改→复核→关闭闭环；服务端校验归属。
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import {
   Alert,
@@ -96,6 +96,8 @@ export default function ClientFindingDetailPage() {
   const [editForm] = Form.useForm();
   const [serviceCases, setServiceCases] = useState<ServiceCase[]>([]);
 
+  const refreshEpoch = useRef(0);
+
   const refresh = useCallback(async () => {
     if (!findingId || !clientId) return;
     setLoading(true);
@@ -131,17 +133,20 @@ export default function ClientFindingDetailPage() {
     successMessage: string,
     operation: () => Promise<Finding>,
   ) => {
+    const epoch = refreshEpoch.current;
     setActionLoading(key);
     setError(null);
     try {
       await operation();
+      if (refreshEpoch.current !== epoch) return;
       message.success(successMessage);
       await refresh();
     } catch (reason) {
+      if (refreshEpoch.current !== epoch) return;
       setError(reason);
       message.error(String(reason));
     } finally {
-      setActionLoading(null);
+      if (refreshEpoch.current === epoch) setActionLoading(null);
     }
   };
 

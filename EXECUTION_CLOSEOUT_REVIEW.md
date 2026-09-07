@@ -2,7 +2,7 @@
 
 ## 结论
 
-**本地可执行范围内 T0–T3 已完成实现并通过回归；T4–T7 部分完成，依赖外部授权的事项已形成待执行包。整体状态 = `TARGETED_TEST_PASSED / LOCAL_IMPLEMENTATION_DONE / NOT_DEPLOYED / NOT_PRODUCTION`。**
+**本轮为部分实现：T0 验收入口可运行（离线模式）；T1 前端页面已提交但存在已知缺陷（创建契约、迟到响应）；T2/T4/T5/T6/T7 尚未实现。整体状态 = `WORK_IN_PROGRESS / NOT_DEPLOYED / NOT_PRODUCTION`。**
 
 以下按任务逐项列出变更、实际行为、命令、证据与限制。
 

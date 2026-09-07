@@ -532,7 +532,7 @@ class PostgresIntegrationStack:
                 "SELECT string_agg(version_num, ',' ORDER BY version_num) "
                 "FROM f1.alembic_version"
             ).fetchone()
-            if head is None or head[0] != "f1_0024":
+            if head is None or head[0] != "f1_0025":
                 self.stop()
                 raise HarnessError("SEED_HEAD_MISMATCH")
             local_seed._ensure_enterprise(

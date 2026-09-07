@@ -109,7 +109,7 @@ def _run_unittest(suites: list[str]) -> dict:
             except (ValueError, IndexError):
                 pass
         if line.strip() == "OK":
-            ok = True
+            ok = True  # provisional; final ok also requires exit_code == 0
         if line.startswith("FAILED"):
             ok = False
             # parse failure counts
@@ -124,6 +124,13 @@ def _run_unittest(suites: list[str]) -> dict:
             import re
             for m in re.finditer(r"skipped=(\d+)", line):
                 skipped = int(m.group(1))
+    # A non-zero exit code means the test runner itself failed (e.g. import
+    # error, signal, or post-test cleanup failure).  Text "OK" alone is not
+    # sufficient — a process that prints OK then crashes still fails.
+    if result.returncode != 0:
+        ok = False
+        if errors == 0:
+            errors = 1  # ensure the caller sees a failure count
     return {
         "suites": suites,
         "command": " ".join(["python", "-B", "-m", "unittest"] + suites),
@@ -133,6 +140,9 @@ def _run_unittest(suites: list[str]) -> dict:
         "errors": errors,
         "skipped": skipped,
         "ok": ok,
+        "exit_code_detail": (
+            "pass" if result.returncode == 0 else f"nonzero_exit_code={result.returncode}"
+        ),
         "stdout_tail": stdout[-500:] if len(stdout) > 500 else stdout,
     }
 
