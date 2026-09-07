@@ -930,3 +930,106 @@ async def version_history(tenant: Tenant, report_id: uuid.UUID) -> dict[str, Any
     }
     _forbid_leaks(payload)
     return payload
+
+async def archive_report(
+    tenant: Tenant, report_id: uuid.UUID, *, reason: str | None = None
+) -> dict[str, Any]:
+    """Soft-archive a report; refuses if active generation/review or published."""
+    _require_provider(tenant)
+    if reason is not None and not (1 <= len(reason) <= 500):
+        raise ReportTransitionInvalid()
+    async with session_scope(
+        role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
+    ) as session:
+        actor_id = await repository.actor_user_id(session, tenant.enterprise_id, tenant.sub)
+        if actor_id is None:
+            raise ReportNotFound()
+        row = (
+            await session.execute(
+                text(
+                    "SELECT id,archived_at FROM f1.analysis_report "
+                    "WHERE enterprise_id=:enterprise_id AND id=:report_id"
+                ),
+                {"enterprise_id": tenant.enterprise_id, "report_id": report_id},
+            )
+        ).first()
+        if row is None:
+            raise ReportNotFound()
+        if row.archived_at is not None:
+            return {"report_id": str(report_id), "archived": True, "already_archived": True}
+        active = (
+            await session.execute(
+                text(
+                    "SELECT 1 FROM f1.analysis_report_version "
+                    "WHERE enterprise_id=:enterprise_id AND report_id=:report_id "
+                    "AND status IN ('generating','review_pending','approved') LIMIT 1"
+                ),
+                {"enterprise_id": tenant.enterprise_id, "report_id": report_id},
+            )
+        ).first()
+        if active is not None:
+            raise ReportTransitionInvalid()
+        published = (
+            await session.execute(
+                text(
+                    "SELECT 1 FROM f1.analysis_report_version "
+                    "WHERE enterprise_id=:enterprise_id AND report_id=:report_id "
+                    "AND status='published' LIMIT 1"
+                ),
+                {"enterprise_id": tenant.enterprise_id, "report_id": report_id},
+            )
+        ).first()
+        if published is not None:
+            raise ReportTransitionInvalid()
+        await session.execute(
+            text(
+                "UPDATE f1.analysis_report SET "
+                "archived_at=statement_timestamp(), "
+                "archived_by_user_id=:actor_id, "
+                "archived_reason=:reason, "
+                "updated_at=statement_timestamp() "
+                "WHERE enterprise_id=:enterprise_id AND id=:report_id"
+            ),
+            {
+                "enterprise_id": tenant.enterprise_id,
+                "report_id": report_id,
+                "actor_id": actor_id,
+                "reason": reason,
+            },
+        )
+        await session.commit()
+    return {"report_id": str(report_id), "archived": True, "already_archived": False}
+
+
+async def unarchive_report(
+    tenant: Tenant, report_id: uuid.UUID
+) -> dict[str, Any]:
+    """Remove the soft-archive mark; does not auto-publish or generate."""
+    _require_provider(tenant)
+    async with session_scope(
+        role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
+    ) as session:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT archived_at FROM f1.analysis_report "
+                    "WHERE enterprise_id=:enterprise_id AND id=:report_id"
+                ),
+                {"enterprise_id": tenant.enterprise_id, "report_id": report_id},
+            )
+        ).first()
+        if row is None:
+            raise ReportNotFound()
+        if row.archived_at is None:
+            return {"report_id": str(report_id), "archived": False, "already_unarchived": True}
+        await session.execute(
+            text(
+                "UPDATE f1.analysis_report SET "
+                "archived_at=NULL, archived_by_user_id=NULL, archived_reason=NULL, "
+                "updated_at=statement_timestamp() "
+                "WHERE enterprise_id=:enterprise_id AND id=:report_id"
+            ),
+            {"enterprise_id": tenant.enterprise_id, "report_id": report_id},
+        )
+        await session.commit()
+    return {"report_id": str(report_id), "archived": False, "already_unarchived": False}

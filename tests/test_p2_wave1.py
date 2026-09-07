@@ -66,7 +66,7 @@ class P2Wave1MigrationContractTests(unittest.TestCase):
         config = Config(str(ROOT / "infra/f1/alembic.ini"))
         script = ScriptDirectory.from_config(config)
 
-        self.assertEqual(script.get_heads(), ["f1_0024"])
+        self.assertEqual(script.get_heads(), ["f1_0025"])
         revision = script.get_revision("f1_0005")
         self.assertIsNotNone(revision)
         self.assertEqual(revision.down_revision, "f1_0004")

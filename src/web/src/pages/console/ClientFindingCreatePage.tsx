@@ -1,0 +1,133 @@
+// 运营台 · 客户问题录入（/console/clients/:clientId/rectification/new）。
+// 在客户工作区内选择该客户的服务事项并录入问题。
+import { useCallback, useEffect, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import { Alert, Button, Form, Input, Select, Spin, Typography, message } from "antd";
+import { useAuth } from "../../auth/OidcProvider";
+import ErrorState from "../../components/ErrorState";
+import { listClientServiceCases, type ServiceCase } from "../../p2Api";
+import { createFinding } from "../../p2FindingsApi";
+import ClientShell from "./ClientShell";
+
+const SEVERITY_OPTIONS = [
+  { value: "critical", label: "严重" },
+  { value: "high", label: "高" },
+  { value: "medium", label: "中" },
+  { value: "low", label: "低" },
+];
+
+export default function ClientFindingCreatePage() {
+  const { clientId = "" } = useParams();
+  const { getAccessToken } = useAuth();
+  const navigate = useNavigate();
+  const [cases, setCases] = useState<ServiceCase[] | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [form] = Form.useForm();
+
+  const load = useCallback(async () => {
+    if (!clientId) return;
+    setError(null);
+    try {
+      const token = getAccessToken();
+      if (!token) return;
+      const collection = await listClientServiceCases(token, clientId);
+      const active = collection.items.filter(
+        (c) => !["cancelled", "closed"].includes(c.status),
+      );
+      setCases(active);
+    } catch (e) {
+      setError(e);
+      setCases(null);
+    }
+  }, [clientId, getAccessToken]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const submit = async (values: {
+    service_case_id: string;
+    title: string;
+    severity: string;
+    description?: string;
+  }) => {
+    setSubmitting(true);
+    try {
+      const finding = await createFinding(getAccessToken() ?? "", {
+        service_case_id: values.service_case_id,
+        title: values.title,
+        severity: values.severity,
+        description: values.description ?? "",
+        responsible_user_id: null,
+        due_at: "",
+      });
+      message.success("问题已创建");
+      navigate(`/console/clients/${clientId}/rectification/${finding.id}`);
+    } catch (reason) {
+      message.error(String(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <ClientShell clientId={clientId}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <Button size="small" onClick={() => navigate(`/console/clients/${clientId}/rectification`)}>
+          ← 返回整改列表
+        </Button>
+        <Typography.Title level={4} style={{ margin: 0 }}>
+          录入问题
+        </Typography.Title>
+      </div>
+
+      {error ? (
+        <ErrorState error={error} onRetry={() => void load()} />
+      ) : cases === null ? (
+        <Spin style={{ display: "block", margin: "96px auto" }} />
+      ) : cases.length === 0 ? (
+        <Alert
+          type="warning"
+          message="该客户暂无可用的服务事项"
+          description="请先在「服务事项」页签创建服务事项后再录入问题。"
+          showIcon
+        />
+      ) : (
+        <Form form={form} layout="vertical" onFinish={submit} style={{ maxWidth: 560 }}>
+          <Form.Item
+            name="service_case_id"
+            label="所属服务事项"
+            rules={[{ required: true, message: "请选择服务事项" }]}
+          >
+            <Select placeholder="选择该客户的服务事项">
+              {cases.map((c) => (
+                <Select.Option key={c.id} value={c.id}>
+                  {c.title}
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+          <Form.Item name="title" label="问题标题" rules={[{ required: true, message: "请输入标题" }]}>
+            <Input placeholder="简要描述问题" />
+          </Form.Item>
+          <Form.Item name="severity" label="严重度" rules={[{ required: true, message: "请选择严重度" }]}>
+            <Select placeholder="选择严重度">
+              {SEVERITY_OPTIONS.map((opt) => (
+                <Select.Option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </Select.Option>
+              ))}
+            </Select>
+          </Form.Item>
+          <Form.Item name="description" label="详细描述">
+            <Input.TextArea rows={4} placeholder="问题的详细说明（可选）" />
+          </Form.Item>
+          <Button type="primary" htmlType="submit" loading={submitting}>
+            创建问题
+          </Button>
+        </Form>
+      )}
+    </ClientShell>
+  );
+}

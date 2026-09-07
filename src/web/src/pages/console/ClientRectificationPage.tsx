@@ -1,9 +1,9 @@
 // 运营台 · 客户整改聚合（/console/clients/:clientId/rectification）。
 // 先获取客户服务事项，再逐项读取详情并强制校验 client_account_id；任何失配都 fail-closed。
 import { useEffect, useMemo, useState } from "react";
-import { Empty, Spin, Table, Typography } from "antd";
+import { Button, Empty, Spin, Table, Typography } from "antd";
 import type { TableColumnsType } from "antd";
-import { useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../../auth/OidcProvider";
 import ErrorState from "../../components/ErrorState";
 import { formatDateTime } from "../../components/ReportDocument";
@@ -17,6 +17,7 @@ import { useNarrow } from "./useNarrow";
 
 interface RectificationRow {
   key: string;
+  findingId: string;
   title: string;
   severity: string;
   status: string;
@@ -90,6 +91,7 @@ export default function ClientRectificationPage() {
     error: null,
   }));
   const [nonce, setNonce] = useState(0);
+  const navigate = useNavigate();
 
   useEffect(() => {
     let active = true;
@@ -107,6 +109,7 @@ export default function ClientRectificationPage() {
       const nextRows = details.flatMap((serviceCase, caseIndex) =>
         (serviceCase.findings ?? []).map((finding, findingIndex) => ({
           key: `${caseIndex}-${findingIndex}`,
+          findingId: finding.id,
           title: finding.title,
           severity: finding.severity,
           status: finding.status,
@@ -155,7 +158,15 @@ export default function ClientRectificationPage() {
       title: "整改问题",
       dataIndex: "title",
       key: "title",
-      render: (value: string) => <Typography.Text strong>{value}</Typography.Text>,
+      render: (value: string, row: RectificationRow) => (
+        <Button
+          type="link"
+          style={{ padding: 0, height: "auto" }}
+          onClick={() => navigate(`/console/clients/${clientId}/rectification/${row.findingId}`)}
+        >
+          <Typography.Text strong>{value}</Typography.Text>
+        </Button>
+      ),
     },
     {
       title: "所属服务",
@@ -212,6 +223,13 @@ export default function ClientRectificationPage() {
             <Typography.Text type={overdueCount > 0 ? "danger" : "secondary"}>
               {overdueCount > 0 ? `${overdueCount} 项已逾期` : "无逾期项"}
             </Typography.Text>
+            <Button
+              type="primary"
+              size="small"
+              onClick={() => navigate(`/console/clients/${clientId}/rectification/new`)}
+            >
+              录入问题
+            </Button>
           </div>
 
           {rows.length === 0 ? (
@@ -219,7 +237,14 @@ export default function ClientRectificationPage() {
           ) : narrow ? (
             <div className="client-rectification__list">
               {rows.map((row) => (
-                <article key={row.key} className="client-rectification__item">
+                <article
+                  key={row.key}
+                  className="client-rectification__item"
+                  onClick={() =>
+                    navigate(`/console/clients/${clientId}/rectification/${row.findingId}`)
+                  }
+                  style={{ cursor: "pointer" }}
+                >
                   <Typography.Text strong>{row.title}</Typography.Text>
                   <Typography.Text type="secondary">所属服务：{row.serviceTitle}</Typography.Text>
                   <div className="client-rectification__meta">

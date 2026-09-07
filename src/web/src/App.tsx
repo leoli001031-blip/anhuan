@@ -26,6 +26,8 @@ const ClientMaterialsPage = lazy(() => import("./pages/console/ClientMaterialsPa
 const ClientServicesPage = lazy(() => import("./pages/console/ClientServicesPage"));
 const ClientServiceCalendarPage = lazy(() => import("./pages/console/ClientServiceCalendarPage"));
 const ClientRectificationPage = lazy(() => import("./pages/console/ClientRectificationPage"));
+const ClientFindingDetailPage = lazy(() => import("./pages/console/ClientFindingDetailPage"));
+const ClientFindingCreatePage = lazy(() => import("./pages/console/ClientFindingCreatePage"));
 const ClientReportsPage = lazy(() => import("./pages/console/ClientReportsPage"));
 const ReportWorkbenchPage = lazy(() => import("./pages/console/ReportWorkbenchPage"));
 const ExceptionsPage = lazy(() => import("./pages/console/ExceptionsPage"));
@@ -152,6 +154,8 @@ function AppRoutes() {
         <Route path="clients/:clientId/services" element={<ClientServicesPage />} />
         <Route path="clients/:clientId/calendar" element={<ClientServiceCalendarPage />} />
         <Route path="clients/:clientId/rectification" element={<ClientRectificationPage />} />
+        <Route path="clients/:clientId/rectification/new" element={<ClientFindingCreatePage />} />
+        <Route path="clients/:clientId/rectification/:findingId" element={<ClientFindingDetailPage />} />
         <Route path="clients/:clientId/reports" element={<ClientReportsPage />} />
         <Route
           path="clients/:clientId/reports/:reportId"
