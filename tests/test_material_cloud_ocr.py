@@ -653,5 +653,100 @@ class CloudOcrMultiImagePageContracts(unittest.TestCase):
         self.assertEqual(results[0].reason_code, "OCR_UNAVAILABLE")
 
 
+
+class CloudOcrResidualAuditContracts(unittest.TestCase):
+    """Residual findings from the 2026-09-07 re-audit."""
+
+    def _mixed_pdf(self) -> bytes:
+        """One page with a DCTDecode JPEG + a FlateDecode image."""
+        jpeg = b"\xff\xd8\xff\xe0fake-jpeg" + b"J" * 200
+        flate_data = b"\x78\x9c" + b"\x00" * 20  # raw zlib stream
+        objects = {
+            1: b"<< /Type /Catalog /Pages 2 0 R >>",
+            2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            3: (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1024 768] "
+                b"/Resources << /XObject << /ImA 4 0 R /ImB 5 0 R >> >> >>"),
+            4: (f"<< /Type /XObject /Subtype /Image /Width 800 /Height 600 "
+                f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode "
+                f"/Length {len(jpeg)} >>\nstream\n").encode() + jpeg + b"\nendstream",
+            5: (f"<< /Type /XObject /Subtype /Image /Width 400 /Height 300 "
+                f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode "
+                f"/Length {len(flate_data)} >>\nstream\n").encode() + flate_data + b"\nendstream",
+        }
+        out = bytearray(b"%PDF-1.7\n"); offs = {}
+        for n in sorted(objects):
+            offs[n] = len(out)
+            out.extend(f"{n} 0 obj\n".encode()); out.extend(objects[n]); out.extend(b"\nendobj\n")
+        x = len(out)
+        out.extend(b"xref\n0 6\n0000000000 65535 f \n")
+        for n in range(1, 6): out.extend(f"{offs[n]:010d} 00000 n \n".encode())
+        out.extend(f"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n".encode())
+        return bytes(out)
+
+    def test_mixed_filter_page_fails_closed(self) -> None:
+        """JPEG + Flate on one page must NOT be reported as applied."""
+        env = _Env(self)
+        env.enable()
+        source = self._mixed_pdf()
+        calls = []
+        def transport(url, headers, body, timeout):
+            calls.append(1)
+            return json.dumps({"choices": [{"message": {"content": "识别文本" * 20}}]}).encode()
+        results = cloud_ocr_pdf_pages(
+            source, page_numbers=[1],
+            expected_sha256=hashlib.sha256(source).hexdigest(),
+            transport=transport,
+        )
+        self.assertEqual(len(calls), 0, "must not send any image from a partially-uncoverable page")
+        self.assertFalse(results[0].ocr_applied)
+        self.assertEqual(results[0].reason_code, "OCR_UNAVAILABLE")
+
+    def test_merged_text_over_page_limit_fails_closed(self) -> None:
+        """Two images each returning valid-length text that exceeds the page cap when merged."""
+        from platform_foundation.f1.features.material_intake.cloud_ocr import (
+            MAX_OCR_PAGE_TEXT_CHARACTERS,
+        )
+        env = _Env(self)
+        env.enable()
+        # Build a page with 2 JPEGs
+        jpeg_a = b"\xff\xd8\xff\xe0A" + b"A" * 100
+        jpeg_b = b"\xff\xd8\xff\xe0B" + b"B" * 100
+        objects = {
+            1: b"<< /Type /Catalog /Pages 2 0 R >>",
+            2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            3: (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1024 768] "
+                b"/Resources << /XObject << /ImA 4 0 R /ImB 5 0 R >> >> >>"),
+            4: (f"<< /Type /XObject /Subtype /Image /Width 800 /Height 600 "
+                f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode "
+                f"/Length {len(jpeg_a)} >>\nstream\n").encode() + jpeg_a + b"\nendstream",
+            5: (f"<< /Type /XObject /Subtype /Image /Width 400 /Height 300 "
+                f"/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode "
+                f"/Length {len(jpeg_b)} >>\nstream\n").encode() + jpeg_b + b"\nendstream",
+        }
+        out = bytearray(b"%PDF-1.7\n"); offs = {}
+        for n in sorted(objects):
+            offs[n] = len(out)
+            out.extend(f"{n} 0 obj\n".encode()); out.extend(objects[n]); out.extend(b"\nendobj\n")
+        x = len(out)
+        out.extend(b"xref\n0 6\n0000000000 65535 f \n")
+        for n in range(1, 6): out.extend(f"{offs[n]:010d} 00000 n \n".encode())
+        out.extend(f"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n".encode())
+        source = bytes(out)
+
+        # Each image returns text under the per-response cap, but merged they exceed the page cap
+        half = MAX_OCR_PAGE_TEXT_CHARACTERS // 2 + 1000
+        responses = [
+            json.dumps({"choices": [{"message": {"content": "字" * half}}]}).encode(),
+            json.dumps({"choices": [{"message": {"content": "字" * half}}]}).encode(),
+        ]
+        idx = [0]
+        def transport(url, headers, body, timeout):
+            i = idx[0]; idx[0] += 1
+            return responses[min(i, len(responses) - 1)]
+        results = cloud_ocr_pdf_pages(source, page_numbers=[1], transport=transport)
+        self.assertFalse(results[0].ocr_applied, "merged text over page cap must fail closed")
+        self.assertEqual(results[0].reason_code, "OCR_UNAVAILABLE")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -368,22 +368,26 @@ def _default_transport(
     return b"".join(chunks)
 
 
-def _page_jpegs(reader: PdfReader, page: object) -> list[bytes]:
+def _page_jpegs(
+    reader: PdfReader, page: object
+) -> tuple[list[bytes], bool]:
     """Return every distinct DCTDecode image on the page, largest first.
 
-    ``DCTDecode`` streams are JPEG bytes verbatim, so no imaging dependency is
-    required.  Every other filter (Flate bitmaps, CCITT, JPX) is deliberately
-    unsupported: those pages fail closed with ``OCR_UNAVAILABLE`` instead of
-    silently degrading.  A page with no image XObjects at all also returns an
-    empty list so the caller fails closed rather than silently skipping.
+    Returns ``(images, has_uncoverable)``.  ``has_uncoverable`` is True when
+    the page contains at least one image XObject this adapter cannot process
+    (Flate, CCITT, JPX, bad dimensions, oversized stream).  The caller must
+    fail closed on such pages — sending only the DCTDecode subset and
+    reporting the page as fully recognized would silently drop content.
+    A page with no image XObjects at all returns ``([], False)`` so the
+    caller falls through to the standard unavailable path.
     """
     try:
         resources = page["/Resources"]
         if resources is None:
-            return []
+            return [], False
         xobjects = resources.get("/XObject")
         if xobjects is None:
-            return []
+            return [], False
         found: list[tuple[int, bytes]] = []
         seen_hashes: set[bytes] = set()
         non_image_count = 0
@@ -425,9 +429,9 @@ def _page_jpegs(reader: PdfReader, page: object) -> list[bytes]:
             seen_hashes.add(digest)
             found.append((width * height, data))
         found.sort(key=lambda item: item[0], reverse=True)
-        return [data for _, data in found]
+        return [data for _, data in found], non_image_count > 0
     except Exception:
-        return []
+        return [], False
 
 
 def _chat_response_text(raw: bytes, dialect: str = "chat") -> str:
@@ -632,11 +636,24 @@ def cloud_ocr_pdf_pages(
                 )
             )
             continue
-        images = _page_jpegs(reader, reader.pages[page_number - 1])
+        images, has_uncoverable = _page_jpegs(
+            reader, reader.pages[page_number - 1]
+        )
         result: OcrPageResult | None = None
+        if images and has_uncoverable:
+            # The page mixes processable JPEGs with images this adapter
+            # cannot send (Flate/CCITT/JPX).  Recognizing only the JPEG
+            # subset would silently drop the rest; fail the whole page.
+            result = _cloud_fallback_result(
+                page_number,
+                state="unavailable",
+                reason_code="OCR_UNAVAILABLE",
+            )
+            images = ()
         if images:
             texts: list[str] = []
             total_characters = 0
+            combined_length = 0
             ok = True
             for image in images:
                 payload = _build_page_request(
@@ -674,6 +691,13 @@ def cloud_ocr_pdf_pages(
                 if remaining <= 0:
                     ok = False
                     break
+            if ok:
+                combined = "\n".join(texts)
+                # Per-image checks cap each response, but the merged page
+                # text also has a downstream checkpoint limit.  Reject
+                # before marking applied, not after the DB rejects it.
+                if len(combined) > MAX_OCR_PAGE_TEXT_CHARACTERS:
+                    ok = False
             if ok and total_characters >= 40:
                 combined = "\n".join(texts)
                 result = OcrPageResult(

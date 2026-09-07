@@ -267,9 +267,29 @@ class LlmReportGenerator:
             raise GenerationFailed("REPORT_TEMPLATE_INVALID")
         if not frozen.sources:
             raise GenerationFailed("REPORT_SOURCES_EMPTY")
+        # Round-robin guarantees every source appears, but only while
+        # sources <= budget.  More sources than the block budget means
+        # some source gets zero blocks — fail closed instead of silently
+        # producing a report that omits an entire document.
+        total_units = sum(
+            len(source.evidence_units) for source in frozen.sources
+        )
+        if total_units > _MAX_EVIDENCE_BLOCKS and len(frozen.sources) > _MAX_EVIDENCE_BLOCKS:
+            raise GenerationFailed("REPORT_SOURCES_OVER_BUDGET")
         blocks = _evidence_blocks(frozen)
         if len(blocks) < _MIN_CITATIONS:
             raise GenerationFailed("REPORT_SOURCES_EMPTY")
+        # After allocation, verify every source actually got at least one
+        # block; a silent omission is exactly the audit finding.
+        if len(frozen.sources) > 1:
+            represented = {block.source.document_version_id for block in blocks}
+            missing = [
+                source.document_name
+                for source in frozen.sources
+                if source.document_version_id not in represented
+            ]
+            if missing:
+                raise GenerationFailed("REPORT_SOURCES_UNDER_REPRESENTED")
 
         evidence_lines: list[str] = []
         for block in blocks:
