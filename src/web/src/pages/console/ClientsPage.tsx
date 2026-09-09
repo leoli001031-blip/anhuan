@@ -1,12 +1,16 @@
 // 运营台 · 客户企业列表：桌面表格密集易扫描；<768px 切换为列表形态，
 // 不逐字换行、不依赖横向拖动。页首给出客户上下文摘要，减少空壳感。
-// 正式 HTTP 无完整 audience 开通合同：隐藏「新建客户」（仅演示环境可见）。
-import { useEffect, useState } from "react";
-import { Button, Form, Input, Modal, Select, Spin, Table, Typography, message } from "antd";
+// 创建客户档案后进入详情；客户门户由详情中的独立开通动作管理。
+import { useEffect, useRef, useState } from "react";
+import { Alert, Button, Form, Input, Modal, Select, Spin, Table, Typography, message } from "antd";
 import { Link, useNavigate } from "react-router-dom";
-import { useApi, isMockData } from "../../adapters";
+import { useApi, useSessionAccess, isMockData } from "../../adapters";
 import type { ClientAccount, ClientStage } from "../../adapters/types";
 import { CLIENT_STAGE_LABEL } from "../../adapters/types";
+import { useAuth } from "../../auth/OidcProvider";
+import { useAsyncContext } from "../../components/useAsyncContext";
+import { clientCreationError, normalizeClientCreate } from "../../adapters/clientCreation";
+import { pendingWrite, completePendingWrite } from "../../adapters/pendingWrites";
 import ErrorState from "../../components/ErrorState";
 import { formatDateTime } from "../../components/ReportDocument";
 import { useNarrow } from "./useNarrow";
@@ -15,42 +19,72 @@ export default function ClientsPage() {
   const api = useApi();
   const navigate = useNavigate();
   const narrow = useNarrow();
-  const [rows, setRows] = useState<ClientAccount[] | null>(null);
-  const [error, setError] = useState<unknown>(null);
+  const {session, loading: sessionLoading, error: sessionError} = useSessionAccess();
+  const {user, isInitializing} = useAuth();
+  const context = JSON.stringify([session?.enterprise_id, user?.profile.sub, session?.product_role,
+    session?.membership_role, sessionLoading, !!sessionError, !!isInitializing]);
+  const current = useAsyncContext(context);
+  const ready = !!session?.enterprise_id && !sessionLoading && !sessionError
+    && (isMockData || (!!user?.profile.sub && !isInitializing));
+  const canCreate = ready && session?.product_role === "provider_admin";
+  const [record, setRecord] = useState<{context: string; rows: ClientAccount[]} | null>(null);
+  const [failure, setFailure] = useState<{context: string; error: unknown} | null>(null);
+  const rows = record?.context === context ? record.rows : null;
+  const error = failure?.context === context ? failure.error : null;
   const [nonce, setNonce] = useState(0);
-  const [createOpen, setCreateOpen] = useState(false);
+  const [createOpen, setCreateOpen] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const [form] = Form.useForm<{ name: string; stage: ClientStage }>();
+  const flight = useRef<{context: string; active: boolean}>({context, active: false});
+  const requestEpoch = useRef(0);
 
   useEffect(() => {
+    flight.current = {context, active: false};
+    setRecord(null); setFailure(null); setCreateOpen(null); setCreating(false); setCreateError(null);
+    form.resetFields();
+  }, [context, form]);
+  useEffect(() => {
+    if (!ready) return;
+    const epoch = ++requestEpoch.current;
     let active = true;
-    setError(null);
-    api
-      .listClients()
-      .then((items) => {
-        if (active) setRows(items);
-      })
-      .catch((e) => {
-        if (active) setError(e);
-      });
-    return () => {
-      active = false;
-    };
-  }, [api, nonce]);
+    setFailure(null);
+    api.listClients().then(items => {
+      if (active && current() && epoch === requestEpoch.current) setRecord({context, rows: items});
+    }).catch(error => {
+      if (active && current() && epoch === requestEpoch.current) setFailure({context, error});
+    });
+    return () => { active = false; };
+    // The render identity and request epoch own this read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [api, context, ready, nonce]);
 
   const create = async () => {
-    const values = await form.validateFields();
-    setCreating(true);
+    if (!canCreate || !current() || (flight.current.context === context && flight.current.active)) return;
+    const invocation = {context, active: true}; flight.current = invocation;
+    setCreating(true); setCreateError(null);
     try {
-      const client = await api.createClient(values);
+      let values: {name: string; stage: ClientStage};
+      try { values = await form.validateFields(); } catch { return; }
+      if (!current() || !canCreate) return;
+      const normalized = normalizeClientCreate({display_name: values.name, stage: values.stage});
+      const signature = JSON.stringify(normalized);
+      const pending = await pendingWrite("crm.account.create", session!.enterprise_id,
+        user?.profile.sub ?? "mock-user", signature);
+      if (!current() || !canCreate) return;
+      const requestId = pending.requestId;
+      ++requestEpoch.current;
+      const client = await api.createClient({name: normalized.display_name, stage: normalized.stage, requestId});
+      if (!current()) return;
+      completePendingWrite(pending);
       message.success("客户已创建");
-      setCreateOpen(false);
-      form.resetFields();
+      setCreateOpen(null); form.resetFields();
       navigate(`/console/clients/${client.id}`);
-    } catch {
-      message.error("创建失败，请重试");
+    } catch (error) {
+      if (current()) setCreateError(clientCreationError(error));
     } finally {
-      setCreating(false);
+      invocation.active = false;
+      if (current()) setCreating(false);
     }
   };
 
@@ -66,8 +100,8 @@ export default function ClientsPage() {
         <Typography.Title level={2}>
           客户企业
         </Typography.Title>
-        {isMockData && (
-          <Button type="primary" onClick={() => setCreateOpen(true)}>
+        {canCreate && (
+          <Button type="primary" onClick={() => setCreateOpen(context)}>
             新建客户
           </Button>
         )}
@@ -146,16 +180,22 @@ export default function ClientsPage() {
       )}
       <Modal
         title="新建客户"
-        open={createOpen}
+        open={createOpen === context}
         onOk={() => void create()}
-        onCancel={() => setCreateOpen(false)}
+        onCancel={() => { if (!creating) setCreateOpen(null); }}
+        closable={!creating}
+        maskClosable={!creating}
+        keyboard={!creating}
+        cancelButtonProps={{disabled: creating}}
         confirmLoading={creating}
         okText="创建"
         cancelText="取消"
       >
-        <Form form={form} layout="vertical" initialValues={{ stage: "lead" }}>
-          <Form.Item name="name" label="客户名称" rules={[{ required: true, message: "请输入客户名称" }]}>
-            <Input placeholder="例如：蓝海化工有限公司" />
+        {createError && <Alert type="error" showIcon message={createError} style={{marginBottom: 16}} />}
+        <Typography.Paragraph type="secondary">创建后可管理客户材料与报告，并在详情中开通客户门户。</Typography.Paragraph>
+        <Form form={form} layout="vertical" disabled={creating} initialValues={{ stage: "lead" }}>
+          <Form.Item name="name" label="客户名称" rules={[{ required: true, whitespace: true, message: "请输入客户名称" }, {max: 200, message: "客户名称不能超过 200 字" }]}>
+            <Input aria-label="客户名称" placeholder="例如：蓝海化工有限公司" />
           </Form.Item>
           <Form.Item name="stage" label="阶段" rules={[{ required: true }]}>
             <Select

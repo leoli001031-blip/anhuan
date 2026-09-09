@@ -136,6 +136,27 @@ export interface AutoPipelineStatus {
   report: AutoPipelineStage;
 }
 
+export interface NativeExtractionStatus {
+  effective?: {state: 'unavailable' | 'pending' | 'running' | 'retry_wait' | 'blocked' | 'partial' | 'empty' | 'ready' | 'revoked'; evidence_kind: 'review' | 'extraction' | null; revision_id: string | null; fragment_count: number; reason_code: string | null} | null;
+  schema: "anhuan-native-extraction-v1";
+  source_format?: "docx" | "xlsx" | "jpeg" | null;
+  parser_version?: string | null;
+  support_profile?: string | null;
+  debts?: { reason_code: string; part: string; path: string }[];
+  processing_identity?: Record<string, string>;
+  version_id: string;
+  state: "disabled" | "not_registered" | "pending" | "running" | "retry_wait" | "done" | "blocked";
+  job_id: string | null;
+  revision_id: string | null;
+  attempt: number;
+  reason_code: string | null;
+  coverage_state: "complete" | "partial" | null;
+  expected_block_count: number | null;
+  processed_block_count: number | null;
+  fragment_count: number | null;
+  report_source_eligible: boolean;
+}
+
 export interface PreviewUnit {
   id: string;
   kind: "page_text" | "worksheet_grid" | "image";

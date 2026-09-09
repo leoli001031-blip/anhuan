@@ -252,6 +252,7 @@ def _start_stack(state: dict[str, object], paths: dict[str, Path]) -> None:
     if _ocr_mode() == "required":
         _assert_ocr_runtime(paths)
     _compose(state, paths, "run", "--rm", "--no-deps", "secret-init", timeout=180)
+    _compose(state, paths, "run", "--rm", "--no-deps", "storage-secret-init", timeout=180)
     _compose(state, paths, "build", "migrator", "web", timeout=1800)
     runtime_services = [
         "api",
@@ -259,6 +260,7 @@ def _start_stack(state: dict[str, object], paths: dict[str, Path]) -> None:
         "dispatcher",
         "ingestion-worker",
         "report-worker",
+        "source-gateway",
         "web",
     ]
     if not ocr_disabled:
@@ -279,6 +281,7 @@ def _start_stack(state: dict[str, object], paths: dict[str, Path]) -> None:
         "clamd",
         timeout=420,
     )
+    _compose(state, paths, "run", "--rm", "--no-deps", "storage-provisioner", timeout=180)
     _compose(state, paths, "run", "--rm", "migrator", timeout=600)
     _seed_identities(state, paths)
     _compose(state, paths, "run", "--rm", "keycloak-provisioner", timeout=180)
@@ -567,7 +570,7 @@ def run_status() -> dict[str, object]:
     expected = {
         "ark_calls": 0,
         "client_login_ready": 1,
-        "f1_head": "f1_0026",
+        "f1_head": "f1_0044",
         "generator": "evidence_local",
         "mock_data": 0,
         "provider_login_ready": 1,

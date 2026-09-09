@@ -60,6 +60,13 @@ _USAGE_BOUNDARY_BODY = (
 )
 
 _JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+_INLINE_CITATION_RE = re.compile(
+    r"证据\s*(?P<named>[0-9]+)|\[(?P<bracket>[0-9]+)\]|【(?P<wide>[0-9]+)】"
+)
+_AMBIGUOUS_CITATION_RE = re.compile(
+    r"(?:证据\s*|\[|【)[0-9]+\s*[、,，\-–至]\s*[0-9]+"
+    r"|证据\s*[一二三四五六七八九十百]"
+)
 _MODEL_SECTION_KEYS = (
     "source_scope",
     "status_summary",
@@ -74,7 +81,8 @@ _INSTRUCTIONS = """你是环保托管运营平台的分析报告撰写助手。�
    {"source_scope":"...","status_summary":"...","key_findings":"...","risks_and_gaps":"...","remediation":"...","citations":[编号, ...]}
 3. 五个正文章节使用简体中文，每节不超过 400 字；key_findings 与 risks_and_gaps 应分点陈述（用「；」或换行分隔）。
 4. citations 是你实际引用的证据块编号数组，必须包含 2 到 12 个不重复编号，且只能来自给定证据块编号。
-5. source_scope 概括材料范围；status_summary 概括材料反映的现状；remediation 给出与证据对应的整改建议。"""
+5. source_scope 概括材料范围；status_summary 概括材料反映的现状；remediation 给出与证据对应的整改建议。
+6. 正文引用必须逐一写成【证据N】，N 使用给定证据块的原始编号，并包含在 citations 中；不要自行重编号，不要使用合并编号或编号范围。"""
 
 
 def llm_generation_enabled() -> bool:
@@ -251,6 +259,34 @@ def _parse_model_output(text: str) -> tuple[dict[str, str], list[int]]:
     return bodies, indices
 
 
+def _renumber_body_citations(bodies: dict[str, str], indices: list[int]) -> dict[str, str]:
+    """Map model evidence IDs and rendered citation ordinals in one pass.
+
+    Keep the array order chosen by the model, but never change the citation
+    list without changing references in its prose. Legacy ``见证据N`` and
+    bracketed numeric references are normalized by the same map.
+    """
+    ordinals = {index: ordinal for ordinal, index in enumerate(indices, 1)}
+    if any(_AMBIGUOUS_CITATION_RE.search(body) for body in bodies.values()):
+        raise GenerationFailed("REPORT_LLM_OUTPUT_INVALID")
+
+    def replace_reference(match: re.Match[str]) -> str:
+        index = int(next(value for value in match.groups() if value is not None))
+        if index not in ordinals:
+            raise GenerationFailed("REPORT_LLM_OUTPUT_INVALID")
+        number = ordinals[index]
+        if match.group("bracket") is not None:
+            return f"[证据{number}]"
+        if match.group("wide") is not None:
+            return f"【证据{number}】"
+        return f"证据{number}"
+
+    result = {key: _INLINE_CITATION_RE.sub(replace_reference, body) for key, body in bodies.items()}
+    if any(len(body) > _MODEL_BODY_CHARACTERS for body in result.values()):
+        raise GenerationFailed("REPORT_LLM_OUTPUT_INVALID")
+    return result
+
+
 class LlmReportGenerator:
     """Generate a report with a cloud chat model over frozen evidence only."""
 
@@ -299,7 +335,7 @@ class LlmReportGenerator:
             evidence_lines.append(
                 f"[{block.index}] 《{block.source.document_name}》"
                 f"v{block.source.version_number} "
-                f"第{block.unit.page_number}页：{text}"
+                f"{block.unit.location}：{text}"
             )
         prompt = (
             _INSTRUCTIONS
@@ -314,12 +350,19 @@ class LlmReportGenerator:
         )
         bodies, indices = _parse_model_output(text)
         by_index = {block.index: block for block in blocks}
+        if any(index not in by_index for index in indices):
+            raise GenerationFailed("REPORT_LLM_OUTPUT_INVALID")
+        bodies = _renumber_body_citations(bodies, indices)
         citations = tuple(
             GeneratedCitation(
                 document_version_id=by_index[index].source.document_version_id,
                 document_name=by_index[index].source.document_name,
                 version_number=by_index[index].source.version_number,
                 page_number=by_index[index].unit.page_number,
+                locator=by_index[index].unit.locator,
+                evidence_revision_id=by_index[index].unit.evidence_revision_id,
+                fragment_id=by_index[index].unit.fragment_id,
+                evidence_body_sha256=by_index[index].unit.body_sha256 if by_index[index].unit.locator is not None else None,
                 excerpt=by_index[index].unit.text.strip()[
                     :_CITATION_EXCERPT_CHARACTERS
                 ],
@@ -328,7 +371,7 @@ class LlmReportGenerator:
         )
         citation_bodies = "\n".join(
             f"[证据{number}] 《{citation.document_name}》"
-            f"v{citation.version_number} 第{citation.page_number}页："
+            f"v{citation.version_number} {citation.location}："
             f"{citation.excerpt}"
             for number, citation in enumerate(citations, start=1)
         )

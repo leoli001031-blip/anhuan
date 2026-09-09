@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ... import qa_service
 from ...auth import Tenant, tenant_from_header
+from ...business_identity import product_role_for
 from ...features import material_rag
 
 router = APIRouter()
@@ -36,7 +37,10 @@ class MaterialCitation(BaseModel):
     document_name: str = Field(min_length=1, max_length=200)
     version_number: int = Field(ge=1)
     source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    page_number: int = Field(ge=1)
+    page_number: int | None = Field(default=None, ge=1)
+    locator: dict | None = None
+    location: str | None = None
+    evidence_revision_id: uuid.UUID | None = None
     body_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     snippet: str = Field(min_length=1, max_length=320)
 
@@ -48,7 +52,7 @@ class MaterialQaResponse(BaseModel):
     request_id: uuid.UUID
 
 
-@router.post("", response_model=MaterialQaResponse)
+@router.post("", response_model=MaterialQaResponse, response_model_exclude_unset=True)
 async def ask_material_question(
     body: MaterialQaRequest,
     response: Response,
@@ -58,7 +62,17 @@ async def ask_material_question(
     if not question:
         raise HTTPException(status_code=422, detail="EMPTY_QUESTION")
     try:
-        if tenant.role in {"super_admin", "enterprise_admin"}:
+        if tenant.business_kind is not None:
+            product_role = product_role_for(tenant)
+            if product_role == "client_user" and _aeco_audience_enabled():
+                if body.client_account_id is not None:
+                    raise material_rag.MaterialRagContextNotFound("MATERIAL_CONTEXT_NOT_FOUND")
+                context = await material_rag.derive_audience_retrieval_context(tenant)
+            elif product_role == "provider_admin":
+                context = await material_rag.derive_retrieval_context(tenant, body.client_account_id)
+            else:
+                raise HTTPException(status_code=403, detail="ROLE_REQUIRED")
+        elif tenant.role in {"super_admin", "enterprise_admin"}:
             context = await material_rag.derive_retrieval_context(
                 tenant, body.client_account_id
             )

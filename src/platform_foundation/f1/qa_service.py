@@ -383,6 +383,19 @@ async def ask_material_question(
             _validate_outcome(replay)
         except QaOutcomeInvalid:
             raise QaOutcomeInvalid("MATERIAL_REPLAY_INVALID") from None
+        from .features.evidence.repository import native_extraction_enabled
+        if native_extraction_enabled() and replay.citations:
+            from .features.material_rag.service import _effective_local_records
+            current = {str(r.canonical_unit_id): r for r in await _effective_local_records(tenant, context)}
+            for citation in replay.citations:
+                record = current.get(citation.get('canonical_unit_id'))
+                if (record is None or citation.get('body_sha256') != record.body_sha256
+                    or citation.get('document_version_id') != str(record.document_version_id)
+                    or citation.get('source_sha256') != record.source_sha256
+                    or citation.get('page_number') != record.page_number
+                    or citation.get('locator', record.locator) != record.locator
+                    or citation.get('evidence_revision_id', str(record.evidence_revision_id)) != str(record.evidence_revision_id)):
+                    raise RequestIdConflict('REQUEST_ID_CONFLICT')
         return replay
     if reservation.state is not ReservationState.CLAIMED:
         raise RequestOwnershipLost("REQUEST_RESERVATION_INVALID")

@@ -4,13 +4,358 @@
   "title": "CitationV1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["citation_id", "document_version_id", "document_name", "version_number", "page_number", "excerpt"],
+  "required": [
+    "citation_id",
+    "document_version_id",
+    "document_name",
+    "version_number",
+    "page_number",
+    "excerpt"
+  ],
   "properties": {
-    "citation_id": { "type": "string", "format": "uuid" },
-    "document_version_id": { "type": "string", "format": "uuid" },
-    "document_name": { "type": "string", "minLength": 1, "maxLength": 200 },
-    "version_number": { "type": "integer", "minimum": 1 },
-    "page_number": { "type": "integer", "minimum": 1 },
-    "excerpt": { "type": "string", "minLength": 1, "maxLength": 320 }
+    "citation_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "document_version_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "document_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "version_number": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "page_number": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 1
+    },
+    "excerpt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 320
+    },
+    "locator": {
+      "$ref": "#/$defs/locator"
+    },
+    "location": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 300
+    },
+    "evidence_revision_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "fragment_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "evidence_body_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "dependentRequired": {
+    "locator": [
+      "locator",
+      "location",
+      "evidence_revision_id",
+      "fragment_id",
+      "evidence_body_sha256"
+    ],
+    "location": [
+      "locator",
+      "location",
+      "evidence_revision_id",
+      "fragment_id",
+      "evidence_body_sha256"
+    ],
+    "evidence_revision_id": [
+      "locator",
+      "location",
+      "evidence_revision_id",
+      "fragment_id",
+      "evidence_body_sha256"
+    ],
+    "fragment_id": [
+      "locator",
+      "location",
+      "evidence_revision_id",
+      "fragment_id",
+      "evidence_body_sha256"
+    ],
+    "evidence_body_sha256": [
+      "locator",
+      "location",
+      "evidence_revision_id",
+      "fragment_id",
+      "evidence_body_sha256"
+    ]
+  },
+  "oneOf": [
+    {
+      "not": {
+        "required": [
+          "locator"
+        ]
+      },
+      "properties": {
+        "page_number": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    {
+      "required": [
+        "locator",
+        "location",
+        "evidence_revision_id",
+        "fragment_id",
+        "evidence_body_sha256"
+      ],
+      "if": {
+        "properties": {
+          "locator": {
+            "properties": {
+              "kind": {
+                "const": "pdf_page"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "page_number": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "page_number": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "locator": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "kind",
+            "page_number"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": 2
+            },
+            "kind": {
+              "const": "pdf_page"
+            },
+            "page_number": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "kind",
+            "part",
+            "body_index",
+            "row_index",
+            "cell_index",
+            "grid_column",
+            "grid_span",
+            "paragraph_index"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": 2
+            },
+            "kind": {
+              "const": "docx_block"
+            },
+            "part": {
+              "const": "word/document.xml"
+            },
+            "body_index": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1000000
+            },
+            "row_index": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "cell_index": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "grid_column": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "grid_span": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "paragraph_index": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1000000
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "kind",
+            "sheet_id",
+            "sheet_name",
+            "part",
+            "cell_range"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": 2
+            },
+            "kind": {
+              "const": "xlsx_cells"
+            },
+            "sheet_id": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4294967295
+            },
+            "sheet_name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 31
+            },
+            "part": {
+              "type": "string",
+              "pattern": "^xl/worksheets/[A-Za-z0-9_-]+[.]xml$"
+            },
+            "cell_range": {
+              "type": "string",
+              "pattern": "^[A-Z]{1,3}[1-9][0-9]{0,6}(:[A-Z]{1,3}[1-9][0-9]{0,6})?$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "kind",
+            "source_width",
+            "source_height",
+            "rendered_width",
+            "rendered_height",
+            "rendered_sha256",
+            "exif_orientation"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": 2
+            },
+            "kind": {
+              "const": "image"
+            },
+            "source_width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "source_height": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "rendered_width": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "rendered_height": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "rendered_sha256": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "exif_orientation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            }
+          }
+        }
+      ]
+    }
   }
 }

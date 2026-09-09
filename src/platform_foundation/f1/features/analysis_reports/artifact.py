@@ -6,7 +6,7 @@ import html
 from dataclasses import dataclass
 from typing import Any
 
-from .contracts import SECTION_KEYS, TEMPLATE_TITLE
+from .contracts import SECTION_KEYS, TEMPLATE_TITLE, evidence_location
 
 
 class ReportArtifactInvalid(RuntimeError):
@@ -73,11 +73,11 @@ def render_html_artifact(payload: dict[str, Any]) -> ReportArtifact:
         excerpt = html.escape(_text(item.get("excerpt")))
         document_version = html.escape(_text(item.get("document_version_id")))
         source_version = _integer(item.get("version_number"))
-        page = _integer(item.get("page_number"))
+        location = html.escape(_location(item))
         citation_html.append(
             "<li>"
             f"<strong>[{index}] {name}</strong>"
-            f"<span>第 {source_version} 版 · 第 {page} 页</span>"
+            f"<span>第 {source_version} 版 · {location}</span>"
             f"<blockquote>{excerpt}</blockquote>"
             f'<code data-document-version="{document_version}">{document_version}</code>'
             "</li>"
@@ -120,3 +120,12 @@ __all__ = (
     "ReportArtifactInvalid",
     "render_html_artifact",
 )
+
+
+def _location(item: dict[str, Any]) -> str:
+    if item.get("locator") is None:
+        return f'第 {_integer(item.get("page_number"))} 页'
+    try:
+        return evidence_location(item.get('page_number'), item.get('locator'))
+    except (TypeError, ValueError):
+        raise ReportArtifactInvalid('REPORT_ARTIFACT_CONTENT_INVALID') from None

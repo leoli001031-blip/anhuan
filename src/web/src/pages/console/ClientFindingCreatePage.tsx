@@ -1,12 +1,13 @@
 // 运营台 · 客户问题录入（/console/clients/:clientId/rectification/new）。
 // 在客户工作区内选择该客户的服务事项并录入问题。
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Alert, Button, DatePicker, Form, Input, Select, Spin, Typography, message } from "antd";
 import { useAuth } from "../../auth/OidcProvider";
 import ErrorState from "../../components/ErrorState";
 import { listClientServiceCases, type ServiceCase } from "../../p2Api";
 import { createFinding } from "../../p2FindingsApi";
+import { useAsyncContext } from "../../components/useAsyncContext";
 import ClientShell from "./ClientShell";
 
 const SEVERITY_OPTIONS = [
@@ -20,27 +21,45 @@ export default function ClientFindingCreatePage() {
   const { clientId = "" } = useParams();
   const { getAccessToken } = useAuth();
   const navigate = useNavigate();
+  const isCurrent = useAsyncContext(clientId);
+  const loadSeq = useRef(0);
+  const loadedContext = useRef<(() => boolean) | null>(null);
+  const submitPending = useRef(false);
   const [cases, setCases] = useState<ServiceCase[] | null>(null);
   const [error, setError] = useState<unknown>(null);
   const [submitting, setSubmitting] = useState(false);
   const [form] = Form.useForm();
 
+  useEffect(() => {
+    loadedContext.current = null;
+    setCases(null);
+    setError(null);
+    setSubmitting(false);
+    submitPending.current = false;
+    form.resetFields();
+  }, [clientId, form]);
+
   const load = useCallback(async () => {
-    if (!clientId) return;
+    if (!clientId || !isCurrent()) return;
+    const seq = ++loadSeq.current;
+    setCases(null);
     setError(null);
     try {
       const token = getAccessToken();
       if (!token) return;
       const collection = await listClientServiceCases(token, clientId);
+      if (!isCurrent() || seq !== loadSeq.current) return;
       const active = collection.items.filter(
         (c) => !["cancelled", "closed"].includes(c.status),
       );
+      loadedContext.current = isCurrent;
       setCases(active);
     } catch (e) {
+      if (!isCurrent() || seq !== loadSeq.current) return;
       setError(e);
       setCases(null);
     }
-  }, [clientId, getAccessToken]);
+  }, [clientId, getAccessToken, isCurrent]);
 
   useEffect(() => {
     void load();
@@ -53,6 +72,12 @@ export default function ClientFindingCreatePage() {
     description: string;
     due_at: { toISOString: () => string };
   }) => {
+    if (!isCurrent() || submitPending.current) return;
+    if (loadedContext.current !== isCurrent || !cases?.some((item) => item.id === values.service_case_id)) {
+      message.warning("请选择当前客户的有效服务事项");
+      return;
+    }
+    submitPending.current = true;
     setSubmitting(true);
     try {
       const finding = await createFinding(getAccessToken() ?? "", {
@@ -63,12 +88,16 @@ export default function ClientFindingCreatePage() {
         responsible_user_id: null,
         due_at: values.due_at.toISOString(),
       });
+      if (!isCurrent()) return;
       message.success("问题已创建");
       navigate(`/console/clients/${clientId}/rectification/${finding.id}`);
     } catch (reason) {
-      message.error(String(reason));
+      if (isCurrent()) message.error(String(reason));
     } finally {
-      setSubmitting(false);
+      if (isCurrent()) {
+        submitPending.current = false;
+        setSubmitting(false);
+      }
     }
   };
 
@@ -95,7 +124,7 @@ export default function ClientFindingCreatePage() {
           showIcon
         />
       ) : (
-        <Form form={form} layout="vertical" onFinish={submit} style={{ maxWidth: 560 }}>
+        <Form key={clientId} disabled={submitting} form={form} layout="vertical" onFinish={submit} style={{ maxWidth: 560 }}>
           <Form.Item
             name="service_case_id"
             label="所属服务事项"

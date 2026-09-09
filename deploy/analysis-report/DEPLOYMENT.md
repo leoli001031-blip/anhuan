@@ -1,8 +1,10 @@
 # A-Eco 分析报告测试环境部署命令单
 
-状态：已提交基线为 `codex/material-report-aeco-polish@955a274990cd37797dbb6ef2c11459b288074ff8`；当前修正为 `NOT_COMMITTED / NOT_PUSHED / REMOTE_TARGET_PENDING / NOT_DEPLOYED / NOT_PRODUCTION`。
+状态（2026-09-08）：完整一期开发分支 `codex/phase1-go-live-20260908`，候选迁移目标 `f1_0044`；本轮为 `NOT_COMMITTED / NOT_PUSHED / REMOTE_TARGET_PENDING / NOT_DEPLOYED / NOT_PRODUCTION`。执行事实见 [当前进度](../../PHASE1_GO_LIVE_PROGRESS.md)。
 
-本目录只提供可渲染模板、离线 preflight 和参数化命令单；不授权连接 Netlify/GitHub、改 PR、迁移远端数据库或部署。服务器规格、DNS、证书、站点 ID 与服务管理器均未知，执行者必须在另行授权后填入自己的参数并逐门留证。
+本目录保留Netlify+HTTPS edge测试拓扑的可渲染模板、离线preflight和参数化命令单。用户已授权按完整一期推进到正式上线；目标环境、DNS、证书、站点ID及实际部署物仍须按当前实测填写，不能沿用历史快照当作当前参数。目标环境确定后，按[上线计划](../../PHASE1_GO_LIVE_PLAN.md)完成对应部署与恢复演练。
+
+当前 `f1_0044` 的停写备份、独立空环境恢复与旧租约启动检查使用 [CURRENT_HEAD_RECOVERY.md](./CURRENT_HEAD_RECOVERY.md)；下文保留的历史 0017 恢复点不代替当前候选证明。
 
 ## 0. OCR 架构硬门
 
@@ -50,7 +52,7 @@ test "$(docker image inspect --format '{{.Id}}' sha256:02e6300f52463818de7ceaf44
 
 ## 1. 候选层与固定拓扑
 
-- 合并顺序固定：PR #3（分析报告集成）先入 `main`；PR #4（A-Eco/健康度层）改 base 到 `main`、复核只剩本层后再合。
+- PR #3/#4的合并顺序是历史记录；当前候选以本轮分支、实际PR及最终提交指纹为准。
 - Netlify 只托管 `src/web` 构建出的静态 `dist`。
 - 浏览器只走 Netlify 同源相对路径 `/api`、`/realms/anhuan`、`/resources`。
 - Netlify 按 `/api/*`、`/realms/*`、`/resources/*` 顺序代理到同一个 HTTPS edge；`/* → /index.html` 必须最后。
@@ -60,7 +62,7 @@ Netlify origin 与 edge origin 必须是两个不同的 HTTPS DNS origin；HTTP�
 
 候选包的三个真源分工固定为：
 
-- 迁移：`infra/f1/analysis-reports/migrate.py`，且成功后必须精确核验 `f1_0023`。
+- 迁移：`infra/f1/analysis-reports/migrate.py`，且成功后必须精确核验 `f1_0035`。
 - 本地启停：`scripts/localctl analysis-report-demo-*`；`deploy/analysis-report/local_candidate.py` 是不绑定 checkout 绝对路径的薄入口。
 - 就绪：`/api/readyz` 的 HTTP 200、`Cache-Control: no-store`、`status=ready` 与精确组件闭集。只有容器存在不算 ready。
 
@@ -196,7 +198,7 @@ env -u VITE_MATERIAL_RAG_REPORT_MOCK \
 - 浏览器 token 只允许进入 `REMOTE_SMOKE.md` 创建的 0600 临时文件；curl 通过 header 文件读取，禁止 `Authorization: Bearer ...` 出现在进程参数。
 - 本轮不注入生产 Ark key、真实客户凭证或客户数据；外部 pipeline 保持关闭。
 
-## 8. PostgreSQL 备份点与线性前向迁移 `0017 → 0023`
+## 8. PostgreSQL 备份点与线性前向迁移 `0017 → 0028`
 
 进入维护窗口并停止业务写入后执行。若当前 head 不是精确 `f1_0017`，停止，不猜测、不跳版。
 
@@ -206,7 +208,7 @@ export PGUSER=f0d_bootstrap PGPASSFILE
 head_before="$(psql -X -A -t -v ON_ERROR_STOP=1 -c 'SELECT version_num FROM f1.alembic_version')"
 test "$head_before" = "f1_0017"
 
-BACKUP_ID="pre-f1-0023-$(date -u +%Y%m%dT%H%M%SZ)"
+BACKUP_ID="pre-f1-0031-$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_DIR="$BACKUP_ROOT/$BACKUP_ID"
 install -d -m 700 "$BACKUP_DIR"
 pg_dump --format=custom --file="$BACKUP_DIR/database.dump"
@@ -220,10 +222,10 @@ cd "$REPO_ROOT"
 export PYTHONPATH="$REPO_ROOT/src:$REPO_ROOT"
 python3 -B infra/f1/analysis-reports/migrate.py
 head_after="$(psql -X -A -t -v ON_ERROR_STOP=1 -c 'SELECT version_num FROM f1.alembic_version')"
-test "$head_after" = "f1_0024"
+test "$head_after" = "f1_0035"
 ```
 
-专属 migrator 成功 stdout 应为 `LOCAL_ANALYSIS_REPORT_MIGRATE_OK`。默认工程仍锁 `f1_0014`，material-RAG 专属目标仍为 `f1_0016`；不得改默认 seed/verify/backup 目标。从 `f1_0017` 到 `f1_0023` 必须线性经过 0018–0022；若失败或应用回退，执行 `ROLLBACK.md` 的恢复式回滚，禁止直接 downgrade。
+专属 migrator 成功 stdout 应为 `LOCAL_ANALYSIS_REPORT_MIGRATE_OK`。默认工程仍锁 `f1_0014`，material-RAG 专属目标仍为 `f1_0016`；不得改默认 seed/verify/backup 目标。从 `f1_0017` 到 `f1_0035` 必须线性经过 0018–0035；若失败或应用回退，执行 `ROLLBACK.md` 的恢复式回滚，禁止直接 downgrade。本节只描述原0017备份点路径；已有0024/0026或其他版本的目标环境须先实测源版本，再形成并演练对应升级与恢复步骤，不能强行套用本节前置断言。
 
 ## 9. 后续授权的静态交付与门禁
 

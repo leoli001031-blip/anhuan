@@ -5,7 +5,7 @@ import { MenuOutlined } from "@ant-design/icons";
 import { Button, Layout, Spin, Typography } from "antd";
 import { Navigate, NavLink, Outlet } from "react-router-dom";
 import { useSessionAccess, isMockData } from "../adapters";
-import { homePathFor } from "../adapters/SessionAccess";
+import { canManageMembers, homePathFor } from "../adapters/SessionAccess";
 import { useAuth } from "../auth/OidcProvider";
 import ErrorState from "../components/ErrorState";
 import MockBadge from "../components/MockBadge";
@@ -63,6 +63,7 @@ export default function PortalLayout() {
           <NavLink to="/portal/health" className={({ isActive }) => navLinkClass(isActive)}>
             健康度
           </NavLink>
+          {canManageMembers(session) && <NavLink to="/members" className={({ isActive }) => navLinkClass(isActive)}>本企业成员</NavLink>}
         </nav>
         <Typography.Text className="portal-email">
           {enterpriseLabel}
@@ -78,6 +79,7 @@ export default function PortalLayout() {
             <NavLink to="/portal/qa" className={({ isActive }) => navLinkClass(isActive)}>资料问答</NavLink>
             <NavLink to="/portal/reports" className={({ isActive }) => navLinkClass(isActive)}>分析报告</NavLink>
             <NavLink to="/portal/health" className={({ isActive }) => navLinkClass(isActive)}>健康度</NavLink>
+            {canManageMembers(session) && <NavLink to="/members" className={({ isActive }) => navLinkClass(isActive)}>本企业成员</NavLink>}
             <button type="button" onClick={() => void logout()}>退出登录</button>
           </div>
         </details>

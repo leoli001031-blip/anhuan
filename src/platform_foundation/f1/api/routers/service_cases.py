@@ -28,6 +28,7 @@ from ...business_workbench import (
     site_visit_allowed_actions,
 )
 from ...database import session_scope
+from ...business_identity import product_role_for
 
 router = APIRouter()
 
@@ -453,7 +454,7 @@ async def list_client_service_cases(
     """Return only the audience-bound, client-safe service summary contract."""
     if (
         not _aeco_client_ops_enabled()
-        or tenant.role in {"super_admin", "enterprise_admin"}
+        or product_role_for(tenant) != "client_user"
     ):
         raise HTTPException(status_code=404, detail="SERVICE_CASES_NOT_FOUND")
     async with session_scope(

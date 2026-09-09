@@ -176,12 +176,21 @@ class MaterialEvidence:
     document_name: str
     version_number: int
     source_sha256: str
-    page_number: int
+    page_number: int | None
     body_sha256: str
     snippet: str
     scope_kind: ScopeKind
+    locator: dict | None = None
+    evidence_revision_id: uuid.UUID | None = None
 
     def __post_init__(self) -> None:
+        if self.locator is not None:
+            from ..evidence.contracts import parse_locator
+            locator = parse_locator(self.locator)
+            if self.page_number != getattr(locator, "page_number", None) or self.evidence_revision_id is None:
+                raise ValueError("MATERIAL_EVIDENCE_LOCATION_INVALID")
+        elif self.page_number is None:
+            raise ValueError("MATERIAL_EVIDENCE_LOCATION_INVALID")
         if not SHA256_RE.fullmatch(self.source_sha256):
             raise ValueError("MATERIAL_SOURCE_SHA_INVALID")
         if not SHA256_RE.fullmatch(self.body_sha256):
@@ -190,7 +199,7 @@ class MaterialEvidence:
             not self.document_name
             or len(self.document_name) > 200
             or self.version_number < 1
-            or self.page_number < 1
+            or (self.page_number is not None and self.page_number < 1)
             or not self.snippet
             or len(self.snippet) > 320
         ):
@@ -210,7 +219,7 @@ class MaterialEvidence:
 
     def to_citation_dict(self) -> dict[str, object]:
         """Return the public, vendor-neutral citation fields."""
-        return {
+        result = {
             "canonical_unit_id": str(self.canonical_unit_id),
             "document_record_id": str(self.document_record_id),
             "document_version_id": str(self.document_version_id),
@@ -221,6 +230,11 @@ class MaterialEvidence:
             "body_sha256": self.body_sha256,
             "snippet": self.snippet,
         }
+        if self.locator is not None:
+            from ..evidence.contracts import format_location, parse_locator
+            result.update(locator=self.locator, location=format_location(parse_locator(self.locator)),
+                evidence_revision_id=str(self.evidence_revision_id))
+        return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,3 +362,6 @@ __all__ = (
     "ScopeKind",
     "SensitiveText",
 )
+
+
+MAX_CORPUS_FRAGMENTS = 20_000

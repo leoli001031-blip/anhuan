@@ -11,12 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...auth import Tenant
 from ...database import session_scope
+from ...ingestion_context import restricted_ingestion
 
 
 DELIVERY_FLAG = "F1_MATERIAL_INGESTION_DURABLE_LOCAL"
 _ENGINEERING_FLAG = "F1_LOCAL_ENGINEERING"
 _OUTCOMES = frozenset({"done", "retry", "blocked"})
-_RUNTIME_ROLES = frozenset({"f1_api", "f1_worker"})
+_RUNTIME_ROLES = frozenset({"f1_api", "f1_worker", "f1_ingestion_worker"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +172,10 @@ async def read_delivery_claim(
     *,
     runtime_role: str = "f1_api",
 ) -> MaterialIngestionDeliveryClaim | None:
+    if runtime_role == 'f1_api' and restricted_ingestion():
+        runtime_role = 'f1_ingestion_worker'
+    reader = ('read_ingestion_worker_delivery' if runtime_role == 'f1_ingestion_worker'
+              else 'read_material_ingestion_delivery_claim')
     if runtime_role not in _RUNTIME_ROLES:
         raise ValueError("MATERIAL_INGESTION_DELIVERY_ROLE_INVALID")
     async with session_scope(role=runtime_role) as session:
@@ -179,7 +184,7 @@ async def read_delivery_claim(
                 text(
                     "SELECT delivery_id,enterprise_id,document_version_id,"
                     "actor_sub,dispatch_token,attempt "
-                    "FROM f1.read_material_ingestion_delivery_claim(:id,:token)"
+                    f"FROM f1.{reader}(:id,:token)"
                 ),
                 {"id": delivery_id, "token": dispatch_token},
             )
@@ -205,6 +210,10 @@ async def finish_delivery(
     retry_seconds: int | None = None,
     runtime_role: str = "f1_api",
 ) -> bool:
+    if runtime_role == 'f1_api' and restricted_ingestion():
+        runtime_role = 'f1_ingestion_worker'
+    finisher = ('finish_ingestion_worker_delivery' if runtime_role == 'f1_ingestion_worker'
+                else 'finish_material_ingestion_delivery')
     if outcome not in _OUTCOMES:
         raise ValueError("MATERIAL_INGESTION_DELIVERY_OUTCOME_INVALID")
     if runtime_role not in _RUNTIME_ROLES:
@@ -214,7 +223,7 @@ async def finish_delivery(
             (
                 await session.execute(
                     text(
-                        "SELECT f1.finish_material_ingestion_delivery("
+                        f"SELECT f1.{finisher}("
                         ":delivery_id,:dispatch_token,:outcome,"
                         ":reason_code,:retry_seconds)"
                     ),

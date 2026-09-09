@@ -23,11 +23,13 @@ from ..analysis_reports.contracts import (
     ENGINEERING_FLAG,
     LOCAL_FLAG as REPORT_LOCAL_FLAG,
     PROVIDER_MEMBER_ROLES,
+    GenerationFailed,
     ReportNotFound,
     ReportTransitionInvalid,
 )
 from ..analysis_reports.service import create_report, generate_report
-from ..material_rag.repository import enqueue_job
+from ..material_rag.repository import enqueue_job, index_is_current
+from ..material_intake.ocr import MATERIAL_EXTRACTION_CONTRACT
 from ..p3.contracts import (
     AutoPipelineOut,
     AutoPipelineStageOut,
@@ -80,6 +82,9 @@ class _PipelineContext:
     index_reason: str | None
     delivery_state: str | None
     delivery_reason: str | None
+    analysis_current: bool = True
+    index_current: bool = True
+    effective: dict | None = None
 
 
 def _local_redis_enabled() -> bool:
@@ -171,6 +176,11 @@ async def _load_context(
         analysis_order = "ORDER BY current_analysis.analysis_revision DESC,"
     else:
         analysis_order = "ORDER BY current_analysis.created_at DESC,"
+    extraction_projection = (
+        "current_analysis.extraction_contract,"
+        if delivery_enabled
+        else f"{MATERIAL_EXTRACTION_CONTRACT} AS extraction_contract,"
+    )
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
     ) as session:
@@ -179,6 +189,7 @@ async def _load_context(
                 text(
                     "SELECT version.id AS version_id,source.content_type,"
                     "scope.scope_kind,scope.client_account_id,"
+                    "scope.id AS knowledge_scope_id,"
                     "task.processing_stage,task.object_state,"
                     "task.quarantine_status,task.scan_verdict,task.preview_status,"
                     "task.error_reason AS ingestion_reason,"
@@ -187,6 +198,7 @@ async def _load_context(
                     "(task.released_at IS NOT NULL) AS released,"
                     "analysis.status AS analysis_status,"
                     "analysis.reason_code AS analysis_reason,"
+                    "analysis.extraction_contract,"
                     "COALESCE((SELECT count(*) FROM f1.material_page_classification AS page "
                     "WHERE page.enterprise_id=analysis.enterprise_id "
                     "AND page.analysis_id=analysis.id AND page.ocr_required IS TRUE),0) "
@@ -209,6 +221,7 @@ async def _load_context(
                     "AND task.id=version.upload_task_id "
                     "LEFT JOIN LATERAL ("
                     "SELECT current_analysis.id,current_analysis.enterprise_id,"
+                    + extraction_projection +
                     "current_analysis.status,current_analysis.reason_code "
                     "FROM f1.material_analysis AS current_analysis "
                     "WHERE current_analysis.enterprise_id=version.enterprise_id "
@@ -238,6 +251,19 @@ async def _load_context(
                 },
             )
         ).mappings().one_or_none()
+        current_index = True
+        effective = None
+        from ..evidence.repository import native_extraction_enabled
+        if row is not None and native_extraction_enabled():
+            from ..evidence.status import read_effective_state
+            effective = await read_effective_state(session, version_id)
+        if row is not None and row["index_status"] == "done":
+            current_index = await index_is_current(
+                session,
+                enterprise_id=tenant.enterprise_id,
+                knowledge_scope_id=row["knowledge_scope_id"],
+                document_version_id=version_id,
+            )
     if row is None:
         raise IngestionError("P3_DOCUMENT_NOT_FOUND", http_status=404)
     if expected_client_account_id is not None and (
@@ -281,6 +307,11 @@ async def _load_context(
         index_job_id=row["index_job_id"],
         index_status=(str(row["index_status"]) if row["index_status"] else None),
         index_reason=(str(row["index_reason"]) if row["index_reason"] else None),
+        analysis_current=(
+            int(row["extraction_contract"] or 1) == MATERIAL_EXTRACTION_CONTRACT
+        ),
+        index_current=current_index,
+        effective=effective,
         delivery_state=(
             str(row["delivery_state"]) if row["delivery_state"] else None
         ),
@@ -401,6 +432,8 @@ def _ingestion_stage(context: _PipelineContext) -> AutoPipelineStageOut:
 
 
 def _analysis_stage(context: _PipelineContext) -> AutoPipelineStageOut:
+    if context.effective and (context.content_type != 'application/pdf' or context.effective.get('evidence_kind') == 'review'):
+        return _effective_stage(context.effective)
     if context.content_type != "application/pdf":
         return _stage("skipped", "AUTO_PIPELINE_PDF_ONLY")
     if context.ingestion_reason in _ANALYSIS_RETRY_MARKERS:
@@ -415,15 +448,21 @@ def _analysis_stage(context: _PipelineContext) -> AutoPipelineStageOut:
         )
     if context.analysis_status not in {"ready", "confirmed"}:
         return _stage("pending", "MATERIAL_ANALYSIS_PENDING")
+    if not context.analysis_current:
+        return _stage("failed", "MATERIAL_ANALYSIS_REPROCESS_REQUIRED")
     if context.ocr_required_count:
         return _stage("failed", "OCR_REQUIRED")
     return _stage("ready")
 
 
 def _index_stage(context: _PipelineContext) -> AutoPipelineStageOut:
+    if context.effective and (context.content_type != 'application/pdf' or context.effective.get('evidence_kind') == 'review'):
+        return _effective_stage(context.effective)
     if context.content_type != "application/pdf":
         return _stage("skipped", "AUTO_PIPELINE_PDF_ONLY")
     if context.index_status == "done":
+        if not context.index_current:
+            return _stage("pending", "MATERIAL_INDEX_REPROCESS_REQUIRED")
         return _stage("ready")
     if context.index_status in {"running", "queued", "retry_wait"}:
         if context.index_job_id is not None:
@@ -452,6 +491,12 @@ def _index_stage(context: _PipelineContext) -> AutoPipelineStageOut:
     return _stage("pending", "MATERIAL_INDEX_PENDING")
 
 
+def _effective_stage(value: dict) -> AutoPipelineStageOut:
+    state = value['state']
+    status = 'ready' if state == 'ready' else 'running' if state == 'running' else 'failed' if state in {'blocked', 'partial', 'empty', 'revoked', 'unavailable'} else 'pending'
+    return _stage(status, value.get('reason_code'))
+
+
 async def _current_report_source(
     tenant: Tenant, client_account_id: uuid.UUID
 ) -> tuple[str | None, str | None]:
@@ -463,9 +508,14 @@ async def _current_report_source(
             session, tenant.enterprise_id, client_account_id
         ):
             return None, "REPORT_CLIENT_BINDING_REQUIRED"
-        sources = await report_repository.load_eligible_sources(
-            session, tenant.enterprise_id, client_account_id
-        )
+        try:
+            sources = await report_repository.load_eligible_sources(
+                session, tenant.enterprise_id, client_account_id
+            )
+        except GenerationFailed as error:
+            if error.reason == "REPORT_SOURCE_INDEX_OUTDATED":
+                return None, error.reason
+            raise
     kinds = {source.scope_kind for source in sources}
     if "service_provider" not in kinds:
         return None, "REPORT_PROVIDER_SOURCES_MISSING"
@@ -484,7 +534,7 @@ async def _report_stage(
     context: _PipelineContext,
     index: AutoPipelineStageOut,
 ) -> AutoPipelineStageOut:
-    if context.content_type != "application/pdf":
+    if context.content_type != "application/pdf" and context.effective is None:
         return _stage("skipped", "AUTO_PIPELINE_PDF_ONLY")
     if context.scope_kind != "client" or context.client_account_id is None:
         return _stage("skipped", "REPORT_CLIENT_SCOPE_REQUIRED")
@@ -650,6 +700,13 @@ async def _dispatch_report(
 
 async def _eligible_client_versions(tenant: Tenant) -> tuple[uuid.UUID, ...]:
     """Return one indexed current version per active bound client."""
+    from ..evidence.repository import native_extraction_enabled
+    native = native_extraction_enabled()
+    evidence_join = '' if native else (
+        "JOIN f1.material_rag_unit AS unit ON unit.enterprise_id=version.enterprise_id "
+        "AND unit.document_version_id=version.id "
+    )
+    evidence_filter = "AND f1.read_effective_material_state(version.id)->>'state'='ready' " if native else ''
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
     ) as session:
@@ -671,9 +728,7 @@ async def _eligible_client_versions(tenant: Tenant) -> tuple[uuid.UUID, ...]:
                     "binding.enterprise_id=scope.enterprise_id "
                     "AND binding.client_account_id=scope.client_account_id "
                     "AND binding.status='active' "
-                    "JOIN f1.material_rag_unit AS unit ON "
-                    "unit.enterprise_id=version.enterprise_id "
-                    "AND unit.document_version_id=version.id "
+                    + evidence_join +
                     "WHERE version.enterprise_id=:enterprise_id "
                     "AND scope.scope_kind='client' "
                     "AND scope.client_account_id IS NOT NULL "
@@ -685,6 +740,7 @@ async def _eligible_client_versions(tenant: Tenant) -> tuple[uuid.UUID, ...]:
                     "AND task.preview_status='ready' "
                     "AND task.quarantine_status='released' "
                     "AND task.released_at IS NOT NULL "
+                    + evidence_filter +
                     "ORDER BY scope.client_account_id,version.version_no DESC,version.id "
                     "LIMIT 200"
                 ),
@@ -764,7 +820,7 @@ async def sweep_auto_pipeline(tenant: Tenant) -> int:
 async def dispatch_report_after_index(
     tenant: Tenant, version_id: uuid.UUID
 ) -> AutoPipelineOut:
-    """API-credential report-worker continuation; generation stops at draft."""
+    """API-credential pipeline continuation; generation stops at draft."""
     if not auto_pipeline_enabled():
         return await auto_pipeline_status(tenant, version_id)
     context = await _load_context(tenant, version_id)
@@ -792,6 +848,18 @@ async def dispatch_report_after_index(
     return await auto_pipeline_status(tenant, version_id)
 
 
+async def _advance_effective(tenant: Tenant, context: _PipelineContext, *, delivery_rearm: bool | None) -> AutoPipelineOut:
+    if not context.released:
+        # Native release registers its extraction and pipeline delivery in the
+        # same transaction. There is no PDF index or second release hand-off.
+        await act_on_version(tenant, context.version_id, action='release')
+    if delivery_rearm is not None:
+        await delivery_repository.register_delivery(tenant, context.version_id, rearm_terminal=delivery_rearm)
+    from .queue import enqueue_reconcile_stage
+    enqueue_reconcile_stage(enterprise_id=tenant.enterprise_id, provider_sub=tenant.sub, version_id=context.version_id)
+    return await auto_pipeline_status(tenant, context.version_id)
+
+
 async def advance_auto_pipeline(
     tenant: Tenant,
     version_id: uuid.UUID,
@@ -806,6 +874,8 @@ async def advance_auto_pipeline(
         return await auto_pipeline_status(tenant, version_id)
     if _ingestion_stage(context).status != "ready":
         return await auto_pipeline_status(tenant, version_id)
+    if context.effective is not None and (context.content_type != 'application/pdf' or context.effective.get('evidence_kind') == 'review'):
+        return await _advance_effective(tenant, context, delivery_rearm=_delivery_rearm)
     if _analysis_stage(context).status != "ready":
         return await auto_pipeline_status(tenant, version_id)
 
@@ -842,26 +912,29 @@ async def advance_auto_pipeline(
 
     if not context.released:
         await act_on_version(tenant, version_id, action="release")
-    if context.index_job_id is not None and context.index_status != "failed":
+    stale_index = context.index_status == "done" and not context.index_current
+    if (context.index_job_id is not None
+            and context.index_status != "failed" and not stale_index):
         job_id = context.index_job_id
     else:
         idempotency_key = f"auto-local-index:{version_id}"
         if context.index_job_id is not None:
             idempotency_key = (
-                f"auto-local-index-retry:{version_id}:{context.index_job_id}"
+                f"auto-local-index-retry:{version_id}:{context.index_job_id}:"
+                f"{MATERIAL_EXTRACTION_CONTRACT}"
             )
         job_id = await enqueue_job(
             tenant,
             document_version_id=version_id,
-            action="index",
+            action="rebuild" if context.index_job_id is not None else "index",
             idempotency_key=idempotency_key,
         )
     context = await _load_context(tenant, version_id)
     # Privilege split: the API only releases and enqueues.  The existing
     # generic worker owns f1_worker credentials for canonical-unit writes;
-    # after success it dispatches the report continuation to report-worker,
-    # which owns f1_api credentials.  The API never imports or calls worker
-    # persistence code.
+    # after success it dispatches to the configured continuation queue. The
+    # restricted candidate routes coordination to ingestion-worker and leaves
+    # report-worker with generation-only credentials.
     if _index_stage(context).status == "ready":
         enqueue_recovery_sweep(
             enterprise_id=tenant.enterprise_id,

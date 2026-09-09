@@ -3,6 +3,74 @@
 # External embedding keys are not mounted. Default stack is unchanged.
 # Must not impersonate material-rag or business UAT.
 services:
+  storage-secret-init:
+    image: redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2
+    command: ["/bin/sh", "/init/storage_secret_init.sh"]
+    network_mode: none
+    read_only: true
+    volumes:
+      - ./analysis-reports/storage_secret_init.sh:/init/storage_secret_init.sh:ro
+      - ${LOCAL_SECRETS_DIR:?LOCAL_SECRETS_DIR_REQUIRED}:/source:ro
+      - api_secrets:/api
+      - worker_secrets:/worker
+      - ingestion_worker_secrets:/ingestion-worker
+      - storage_provisioner_secrets:/storage-provisioner
+      - source_gateway_secrets:/source-gateway
+      - migrator_secrets:/migrator
+      - report_worker_secrets:/report-worker
+    labels:
+      io.anhuan.scope: analysis-report-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    restart: "no"
+  storage-provisioner:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["python", "-B", "/app/infra/f1/analysis_report_storage.py"]
+    environment:
+      F1_LOCAL_ENGINEERING: "1"
+      F1_SECRETS_DIR: /run/secrets/f1
+      MINIO_ENDPOINT: minio:9000
+    volumes:
+      - storage_provisioner_secrets:/run/secrets/f1:ro
+      - minio_secrets:/run/minio-root:ro
+    networks: [localnet]
+    labels:
+      io.anhuan.scope: analysis-report-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    restart: "no"
+  source-gateway:
+    image: ${LOCAL_RUNTIME_IMAGE:?LOCAL_RUNTIME_IMAGE_REQUIRED}
+    command: ["uvicorn", "platform_foundation.f1.source_gateway:app", "--host", "0.0.0.0", "--port", "8080", "--no-access-log", "--limit-concurrency", "8"]
+    environment:
+      F1_LOCAL_ENGINEERING: "1"
+      F1_STORAGE_SERVICE_CREDENTIALS: "1"
+      F1_PREVIEW_CONTENT_ADDRESSED: "1"
+      F1_OCR_RESULT_CACHE: "1"
+      F1_OCR_CACHE_EPOCH: "${F1_OCR_CACHE_EPOCH:-1}"
+      F1_SECRETS_DIR: /run/secrets/f1
+      F1_SOURCE_READER_PASSWORD_FILE: /run/secrets/f1/f1_source_reader_password
+      F1_PG_HOST: postgres
+      F1_PG_PORT: "5432"
+      F1_PG_DATABASE: ${LOCAL_DATABASE:?LOCAL_DATABASE_REQUIRED}
+      MINIO_ENDPOINT: minio:9000
+    volumes:
+      - source_gateway_secrets:/run/secrets/f1:ro
+    networks: [localnet]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 768m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=3)"]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+    depends_on:
+      postgres: {condition: service_healthy}
+      minio: {condition: service_healthy}
+    labels:
+      io.anhuan.scope: analysis-report-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+    restart: unless-stopped
   secret-init:
     labels: !override
       io.anhuan.scope: analysis-report-uat
@@ -156,8 +224,15 @@ services:
       io.anhuan.scope: analysis-report-uat
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
     environment:
+      F1_PIPELINE_COORDINATOR_GATEWAY: "1"
+      F1_PIPELINE_CONTINUATIONS_ON_INGESTION: "1"
+      F1_STORAGE_SERVICE_CREDENTIALS: "1"
+      F1_PREVIEW_CONTENT_ADDRESSED: "1"
+      F1_OCR_RESULT_CACHE: "1"
+      F1_OCR_CACHE_EPOCH: "${F1_OCR_CACHE_EPOCH:-1}"
       F1_MATERIAL_ANALYSIS_REPORT_LOCAL: "1"
       F1_LOCAL_ENGINEERING: "1"
+      F1_NATIVE_EVIDENCE_LOCAL: "1"
       F1_MATERIAL_QA_LOCAL_EXTRACTIVE: "1"
       F1_MATERIAL_AUTO_PIPELINE_LOCAL: "1"
       F1_MATERIAL_INGESTION_DURABLE_LOCAL: "1"
@@ -173,21 +248,31 @@ services:
       io.anhuan.scope: analysis-report-uat
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
     environment:
+      F1_PIPELINE_CONTINUATIONS_ON_INGESTION: "1"
+      F1_TASK_SOURCE_GATEWAY: "1"
+      F1_STORAGE_SERVICE_CREDENTIALS: "1"
+      F1_PREVIEW_CONTENT_ADDRESSED: "1"
+      F1_OCR_RESULT_CACHE: "1"
+      F1_OCR_CACHE_EPOCH: "${F1_OCR_CACHE_EPOCH:-1}"
       F1_LOCAL_ENGINEERING: "1"
+      F1_NATIVE_EVIDENCE_LOCAL: "1"
       F1_MATERIAL_AUTO_PIPELINE_LOCAL: "1"
       F1_MATERIAL_RAG_LOCAL_INDEX: "1"
       F1_MATERIAL_OCR_ENABLED: "1"
     volumes:
       - material_ocr_socket:/run/material-rag-ocr
     depends_on:
+      source-gateway: {condition: service_healthy}
       material-rag-ocr: {condition: service_healthy}
   dispatcher:
     labels: !override
       io.anhuan.scope: analysis-report-uat
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
     environment:
+      F1_PIPELINE_CONTINUATIONS_ON_INGESTION: "1"
       F1_MATERIAL_ANALYSIS_REPORT_LOCAL: "1"
       F1_LOCAL_ENGINEERING: "1"
+      F1_NATIVE_EVIDENCE_LOCAL: "1"
       F1_MATERIAL_AUTO_PIPELINE_LOCAL: "1"
       F1_MATERIAL_INGESTION_DURABLE_LOCAL: "1"
       F1_MATERIAL_RAG_LOCAL_INDEX: "1"
@@ -197,8 +282,18 @@ services:
       io.anhuan.scope: analysis-report-uat
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
     environment:
+      F1_INGESTION_WORKER_RESTRICTED: "1"
+      F1_INGESTION_WORKER_PASSWORD_FILE: /run/secrets/f1/f1_ingestion_worker_password
+      F1_PIPELINE_COORDINATOR_GATEWAY: "1"
+      F1_PIPELINE_CONTINUATIONS_ON_INGESTION: "1"
+      F1_TASK_SOURCE_GATEWAY: "1"
+      F1_STORAGE_SERVICE_CREDENTIALS: "1"
+      F1_PREVIEW_CONTENT_ADDRESSED: "1"
+      F1_OCR_RESULT_CACHE: "1"
+      F1_OCR_CACHE_EPOCH: "${F1_OCR_CACHE_EPOCH:-1}"
       F1_MATERIAL_ANALYSIS_REPORT_LOCAL: "1"
       F1_LOCAL_ENGINEERING: "1"
+      F1_NATIVE_EVIDENCE_LOCAL: "1"
       F1_MATERIAL_AUTO_PIPELINE_LOCAL: "1"
       F1_MATERIAL_INGESTION_DURABLE_LOCAL: "1"
       F1_MATERIAL_RAG_LOCAL_INDEX: "1"
@@ -206,14 +301,20 @@ services:
     volumes:
       - material_ocr_socket:/run/material-rag-ocr
     depends_on:
+      api: {condition: service_healthy}
+      source-gateway: {condition: service_healthy}
       material-rag-ocr: {condition: service_healthy}
   report-worker:
     labels: !override
       io.anhuan.scope: analysis-report-uat
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
     environment:
+      F1_PIPELINE_CONTINUATIONS_ON_INGESTION: "1"
+      F1_REPORT_WORKER_RESTRICTED: "1"
+      F1_REPORT_WORKER_PASSWORD_FILE: /run/secrets/f1/f1_report_worker_password
       F1_MATERIAL_ANALYSIS_REPORT_LOCAL: "1"
       F1_LOCAL_ENGINEERING: "1"
+      F1_NATIVE_EVIDENCE_LOCAL: "1"
       F1_MATERIAL_AUTO_PIPELINE_LOCAL: "1"
       F1_MATERIAL_INGESTION_DURABLE_LOCAL: "1"
       F1_MATERIAL_RAG_LOCAL_INDEX: "1"
@@ -300,5 +401,15 @@ volumes:
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
   redis_data:
     labels: !override
+      io.anhuan.scope: analysis-report-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+
+  storage_provisioner_secrets:
+    labels:
+      io.anhuan.scope: analysis-report-uat
+      io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"
+
+  source_gateway_secrets:
+    labels:
       io.anhuan.scope: analysis-report-uat
       io.anhuan.project-id: "${LOCAL_PROJECT_ID:?LOCAL_PROJECT_ID_REQUIRED}"

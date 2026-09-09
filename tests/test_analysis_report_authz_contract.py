@@ -60,15 +60,16 @@ P2_P7_31 = {
     "rehearsal_run",
     "rehearsal_check_result",
 }
-MATERIAL_AUTOMATION_6 = {
+MATERIAL_AUTOMATION_7 = {
     "material_rag_scope_binding",
     "material_rag_unit",
     "material_rag_job",
     "material_pipeline_delivery",
     "material_ingestion_delivery",
     "material_ocr_checkpoint",
+    "material_ocr_result_cache",
 }
-ANALYSIS_REPORT_10 = {
+ANALYSIS_REPORT_12 = {
     "analysis_report_client_audience",
     "analysis_report",
     "analysis_report_version",
@@ -79,6 +80,8 @@ ANALYSIS_REPORT_10 = {
     "analysis_report_audit_event",
     "analysis_report_health_snapshot",
     "analysis_report_review_event",
+    "analysis_report_management_event",
+    "analysis_report_transition",
 }
 
 
@@ -194,25 +197,28 @@ class AnalysisReportRlsAcyclicContracts(unittest.TestCase):
 
 
 class AnalysisReportMigratorCatalogContracts(unittest.TestCase):
-    def test_migrator_verifies_analysis_report_force_rls_in_47_table_set(self) -> None:
+    def test_migrator_verifies_complete_analysis_report_force_rls_catalog(self) -> None:
         analysis_tables = _tuple_names(MIGRATOR, "ANALYSIS_REPORT_TABLES")
         material_tables = _tuple_names(MIGRATOR, "MATERIAL_RAG_TABLES")
         p2_tables = _tuple_names(MIGRATOR, "P2_P7_FORCE_RLS_TABLES")
+        native_tables = _tuple_names(MIGRATOR, "NATIVE_EVIDENCE_TABLES")
         expected = _tuple_names(MIGRATOR, "EXPECTED_RLS_TABLES")
         self.assertEqual(set(p2_tables), P2_P7_31)
-        self.assertEqual(set(material_tables), MATERIAL_AUTOMATION_6)
-        self.assertEqual(set(analysis_tables), ANALYSIS_REPORT_10)
+        self.assertEqual(set(material_tables), MATERIAL_AUTOMATION_7)
+        self.assertEqual(set(analysis_tables), ANALYSIS_REPORT_12)
         self.assertIn("analysis_report_client_audience", analysis_tables)
         self.assertIn("analysis_report_health_snapshot", analysis_tables)
         self.assertIn("analysis_report_review_event", analysis_tables)
-        self.assertEqual(len(p2_tables) + len(material_tables) + len(analysis_tables), 47)
+        native_expected = {"material_evidence_job", "material_extraction_revision", "material_evidence_fragment"}
+        self.assertEqual(set(native_tables), native_expected)
+        self.assertEqual(len(p2_tables) + len(material_tables) + len(analysis_tables) + len(native_tables), 53)
         self.assertEqual(
-            set(expected), P2_P7_31 | MATERIAL_AUTOMATION_6 | ANALYSIS_REPORT_10
+            set(expected), P2_P7_31 | MATERIAL_AUTOMATION_7 | ANALYSIS_REPORT_12 | native_expected
         )
-        self.assertEqual(len(expected), 47)
-        self.assertEqual(len(set(expected)), 47)
+        self.assertEqual(len(expected), 53)
+        self.assertEqual(len(set(expected)), 53)
         source = _source(MIGRATOR)
-        self.assertIn('"f1_0026"', source)
+        self.assertIn('f1_0044', source)
         self.assertIn("F1_ANALYSIS_REPORT_MIGRATE_TARGET", source)
         self.assertNotIn("local_migrate.P2_P7_TABLES", source)
         self.assertIn("relforcerowsecurity", source)

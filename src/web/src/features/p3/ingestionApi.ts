@@ -2,6 +2,7 @@ import { tenantFetch, ApiError } from "../../api";
 import { reasonCopy } from "./reasonCopy";
 import type {
   AutoPipelineStatus,
+  NativeExtractionStatus,
   DocumentCollection,
   DocumentDetail,
   IngestionCapabilities,
@@ -253,6 +254,29 @@ export function getIngestionVersion(
   );
 }
 
+export function getNativeExtractionStatus(
+  token: string | null,
+  versionId: string,
+  signal?: AbortSignal,
+): Promise<NativeExtractionStatus> {
+  return requestJson<NativeExtractionStatus>(
+    P3_INGESTION_BASE + "/versions/" + encodeURIComponent(versionId) + "/native-extraction",
+    { token, signal },
+  );
+}
+
+export async function recoverNativeExtraction(token: string | null, versionId: string,
+  body: {request_id: string; expected_job_id: string | null}, signal?: AbortSignal): Promise<void> {
+  const result = await requestJson<Record<string, unknown>>(P3_INGESTION_BASE + '/versions/' + encodeURIComponent(versionId) + '/native-extraction/recover',
+    {token,method:'POST',body:JSON.stringify(body),contentType:'application/json',signal});
+  if (!result || result.request_id!==body.request_id || result.version_id!==versionId
+    || typeof result.job_id!=='string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result.job_id)
+    || !['pending','running','retry_wait','done','blocked'].includes(String(result.state))
+    || !['registered','rearmed','unchanged'].includes(String(result.outcome)) || typeof result.replayed!=='boolean') {
+    throw new IngestionApiError(0,'INVALID_RESPONSE',true);
+  }
+}
+
 export function getMaterialIntakeAnalysis(
   token: string | null,
   versionId: string,
@@ -418,4 +442,15 @@ export function getWorksheetGrid(
       query.toString(),
     { token, signal },
   );
+}
+
+export async function getMaterialReview(token: string | null, versionId: string, signal?: AbortSignal) {
+  const {parseMaterialReview} = await import('./materialReview');
+  return parseMaterialReview(await requestJson<unknown>(`${P3_INGESTION_BASE}/versions/${encodeURIComponent(versionId)}/review`, {token, signal}), versionId);
+}
+export async function saveMaterialReview(token: string | null, versionId: string, body: import('./materialReview').ReviewWrite) {
+  const {parseReviewReceipt} = await import('./materialReview');
+  return parseReviewReceipt(await requestJson<unknown>(`${P3_INGESTION_BASE}/versions/${encodeURIComponent(versionId)}/review`, {
+    token, method: 'POST', contentType: 'application/json', body: JSON.stringify(body),
+  }), body);
 }

@@ -80,7 +80,8 @@ def _load_fixture():
 
 
 LC = _localctl()
-ANALYSIS_REPORT_SECRET_NAMES = (*LC.ALL_SECRET_NAMES, "f1_material_rag_key")
+from infra.f1.analysis_report_storage import STORAGE_SECRET_NAMES
+ANALYSIS_REPORT_SECRET_NAMES = (*LC.ALL_SECRET_NAMES, "f1_material_rag_key", "f1_source_reader_password", "f1_report_worker_password", "f1_ingestion_worker_password", *STORAGE_SECRET_NAMES)
 OCR_RUNTIME_IMAGE_ID = (
     "sha256:02e6300f52463818de7ceaf447bfb0765e5f8466251177006131dec4e55a27f5"
 )
@@ -318,17 +319,12 @@ def _write_docker_config(paths: dict[str, Path]) -> None:
 def _write_secrets(state: dict[str, object], paths: dict[str, Path]) -> None:
     existing = {entry.name for entry in os.scandir(paths["secrets"])}
     if existing:
-        base_names = set(LC.ALL_SECRET_NAMES)
-        if existing == base_names:
-            import secrets as secrets_mod
-
-            LC._exclusive_write(
-                paths["secrets"] / "f1_material_rag_key",
-                secrets_mod.token_hex(32).encode("ascii"),
-            )
-            return
-        if existing != set(ANALYSIS_REPORT_SECRET_NAMES):
+        if not set(LC.ALL_SECRET_NAMES).issubset(existing) or not existing.issubset(set(ANALYSIS_REPORT_SECRET_NAMES)):
             raise UatError("LOCAL_ANALYSIS_REPORT_UAT_SECRET_SET_INCOMPLETE")
+        import secrets as secrets_mod
+        if "f1_material_rag_key" not in existing:
+            LC._exclusive_write(paths["secrets"] / "f1_material_rag_key", secrets_mod.token_hex(32).encode("ascii"))
+        _write_storage_secrets(paths["secrets"])
         return
     import secrets as secrets_mod
 
@@ -369,6 +365,16 @@ def _write_secrets(state: dict[str, object], paths: dict[str, Path]) -> None:
             material_key_path, secrets_mod.token_hex(32).encode("ascii")
         )
 
+    _write_storage_secrets(paths["secrets"])
+
+
+def _write_storage_secrets(directory: Path) -> None:
+    import secrets as secrets_mod
+    for name in (*STORAGE_SECRET_NAMES, "f1_source_reader_password", "f1_report_worker_password", "f1_ingestion_worker_password"):
+        if not (directory / name).exists():
+            value = "svc" + secrets_mod.token_hex(12) if name.endswith("_user") else secrets_mod.token_hex(32)
+            LC._exclusive_write(directory / name, value.encode("ascii"))
+
 
 def _validate_analysis_report_secret_set(directory: Path) -> None:
     LC._directory(directory)
@@ -378,7 +384,7 @@ def _validate_analysis_report_secret_set(directory: Path) -> None:
         raise UatError("LOCAL_ANALYSIS_REPORT_UAT_SECRET_SET_INVALID") from None
     if entries != set(ANALYSIS_REPORT_SECRET_NAMES):
         raise UatError("LOCAL_ANALYSIS_REPORT_UAT_SECRET_SET_INVALID")
-    for name in LC.ALL_SECRET_NAMES:
+    for name in (*LC.ALL_SECRET_NAMES, *STORAGE_SECRET_NAMES, "f1_source_reader_password", "f1_report_worker_password", "f1_ingestion_worker_password"):
         minimum = 32 if name == "f0i_key" else 1
         maximum = 32 if name == "f0i_key" else 16384
         LC._secure_file(directory / name, minimum=minimum, maximum=maximum)
@@ -510,6 +516,7 @@ def _rewrite_host_bootstrap_dsn(state: dict[str, object], paths: dict[str, Path]
 def _start(state: dict[str, object], paths: dict[str, Path]) -> None:
     _assert_ocr_runtime(paths)
     _compose(state, paths, "run", "--rm", "--no-deps", "secret-init", timeout=180)
+    _compose(state, paths, "run", "--rm", "--no-deps", "storage-secret-init", timeout=180)
     _compose(state, paths, "build", "migrator", "web", timeout=1800)
     _compose(
         state,
@@ -527,6 +534,7 @@ def _start(state: dict[str, object], paths: dict[str, Path]) -> None:
         "clamd",
         timeout=420,
     )
+    _compose(state, paths, "run", "--rm", "--no-deps", "storage-provisioner", timeout=180)
     _compose(state, paths, "run", "--rm", "migrator", timeout=600)
     _seed_identities(state, paths)
     _compose(state, paths, "run", "--rm", "keycloak-provisioner", timeout=180)
@@ -545,6 +553,7 @@ def _start(state: dict[str, object], paths: dict[str, Path]) -> None:
         "dispatcher",
         "ingestion-worker",
         "report-worker",
+        "source-gateway",
         "web",
         timeout=240,
     )
@@ -568,7 +577,7 @@ def _pg_env(state: dict[str, object], paths: dict[str, Path]) -> dict[str, str]:
 
 def _seed_identities(state: dict[str, object], paths: dict[str, Path]) -> None:
     # local_seed.main() is frozen at f1_0014. This UAT migrator stops at
-    # f1_0026, so the same ensure_* helpers run on the host with that head.
+    # f1_0044, so the same ensure_* helpers run on the host with that head.
     from infra.f1 import local_seed
     from infra.f1.migrate_f1 import _bootstrap_dsn
 
@@ -583,7 +592,7 @@ def _seed_identities(state: dict[str, object], paths: dict[str, Path]) -> None:
                 "SELECT string_agg(version_num, ',' ORDER BY version_num) "
                 "FROM f1.alembic_version"
             ).fetchone()
-            if head is None or head[0] != "f1_0026":
+            if head is None or head[0] != "f1_0044":
                 raise UatError("LOCAL_ANALYSIS_REPORT_UAT_SEED_HEAD_MISMATCH")
             local_seed._ensure_enterprise(
                 connection, local_seed.ENTERPRISE_A, "Local Enterprise A", "LOCAL-A"
@@ -591,6 +600,8 @@ def _seed_identities(state: dict[str, object], paths: dict[str, Path]) -> None:
             local_seed._ensure_enterprise(
                 connection, local_seed.ENTERPRISE_B, "Local Enterprise B", "LOCAL-B"
             )
+            connection.execute("UPDATE f1.enterprise SET business_kind='service_provider' WHERE id=%s", (local_seed.ENTERPRISE_A,))
+            connection.execute("UPDATE f1.enterprise SET business_kind='client' WHERE id=%s", (local_seed.ENTERPRISE_B,))
             for binding in local_seed.BINDINGS:
                 local_seed._ensure_binding(connection, binding)
             local_seed._ensure_durability_canary(connection)

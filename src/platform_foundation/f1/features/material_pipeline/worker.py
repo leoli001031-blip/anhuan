@@ -256,7 +256,7 @@ async def _run_durable_delivery(
             _delivery_rearm=None,
         )
         if result.index.status == "ready":
-            # Execute the body-free continuation under the report worker's
+            # Execute the body-free continuation under the coordinator's
             # API credential.  The delivery remains live until the resulting
             # durable report job reaches a stable state, so a Redis flush is
             # repaired by the next PostgreSQL dispatch lease.
@@ -306,6 +306,13 @@ def run_report_stage(
     provider_sub: str,
     version_id: str,
 ) -> None:
+    if os.environ.get('F1_PIPELINE_COORDINATOR_GATEWAY') == '1':
+        # Legacy unfenced nudges are superseded by the durable delivery.
+        return
+    if os.environ.get('F1_REPORT_WORKER_RESTRICTED') == '1':
+        from .queue import enqueue_report_stage
+        enqueue_report_stage(enterprise_id=uuid.UUID(enterprise_id), provider_sub=provider_sub, version_id=uuid.UUID(version_id))
+        return
     asyncio.run(
         _run_report_stage(
             uuid.UUID(enterprise_id), provider_sub, uuid.UUID(version_id)
@@ -318,6 +325,12 @@ def run_reconcile_stage(
     provider_sub: str,
     version_id: str,
 ) -> None:
+    if os.environ.get('F1_PIPELINE_COORDINATOR_GATEWAY') == '1':
+        return
+    if os.environ.get('F1_REPORT_WORKER_RESTRICTED') == '1':
+        from .queue import enqueue_reconcile_stage
+        enqueue_reconcile_stage(enterprise_id=uuid.UUID(enterprise_id), provider_sub=provider_sub, version_id=uuid.UUID(version_id))
+        return
     asyncio.run(
         _run_reconcile_stage(
             uuid.UUID(enterprise_id), provider_sub, uuid.UUID(version_id)
@@ -329,11 +342,26 @@ def run_recovery_sweep(
     enterprise_id: str,
     provider_sub: str,
 ) -> None:
+    if os.environ.get('F1_PIPELINE_COORDINATOR_GATEWAY') == '1':
+        return
+    if os.environ.get('F1_REPORT_WORKER_RESTRICTED') == '1':
+        from .queue import enqueue_recovery_sweep
+        enqueue_recovery_sweep(enterprise_id=uuid.UUID(enterprise_id), provider_sub=provider_sub)
+        return
     asyncio.run(_run_recovery_sweep(uuid.UUID(enterprise_id), provider_sub))
 
 
 def run_durable_delivery(delivery_id: str, dispatch_token: str) -> None:
     """RQ entrypoint; executable identities are reloaded from PostgreSQL."""
+    if os.environ.get('F1_PIPELINE_COORDINATOR_GATEWAY') == '1':
+        from .control_gateway import forward_delivery
+
+        forward_delivery(uuid.UUID(delivery_id), uuid.UUID(dispatch_token))
+        return
+    if os.environ.get('F1_REPORT_WORKER_RESTRICTED') == '1':
+        from .queue import enqueue_durable_delivery
+        enqueue_durable_delivery(delivery_id=uuid.UUID(delivery_id), dispatch_token=uuid.UUID(dispatch_token))
+        return
     asyncio.run(
         _run_durable_delivery(
             uuid.UUID(delivery_id), uuid.UUID(dispatch_token)

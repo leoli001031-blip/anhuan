@@ -9,6 +9,11 @@ import {
 } from "../ingestionApi";
 import { formatBytes, reasonCopy } from "../reasonCopy";
 import type { IngestionCapabilities } from "../types";
+import { useAuth } from '../../../auth/OidcProvider';
+import { useSessionAccess } from '../../../adapters';
+import { completePendingWrite } from '../../../adapters/pendingWrites';
+import { pendingUpload, uploadFileError, validateDocumentReceipt, validateVersionReceipt } from '../uploadWrite';
+import { useAsyncContext } from '../../../components/useAsyncContext';
 
 interface UploadResult {
   documentId: string;
@@ -26,17 +31,6 @@ interface DocumentUploadModalProps {
   onSuccess: (result: UploadResult) => void;
 }
 
-function newIdempotencyKey(): string {
-  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
-  const bytes = crypto.getRandomValues(new Uint8Array(16));
-  return Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
-}
-
-function extensionOf(filename: string): string {
-  const index = filename.lastIndexOf(".");
-  return index < 0 ? "" : filename.slice(index).toLowerCase();
-}
-
 export default function DocumentUploadModal({
   open,
   mode,
@@ -47,11 +41,15 @@ export default function DocumentUploadModal({
   onCancel,
   onSuccess,
 }: DocumentUploadModalProps) {
+  const {user} = useAuth();
+  const {session} = useSessionAccess();
+  const context = `${session?.enterprise_id ?? ''}:${user?.profile.sub ?? ''}:${documentId ?? ''}:${mode}:${open}`;
+  const current = useAsyncContext(context);
   const [form] = Form.useForm<{ display_name: string }>();
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const idempotencyKey = useRef(newIdempotencyKey());
+  const flight = useRef(false);
   const activeRequest = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -59,10 +57,14 @@ export default function DocumentUploadModal({
       form.resetFields();
       setFileList([]);
       setError(null);
-      idempotencyKey.current = newIdempotencyKey();
+      setSubmitting(false);
+      flight.current = false;
     }
-    return () => activeRequest.current?.abort();
-  }, [form, open]);
+    return () => {
+      activeRequest.current?.abort();
+      activeRequest.current = null;
+    };
+  }, [form, open, context]);
 
   const allowedTypes =
     capabilities?.allowed_types.filter(
@@ -73,6 +75,7 @@ export default function DocumentUploadModal({
     .join(",");
 
   const close = () => {
+    if (flight.current) return;
     activeRequest.current?.abort();
     activeRequest.current = null;
     setSubmitting(false);
@@ -80,6 +83,7 @@ export default function DocumentUploadModal({
   };
 
   const submit = async () => {
+    if (flight.current || !current()) return;
     const file = fileList[0]?.originFileObj;
     if (!file) {
       setError("请选择一个文件");
@@ -89,52 +93,50 @@ export default function DocumentUploadModal({
       setError(reasonCopy(capabilities?.disabled_reason_code));
       return;
     }
-    const extension = extensionOf(file.name);
-    const formatCapability = allowedTypes.find((item) =>
-      item.extensions.map((ext) => ext.toLowerCase()).includes(extension),
-    );
-    if (!formatCapability) {
-      setError(reasonCopy("FILE_TYPE_NOT_ALLOWED"));
-      return;
-    }
-    if (file.size <= 0) {
-      setError(reasonCopy("EMPTY_FILE"));
-      return;
-    }
-    if (
-      file.size > formatCapability.max_file_bytes ||
-      file.size > capabilities.limits.max_file_bytes
-    ) {
-      setError(reasonCopy("FILE_TOO_LARGE"));
+    const validation = uploadFileError(file,capabilities,allowedTypes.map(x=>x.content_type));
+    if (validation) {
+      setError(validation);
       return;
     }
 
+    // Fence before async form validation or file hashing.
+    flight.current = true;
     let displayName = "";
     if (mode === "create") {
       try {
         displayName = (await form.validateFields()).display_name.trim();
       } catch {
+        if(current())flight.current=false;
         return;
       }
     } else if (!documentId) {
       setError("文档标识缺失");
+      flight.current=false;
       return;
     }
 
+    if(!current())return;
     const controller = new AbortController();
     activeRequest.current?.abort();
     activeRequest.current = controller;
     setSubmitting(true);
     setError(null);
     try {
+      const scope = {kind:'service_provider' as const,client_account_id:null};
+      const identity = await pendingUpload(session?.enterprise_id ?? '',user?.profile.sub ?? '',file,
+        mode==='create' ? {displayName,scope} : {documentId:documentId!});
+      if(!current() || controller.signal.aborted)return;
       if (mode === "create") {
         const document = await createIngestionDocument(
           token,
           displayName,
           file,
-          idempotencyKey.current,
+          identity.requestId,
           controller.signal,
         );
+        validateDocumentReceipt(document,file,scope);
+        completePendingWrite(identity);
+        if (controller.signal.aborted || activeRequest.current !== controller) return;
         message.success("文件已进入隔离区");
         onSuccess({
           documentId: document.id,
@@ -145,18 +147,25 @@ export default function DocumentUploadModal({
           token,
           documentId as string,
           file,
-          idempotencyKey.current,
+          identity.requestId,
           controller.signal,
         );
+        validateVersionReceipt(version,file,documentId!);
+        completePendingWrite(identity);
+        if (controller.signal.aborted || activeRequest.current !== controller) return;
         message.success("新版本已进入隔离区");
         onSuccess({ documentId: version.document_id, versionId: version.id });
       }
-      idempotencyKey.current = newIdempotencyKey();
     } catch (reason) {
-      if (!controller.signal.aborted) setError(userFacingIngestionError(reason));
+      if (!controller.signal.aborted && activeRequest.current === controller) {
+        setError(userFacingIngestionError(reason));
+      }
     } finally {
-      if (activeRequest.current === controller) activeRequest.current = null;
-      setSubmitting(false);
+      if (activeRequest.current === controller) {
+        activeRequest.current = null;
+        flight.current = false;
+        setSubmitting(false);
+      }
     }
   };
 
@@ -170,6 +179,8 @@ export default function DocumentUploadModal({
       okButtonProps={{ disabled: !capabilities?.upload_enabled || allowedTypes.length === 0 }}
       closable={!submitting}
       maskClosable={!submitting}
+      keyboard={!submitting}
+      cancelButtonProps={{disabled:submitting}}
       onOk={() => void submit()}
       onCancel={close}
       destroyOnHidden

@@ -3,7 +3,7 @@
 import type {
   ArchiveResultV1,
   ClientAccount,
-  ClientStage,
+  CreateClientInput,
   ExceptionItem,
   GenerationAcceptedV1,
   JobStatusV1,
@@ -111,7 +111,7 @@ export interface AnalysisReportApi {
   // 运营台 · 客户企业
   listClients(): Promise<ClientAccount[]>;
   getClient(clientId: string): Promise<ClientAccount>;
-  createClient(input: { name: string; stage: ClientStage }): Promise<ClientAccount>;
+  createClient(input: CreateClientInput): Promise<ClientAccount>;
 
   // 运营台 · 材料（共享域 或 指定客户域，二者从不聚合）
   listSharedMaterials(): Promise<MaterialItem[]>;

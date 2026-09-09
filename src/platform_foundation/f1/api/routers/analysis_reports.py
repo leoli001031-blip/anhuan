@@ -31,7 +31,7 @@ from ...features.analysis_reports import (
     version_detail,
     version_history,
 )
-from ...features.analysis_reports.contracts import FORBIDDEN_CLIENT_IDENTITY_KEYS
+from ...features.analysis_reports.contracts import FORBIDDEN_CLIENT_IDENTITY_KEYS, GenerationFailed
 
 router = APIRouter()
 session_router = APIRouter()
@@ -78,6 +78,8 @@ def _client_identity_rejected(request: Request) -> None:
 
 
 def _map_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, GenerationFailed) and exc.reason == "REPORT_SOURCE_INDEX_OUTDATED":
+        return HTTPException(status_code=409, detail="REPORT_SOURCE_INDEX_OUTDATED")
     if isinstance(exc, ReportNotFound):
         return HTTPException(status_code=404, detail="REPORT_NOT_FOUND")
     if isinstance(exc, RequestIdConflict):

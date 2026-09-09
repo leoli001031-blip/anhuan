@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import uuid
+import json
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException
@@ -135,13 +136,52 @@ async def create_account(
     industry_note: str | None,
     region_note: str | None,
     next_follow_up_at: datetime | None,
+    request_id: uuid.UUID | None = None,
 ) -> dict[str, Any]:
     if not is_manager(tenant.role):
         raise HTTPException(status_code=403, detail="CRM_MANAGER_REQUIRED")
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
     ) as session:
+        # The pre-0030 engineering stack keeps its original schema/contract.
+        # Business requests always recheck current authority before replay too.
+        business = tenant.business_kind is not None
+        if business and next_follow_up_at is not None:
+            if next_follow_up_at.tzinfo is None or next_follow_up_at.utcoffset() is None:
+                raise HTTPException(422, detail="CRM_ACCOUNT_DATETIME_INVALID")
+            next_follow_up_at = next_follow_up_at.astimezone(timezone.utc)
+        payload = {
+            "display_name": display_name.strip(), "stage": stage,
+            "owner_user_id": str(owner_user_id) if owner_user_id else None,
+            "industry_note": industry_note, "region_note": region_note,
+            "next_follow_up_at": next_follow_up_at.isoformat() if next_follow_up_at else None,
+        }
+        if not payload["display_name"]:
+            raise HTTPException(422, detail="CRM_ACCOUNT_NAME_REQUIRED")
+        if business:
+            if tenant.business_kind != "service_provider" or tenant.role != "enterprise_admin":
+                raise HTTPException(403, detail="CRM_MANAGER_REQUIRED")
+            if request_id is None:
+                raise HTTPException(422, detail="CRM_ACCOUNT_REQUEST_ID_REQUIRED")
+            await session.execute(text("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))"),
+                {"key": f"crm-create:{tenant.enterprise_id}:{request_id}"})
+            current_role = (await session.execute(text("SELECT f1.lock_current_membership()"))).scalar_one()
+            kind = (await session.execute(text("SELECT business_kind FROM f1.enterprise WHERE id=:eid"),
+                {"eid": tenant.enterprise_id})).scalar_one_or_none()
+            if current_role != "enterprise_admin" or kind != "service_provider":
+                raise HTTPException(403, detail="CRM_MANAGER_REQUIRED")
         actor_id = await current_actor_id(session, tenant)
+        if business:
+            previous = (await session.execute(text(
+                f"SELECT {_ACCOUNT_COLUMNS}, create_request_payload FROM f1.crm_account "
+                "WHERE enterprise_id=:eid AND create_request_id=:request"),
+                {"eid":tenant.enterprise_id, "request":request_id})).mappings().one_or_none()
+            if previous is not None:
+                if previous["created_by_user_id"] != actor_id or previous["create_request_payload"] != payload:
+                    raise HTTPException(409, detail="CRM_ACCOUNT_REQUEST_CONFLICT")
+                await session.commit()
+                # Internal request metadata is never exposed through the CRM response.
+                return _account_out({key: previous[key] for key in _ACCOUNT_COLUMNS.split(", ")}, tenant, actor_id)
         if owner_user_id is not None:
             await ensure_enterprise_member(
                 session,
@@ -155,15 +195,19 @@ async def create_account(
                     "INSERT INTO f1.crm_account ("
                     "id, enterprise_id, display_name, stage, owner_user_id, "
                     "industry_note, region_note, next_follow_up_at, "
-                    "created_by_user_id) VALUES ("
+                    "created_by_user_id" +
+                    (", create_request_id, create_request_payload" if business else "") + ") VALUES ("
                     ":id, :enterprise_id, :display_name, :stage, :owner_user_id, "
-                    ":industry_note, :region_note, :next_follow_up_at, :actor_id) "
+                    ":industry_note, :region_note, :next_follow_up_at, :actor_id" +
+                    (", :request_id, CAST(:request_payload AS jsonb)" if business else "") + ") "
                     f"RETURNING {_ACCOUNT_COLUMNS}"
                 ),
                 {
                     "id": account_id,
                     "enterprise_id": tenant.enterprise_id,
-                    "display_name": display_name,
+                    "display_name": payload["display_name"],
+                    "request_id": request_id,
+                    "request_payload": json.dumps(payload),
                     "stage": stage,
                     "owner_user_id": owner_user_id,
                     "industry_note": industry_note,

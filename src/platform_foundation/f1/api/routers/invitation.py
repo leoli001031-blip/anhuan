@@ -1,6 +1,8 @@
 """Invitation endpoints: create (tenant admin) + consume (single-use)."""
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -35,6 +37,10 @@ class InviteConsume(BaseModel):
     email: str | None = None
 
 
+class InviteConsumed(InviteOut):
+    enterprise_id: uuid.UUID
+
+
 @router.post("", response_model=InviteOut, status_code=201)
 async def create(
     body: InviteCreate,
@@ -51,24 +57,27 @@ async def create(
     return InviteOut(email=body.email, role=body.role, token=invite.token)
 
 
-@router.post("/consume", response_model=InviteOut)
+@router.post("/consume", response_model=InviteConsumed)
 async def consume(
     body: InviteConsume,
     user: dict = Depends(current_user),
-) -> InviteOut:
+) -> InviteConsumed:
     # Only the OIDC identity is used; a client-supplied ``keycloak_sub`` is
     # ignored.  The JTI+profile+membership+audit all commit in one transaction
     # inside ``f1.consume_invite``.
     oidc_email = user.get("email")
     if not isinstance(oidc_email, str) or not oidc_email.strip():
         raise HTTPException(status_code=409, detail="OIDC_EMAIL_REQUIRED")
+    if user.get("email_verified") is not True:
+        raise HTTPException(status_code=409, detail="OIDC_EMAIL_VERIFICATION_REQUIRED")
     try:
         invite = await consume_invite(
             body.token, user_sub=user["sub"], oidc_email=oidc_email
         )
     except InvitationError as error:
         raise HTTPException(status_code=409, detail=str(error)) from None
-    return InviteOut(email=invite.email, role=invite.role, token=invite.token)
+    return InviteConsumed(email=invite.email, role=invite.role, token=invite.token,
+                          enterprise_id=invite.enterprise_id)
 
 
 __all__ = ("router", "InviteCreate", "InviteConsume", "InviteOut")

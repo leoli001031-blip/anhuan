@@ -1,10 +1,10 @@
 // 合同类型：严格对应 artifacts/material-rag-analysis-report-contract-v1（frozen 2026-08-21）。
 // 前端 UI 类型只暴露业务可读字段；dataset/chunk/scope/lease/物理存储 ID 永不进入 UI 类型。
 
-export const SESSION_SCHEMA = "anhuan-analysis-report-session-v1" as const;
+export const SESSION_SCHEMA = "anhuan-analysis-report-session-v2" as const;
 export const TEMPLATE_TITLE = "企业安环资料分析报告";
 
-export type ProductRole = "provider_admin" | "client_user";
+export type ProductRole = "provider_admin" | "provider_consultant" | "provider_reviewer" | "client_user" | "technical_admin" | "unconfigured";
 
 export type Capability =
   | "list_client_reports"
@@ -16,9 +16,10 @@ export type Capability =
   | "list_published"
   | "read_published";
 
-export interface SessionAccessV1 {
+export interface SessionAccessV2 {
   schema: typeof SESSION_SCHEMA;
   product_role: ProductRole;
+  membership_role?: "super_admin" | "enterprise_admin" | "plant_admin" | "auditor" | "partner" | null;
   enterprise_id: string;
   template_id: string;
   template_title: string;
@@ -68,7 +69,10 @@ export interface CitationV1 {
   document_version_id: string;
   documentName: string;
   versionNumber: number;
-  pageNumber: number;
+  pageNumber: number | null;
+  location?: string;
+  locator?: Record<string, unknown>;
+  evidenceRevisionId?: string;
   excerpt: string;
 }
 
@@ -142,6 +146,11 @@ export interface JobStatusV1 {
   version_id: string;
   status: "queued" | "generating" | "draft" | "failed";
   error_reason: string | null;
+  delivery?: {
+    state: "pending" | "dispatched" | "retry_wait" | "done" | "blocked";
+    attempt: number;
+    reason_code: string | null;
+  } | null;
 }
 
 export interface VersionHistoryItemV1 {
@@ -192,6 +201,12 @@ export const CLIENT_STAGE_LABEL: Record<ClientStage, string> = {
   closed: "已终止",
 };
 
+export interface CreateClientInput {
+  name: string;
+  stage: ClientStage;
+  requestId: string;
+}
+
 export interface ClientAccount {
   id: string;
   name: string;
@@ -232,9 +247,15 @@ export interface ExceptionItem {
 // —— 智能问答 ——
 
 export interface QaCitation {
+  documentVersionId?: string;
+  fragmentId?: string;
+  sourceSha256?: string;
   documentName: string;
   versionNumber: number;
-  pageNumber: number;
+  pageNumber: number | null;
+  location?: string;
+  locator?: Record<string, unknown>;
+  evidenceRevisionId?: string;
   snippet: string;
 }
 

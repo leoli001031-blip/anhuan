@@ -37,6 +37,7 @@ from pypdf import PdfReader
 
 from ....f0h.contracts import F0HError, canonical_json_bytes, validate_private_result
 from ..p3.contracts import MAX_PDF_PAGES
+from .pdf_images import page_requires_visual_ocr
 
 
 MAX_OCR_SOURCE_BYTES = 50 * 1024 * 1024
@@ -58,11 +59,14 @@ _FALSE_VALUES = frozenset(("", "0", "false", "no", "off"))
 _SAFE_COORDINATE_RE = re.compile(r"^-?[0-9]{1,9}\.[0-9]{3}$")
 _OCR_CALL_LOCK = threading.Lock()
 OCR_PARSER_BACKEND = "f0h-ppocrv6-3.9.2"
+CLOUD_OCR_PARSER_BACKEND = "cloud-vision-page-3"
+PDF_TEXT_PARSER_VERSION = "pypdf-6.14.2-visual3"
+MATERIAL_EXTRACTION_CONTRACT = 3
 # Closed set of checkpoint parser-backend identities.  The private FIFO
 # runtime stays the audited default; the Ark vision cloud adapter is the
 # only additional member and requires its own explicit opt-in.
 OCR_PARSER_BACKENDS = frozenset(
-    {"f0h-ppocrv6-3.9.2", "cloud-vision-chat-1"}
+    {OCR_PARSER_BACKEND, CLOUD_OCR_PARSER_BACKEND}
 )
 
 RETRYABLE_OCR_REASON_CODES = frozenset(
@@ -245,7 +249,7 @@ class PdfPageTextResult:
     table_candidate: bool = False
     two_column_candidate: bool = False
     source_unit_id: str | None = None
-    parser_backend: str = "pypdf-6.14.2"
+    parser_backend: str = PDF_TEXT_PARSER_VERSION
 
 
 def ocr_checkpoint_aad(
@@ -960,15 +964,32 @@ def ocr_pdf_pages(
                     source_sha256=source_sha256,
                     source_size=len(body),
                 )
-                result = _request_page(
-                    body,
-                    header,
-                    config=active,
-                    deadline=min(
-                        document_deadline,
-                        time.monotonic() + active.request_timeout_seconds,
-                    ),
-                )
+                from dataclasses import asdict
+                from ... import ocr_cache
+                ticket = ocr_cache.Ticket(source_sha256, page_number, {
+                    'backend': OCR_PARSER_BACKEND, 'header': header, 'bundle': vars(_F0H_BUNDLE),
+                    'code': ocr_cache.code_identity(__file__), 'max_pages': active.max_pages,
+                    'request_timeout': active.request_timeout_seconds,
+                    'total_timeout': active.total_timeout_seconds})
+                cached = ticket.load()
+                if cached is None:
+                    result = _request_page(body, header, config=active, deadline=min(
+                        document_deadline, time.monotonic() + active.request_timeout_seconds))
+                    if result.ocr_applied:
+                        cached = ticket.save(asdict(result))
+                if cached is not None:
+                    result = OcrPageResult(**cached)
+                    if (result.page_number != page_number or result.source_unit_id != header['source_unit_id']
+                        or result.parser_backend != OCR_PARSER_BACKEND or result.status != 'applied'
+                        or result.reason_code != 'OCR_APPLIED' or result.ocr_applied is not True
+                        or result.character_count != sum(not c.isspace() for c in result.text)
+                        or type(result.table_candidate) is not bool or type(result.two_column_candidate) is not bool
+                        or (result.confidence_mean_ppm is not None and (type(result.confidence_mean_ppm) is not int
+                            or not 0 <= result.confidence_mean_ppm <= 1_000_000))):
+                        raise LocalOcrError('OCR_UNAVAILABLE')
+                    ocr_cache.cached_text({'text': result.text}, minimum=40)
+                if time.monotonic() >= document_deadline:
+                    raise LocalOcrError('OCR_UNAVAILABLE')
             except Exception:
                 result = _fallback_result(
                     page_number,
@@ -998,9 +1019,9 @@ def extract_pdf_text_pages(
 ) -> tuple[PdfPageTextResult, ...]:
     """Return bounded effective text for every PDF page.
 
-    Native pypdf text is authoritative and remains the fallback.  Only pages
-    below ``ocr_threshold_characters`` are sent to the optional F0-H adapter;
-    invalid, insufficient, or unavailable OCR is never marked as applied.
+    Native pypdf text remains the fallback. Low-text pages and pages painting
+    images/forms require OCR; a native header cannot certify image coverage.
+    Invalid, insufficient, or unavailable OCR is never marked as applied.
     """
 
     if not 1 <= ocr_threshold_characters <= 1_000:
@@ -1019,12 +1040,18 @@ def extract_pdf_text_pages(
     if not 1 <= page_count <= MAX_PDF_PAGES:
         raise LocalOcrError("OCR_PAGE_INVALID")
 
-    embedded_pages: list[tuple[int, str, int]] = []
+    embedded_pages: list[tuple[int, str, int, bool]] = []
     try:
         for page_number, page in enumerate(reader.pages, start=1):
             text = _normalize_embedded_text(page.extract_text() or "")
             character_count = sum(not character.isspace() for character in text)
-            embedded_pages.append((page_number, text, character_count))
+            visual_ocr = page_requires_visual_ocr(page)
+            needs_ocr = character_count < ocr_threshold_characters or visual_ocr
+            if visual_ocr:
+                # Native bytes can contain completely covered/cropped text.
+                # Keep its diagnostic count, never expose it as page evidence.
+                text = ""
+            embedded_pages.append((page_number, text, character_count, needs_ocr))
     except LocalOcrError:
         raise
     except Exception:
@@ -1032,8 +1059,8 @@ def extract_pdf_text_pages(
 
     targets = tuple(
         page_number
-        for page_number, _text, character_count in embedded_pages
-        if character_count < ocr_threshold_characters
+        for page_number, _text, _character_count, needs_ocr in embedded_pages
+        if needs_ocr
     )
     ocr_by_page: dict[int, OcrPageResult] = {}
     if targets:
@@ -1051,8 +1078,8 @@ def extract_pdf_text_pages(
             ocr_by_page = {}
 
     results: list[PdfPageTextResult] = []
-    for page_number, embedded_text, embedded_count in embedded_pages:
-        if embedded_count >= ocr_threshold_characters:
+    for page_number, embedded_text, embedded_count, needs_ocr in embedded_pages:
+        if not needs_ocr:
             results.append(
                 PdfPageTextResult(
                     page_number=page_number,
@@ -1115,6 +1142,7 @@ __all__ = (
     "MAX_OCR_CHECKPOINT_TEXT_BYTES",
     "MAX_OCR_PAGE_TEXT_CHARACTERS",
     "MAX_OCR_SOURCE_BYTES",
+    "MATERIAL_EXTRACTION_CONTRACT",
     "RETRYABLE_OCR_REASON_CODES",
     "OcrPageResult",
     "OCR_PARSER_BACKEND",

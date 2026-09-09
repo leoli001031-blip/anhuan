@@ -1,7 +1,13 @@
 # 项目现役状态
 
+> **2026-09-08 新目标已启动：完整一期正式上线。** 用户已要求通过 `/goal` 完成开发、debug、测试、真实质量验收、部署和运维。执行计划见 [PHASE1_GO_LIVE_PLAN.md](./PHASE1_GO_LIVE_PLAN.md)，当前工作树及测试事实见 [PHASE1_GO_LIVE_PROGRESS.md](./PHASE1_GO_LIVE_PROGRESS.md)。以下保留先前阶段快照，不覆盖新执行记录；原暂停/未验收证据仍保持原状态。
+
 更新日期：2026-09-02（PR #3/#4 已合入 `main@48372ac`；本日交付：云视觉 OCR、GLM 报告生成、PDF 产物、远端浏览器全流程 UAT；此前为云视觉 OCR 适配器（`glm_vision`/`ark_vision` 双 provider，chat/anthropic 双方言，厂商中立 backend `cloud-vision-chat-1`，fail-closed，22 项离线合同 OK）与 `f1_0024` 迁移；经用户授权完成本机与远端两级真实验证：本机 live 冒烟（`glm-5.3-flash` 3.5s/116 字/4 关键词）与服务器 `f1_0024` 云 OCR 栈上的扫描件全链路 E2E（上传→ClamAV→GLM 转录→索引→报告草稿，管道四阶段全 ready，11/11 healthy，回据在服务器 smoke-evidence），标签 `CLOUD_OCR_LIVE_SMOKE_PASSED / REMOTE_SCANNED_E2E_PASSED / OCR_ACCURACY_NOT_EVALUATED`；旧 f1_0023 栈 stop 保留为回滚点；当前工作树已实现数据库持久化的上传摄取、分析后投递和报告 generation delivery/outbox、逐页 OCR checkpoint/失败新修订、token fence、历史 actor rebind、DB-only status 及敏感写入的列级 DML/trigger 边界；23 项直接合同、隔离 PostgreSQL `f1_0014→f1_0023` 迁移/47 表 FORCE-RLS 目录、真实 Redis/worker 崩溃恢复、真实 PostgreSQL OCR checkpoint 恢复及当前工作树浏览器 UAT 已通过，当前为 `TARGETED_TEST_PASSED / LOCAL_WORKFLOW_UAT_PASSED`；人工视觉为 `NOT_PART_OF_THIS_RUN`；`f1_0023` 无 OCR 候选源码包已于 2026-09-01 经用户授权上传测试服务器并以新 project 启动，11/11 容器 healthy，native-text PDF 远端定向冒烟通过，状态为 `REMOTE_NATIVE_TEXT_SMOKE_PASSED / TEST_SERVER_DEPLOYED / NOT_COMMITTED / NOT_PUSHED / NOT_PRODUCTION`；旧 `f1_0020` demo 已 stop 保留（10 容器/14 卷/2 网络）作为回滚点，回滚演练未执行）
 本页是当前状态的唯一项目级入口；阶段文档中的早期 `当前`、`READY` 或 `NOT_TESTED` 记录均按其日期保留，不覆盖本页。
+
+## 2026-09-09 当前优先批次
+
+当前候选仍为未提交工作树`codex/phase1-go-live-20260908@60f3217`，单一源码head `f1_0044`。B0映射更新、B2材料全链及B4本地工程验收已取得稳定同源码回执：368项离线、198项前端、197项实库、1个新环境恢复场景、29项浏览器检查通过。真实OCR/材料质量为NOT_TESTED，远端CI为NOT_RUN，当前候选NOT_COMMITTED / NOT_PUSHED / NOT_DEPLOYED。精确范围与后续依赖见[PHASE1_MATERIAL_STABILITY_TASKS.md](./PHASE1_MATERIAL_STABILITY_TASKS.md)，证据见[当前批次汇总](../../../out/phase1_material_stability_2026-09-09/current_priority_result.json)。以下9月2日及更早内容是历史快照，不代表0044当前候选。
 
 ## 代码与版本
 

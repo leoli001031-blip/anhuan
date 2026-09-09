@@ -110,7 +110,7 @@ class LocalExtractiveRankingTests(unittest.TestCase):
         self.assertEqual(evidence[0].body_sha256, client.body_sha256)
 
     def test_no_overlap_refuses_and_body_hash_mismatch_fails_closed(self) -> None:
-        body = "企业废气治理采用活性炭吸附装置。"
+        body = "The factory treats exhaust gas with activated carbon adsorption.。"
         unit = _unit("安环", body, scope_kind="client")
         self.assertEqual(rank_local_evidence("食堂菜单", (unit,), limit=1), ())
         tampered = _Unit(**{**unit.__dict__, "body_sha256": "0" * 64})
@@ -227,8 +227,9 @@ class LocalExtractiveWiringTests(unittest.TestCase):
 
     def test_fixture_contains_answerable_source_text_not_a_production_answer(self) -> None:
         fixture = _source(FIXTURE)
-        self.assertIn("企业废气治理采用活性炭吸附装置", fixture)
-        self.assertIn("body = _MATERIAL_BODIES[label]", fixture)
+        self.assertIn("The factory treats exhaust gas with activated carbon adsorption.", fixture)
+        self.assertIn("source, body = _synthetic_material_source(label)", fixture)
+        self.assertIn("pages = extract_pdf_text_pages(source", fixture)
         self.assertIn('os.environ.get("F1_MATERIAL_QA_LOCAL_EXTRACTIVE")', fixture)
 
 

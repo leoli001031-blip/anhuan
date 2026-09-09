@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { Form, Input, Modal, Select, Typography } from "antd";
+import { useEffect, useRef, useState } from "react";
+import { Alert, Form, Input, Modal, Select, Typography } from "antd";
+import { useAsyncContext } from "../../../components/useAsyncContext";
 import type {
   CreateCrmAccountInput,
   CrmAccount,
@@ -17,6 +18,8 @@ interface AccountFormValues {
 }
 
 interface Props {
+  contextKey?: string;
+  errorMessage?: string | null;
   open: boolean;
   account?: CrmAccount | null;
   onCancel: () => void;
@@ -37,12 +40,19 @@ function isoDateTime(value: string | undefined): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
-export default function CrmAccountModal({ open, account, onCancel, onSubmit }: Props) {
+export default function CrmAccountModal({ open, account, onCancel, onSubmit, contextKey, errorMessage }: Props) {
   const [form] = Form.useForm<AccountFormValues>();
+  const initializedCreate = useRef<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const context = JSON.stringify([contextKey, account?.id, open]);
+  const current = useAsyncContext(context);
+  const flight = useRef<{context: string; active: boolean}>({context, active: false});
+  useEffect(() => { flight.current = {context, active: false}; setSaving(false); }, [context]);
 
   useEffect(() => {
     if (!open) return;
+    if (!account && initializedCreate.current === (contextKey ?? "create")) return;
+    if (!account) initializedCreate.current = contextKey ?? "create";
     form.setFieldsValue({
       display_name: account?.display_name ?? "",
       stage: account?.stage ?? "lead",
@@ -51,12 +61,16 @@ export default function CrmAccountModal({ open, account, onCancel, onSubmit }: P
       region_note: account?.region_note ?? undefined,
       next_follow_up_at: localDateTime(account?.next_follow_up_at),
     });
-  }, [account, form, open]);
+  }, [account, form, open, contextKey]);
 
   const submit = async () => {
-    const values = await form.validateFields();
+    if (!open || !current() || (flight.current.context === context && flight.current.active)) return;
+    const invocation = {context, active: true}; flight.current = invocation;
     setSaving(true);
     try {
+      let values: AccountFormValues;
+      try { values = await form.validateFields(); } catch { return; }
+      if (!current()) return;
       await onSubmit({
         display_name: values.display_name.trim(),
         stage: values.stage,
@@ -66,7 +80,8 @@ export default function CrmAccountModal({ open, account, onCancel, onSubmit }: P
         next_follow_up_at: isoDateTime(values.next_follow_up_at),
       });
     } finally {
-      setSaving(false);
+      invocation.active = false;
+      if (current()) setSaving(false);
     }
   };
 
@@ -78,19 +93,24 @@ export default function CrmAccountModal({ open, account, onCancel, onSubmit }: P
       cancelText="取消"
       confirmLoading={saving}
       onOk={() => void submit()}
-      onCancel={onCancel}
+      onCancel={() => { if (!flight.current.active) onCancel(); }}
+      closable={!saving}
+      maskClosable={!saving}
+      keyboard={!saving}
+      cancelButtonProps={{disabled: saving}}
       afterOpenChange={(visible) => {
-        if (!visible) form.resetFields();
+        if (!visible && account) form.resetFields();
       }}
     >
+      {errorMessage && <Alert type="error" showIcon message={errorMessage} style={{marginBottom: 16}} />}
       <Typography.Paragraph type="secondary">
         仅录入内部合成或 Fixture 数据，不录入真实客户与联系人信息。
       </Typography.Paragraph>
-      <Form form={form} layout="vertical" requiredMark={false}>
+      <Form form={form} layout="vertical" requiredMark={false} disabled={saving}>
         <Form.Item
           name="display_name"
           label="档案名称"
-          rules={[{ required: true, message: "请输入档案名称" }, { max: 200 }]}
+          rules={[{ required: true, whitespace: true, message: "请输入档案名称" }, { max: 200 }]}
         >
           <Input placeholder="例如：合成客户 A" autoComplete="off" />
         </Form.Item>

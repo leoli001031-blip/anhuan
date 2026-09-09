@@ -12,7 +12,40 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 WEB_SRC = ROOT / "src" / "web" / "src"
 HARNESS = r"""
-import { pathToFileURL } from "node:url";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, resolve } from "node:path";
+import { runInThisContext } from "node:vm";
+
+// The app uses bundler resolution, including extensionless TypeScript imports.
+// Load its real module graph with the project's compiler instead of asking
+// Node's native ESM resolver to interpret source imports as emitted JavaScript.
+const requireFromApp = createRequire(process.env.API_TS);
+const ts = requireFromApp("typescript");
+const configPath = resolve(dirname(process.env.API_TS), "../tsconfig.app.json");
+const config = ts.readConfigFile(configPath, ts.sys.readFile);
+if (config.error) throw new Error(ts.flattenDiagnosticMessageText(config.error.messageText, "\n"));
+const options = ts.parseJsonConfigFileContent(config.config, ts.sys, dirname(configPath)).options;
+const modules = new Map();
+function loadTypeScript(filename) {
+  if (modules.has(filename)) return modules.get(filename).exports;
+  const module = { exports: {} };
+  modules.set(filename, module);
+  const compiled = ts.transpileModule(readFileSync(filename, "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: options.target },
+    fileName: filename,
+  }).outputText;
+  const requireModule = (specifier) => {
+    const resolved = ts.resolveModuleName(specifier, filename, options, ts.sys).resolvedModule;
+    if (!resolved || resolved.isExternalLibraryImport || resolved.resolvedFileName.endsWith(".d.ts")) {
+      throw new Error(`Unsupported source dependency ${specifier} from ${filename}`);
+    }
+    return loadTypeScript(resolved.resolvedFileName);
+  };
+  const execute = runInThisContext(`(function(require, module, exports) {\n${compiled}\n})`, { filename });
+  execute(requireModule, module, module.exports);
+  return module.exports;
+}
 
 const ENTERPRISE_KEY = "f1-selected-enterprise";
 const A = "20000000-0000-4000-8000-00000000000a";
@@ -65,7 +98,6 @@ globalThis.fetch = (url, init = {}) => {
   });
 };
 
-const apiUrl = pathToFileURL(process.env.API_TS).href;
 const {
   commitTenantSnapshot,
   getTenantGeneration,
@@ -73,7 +105,7 @@ const {
   setSelectedEnterprise,
   tenantFetch,
   ApiError,
-} = await import(apiUrl);
+} = loadTypeScript(process.env.API_TS);
 
 function respondOk(index, body) {
   pending[index].resolve(new Response(JSON.stringify(body), {
@@ -209,8 +241,6 @@ class AnalysisReportStageBContractTests(unittest.TestCase):
             completed = subprocess.run(
                 [
                     "node",
-                    "--experimental-strip-types",
-                    "--disable-warning=ExperimentalWarning",
                     script,
                 ],
                 cwd=str(ROOT),

@@ -266,14 +266,16 @@ class AnalysisReportDeploymentPreflightTests(unittest.TestCase):
         handoff = HANDOFF_PATH.read_text(encoding="utf-8")
         for needle in (
             "f1_0017",
-            "f1_0020",
-            "pre-f1-0020",
+            "f1_0032",
+            "pre-f1-0031",
             "pg_dump",
             "F1_SECRETS_DIR",
             "F1_KEYCLOAK_ISSUER_URL",
             "VITE_MATERIAL_RAG_REPORT_MOCK",
         ):
             self.assertIn(needle, deployment)
+        self.assertIn('test "$head_after" = "f1_0032"', deployment)
+        self.assertNotIn('test "$head_after" = "f1_0024"', deployment)
         self.assertIn("恢复式回滚", rollback)
         self.assertIn("禁止执行 Alembic downgrade", rollback)
         self.assertIn("人工二次确认", rollback)

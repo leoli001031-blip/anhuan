@@ -1,8 +1,8 @@
 """Fail-closed P3 quarantine processor.
 
 The product API invokes this pipeline after a successful upload and also keeps
-the explicit process/retry recovery seams.  It never creates an outbox event
-or calls the legacy upload/indexing worker.  The source stays quarantined until
+the explicit process/retry recovery seams. The automatic candidate registers
+its durable continuation with the ready transition. The source stays quarantined until
 local scanning and bounded preview generation both succeed; even then it
 remains held until a separate release.
 """
@@ -27,7 +27,11 @@ from ..material_intake.contracts import (
     MATERIAL_ANALYSIS_VERSION,
     MaterialAnalysisResult,
 )
-from ..material_intake.ocr import LocalOcrError, RETRYABLE_OCR_REASON_CODES
+from ..material_intake.ocr import (
+    MATERIAL_EXTRACTION_CONTRACT,
+    LocalOcrError,
+    RETRYABLE_OCR_REASON_CODES,
+)
 from ..material_intake.service import (
     clear_ocr_checkpoints,
     load_ocr_checkpoints,
@@ -105,6 +109,7 @@ class _ReadyPdfSource:
     analysis_status: str | None
     analysis_source_sha256: str | None
     analysis_ocr_required_count: int
+    analysis_extraction_contract: int = MATERIAL_EXTRACTION_CONTRACT
 
 
 class _ProcessOutcome(RuntimeError):
@@ -249,6 +254,11 @@ async def _claim_process(
 
 def _open_source(claim: _ProcessClaim):
     from ... import storage
+    from ... import source_gateway, ingestion_storage_gateway
+    from ...ingestion_context import restricted_ingestion
+    if restricted_ingestion() and source_gateway.gateway_enabled():
+        import io
+        return io.BytesIO(ingestion_storage_gateway.fetch_source(claim.token, claim.content_sha256, claim.source_size))
 
     return storage.open_quarantine_source(
         claim.object_key,
@@ -289,6 +299,11 @@ async def _ready_pdf_source(
             if material_analysis_recovery_enabled()
             else ""
         )
+        extraction_projection = (
+            "candidate.extraction_contract,"
+            if material_analysis_recovery_enabled()
+            else f"{MATERIAL_EXTRACTION_CONTRACT} AS extraction_contract,"
+        )
         row = (
             await session.execute(
                 text(
@@ -298,6 +313,7 @@ async def _ready_pdf_source(
                     "task.preview_status,task.preview_unit_count,source.content_type,"
                     "analysis.status AS analysis_status,"
                     "analysis.source_sha256 AS analysis_source_sha256,"
+                    "analysis.extraction_contract AS analysis_extraction_contract,"
                     "analysis.ocr_required_count "
                     "FROM f1.document_version AS version "
                     "JOIN f1.upload_task AS task ON "
@@ -308,6 +324,7 @@ async def _ready_pdf_source(
                     "AND source.id=version.source_document_id "
                     "LEFT JOIN LATERAL ("
                     "SELECT candidate.status,candidate.source_sha256,"
+                    + extraction_projection +
                     "COALESCE((SELECT count(*) "
                     "FROM f1.material_page_classification AS page "
                     "WHERE page.enterprise_id=candidate.enterprise_id "
@@ -364,11 +381,17 @@ async def _ready_pdf_source(
             else None
         ),
         analysis_ocr_required_count=int(row.get("ocr_required_count") or 0),
+        analysis_extraction_contract=int(row["analysis_extraction_contract"] or 1),
     )
 
 
 def _open_ready_pdf(source: _ReadyPdfSource):
     from ... import storage
+    from ... import source_gateway, ingestion_storage_gateway
+    from ...ingestion_context import restricted_ingestion
+    if restricted_ingestion() and source_gateway.gateway_enabled():
+        import io
+        return io.BytesIO(ingestion_storage_gateway.fetch_source(None, source.content_sha256, source.source_size))
 
     return storage.open_quarantine_source(
         source.object_key,
@@ -455,13 +478,17 @@ async def retry_ready_material_analysis(
     if source is None:
         return
     if source.analysis_status in {"ready", "confirmed"}:
+        extraction_outdated = (
+            recovery_enabled
+            and source.analysis_extraction_contract != MATERIAL_EXTRACTION_CONTRACT
+        )
         if source.analysis_source_sha256 != source.content_sha256:
             raise IngestionError(
                 "MATERIAL_ANALYSIS_SOURCE_IDENTITY_MISMATCH", http_status=409
             )
         if (
             source.analysis_status == "confirmed"
-            and source.analysis_ocr_required_count > 0
+            and (source.analysis_ocr_required_count > 0 or extraction_outdated)
         ):
             raise IngestionError(
                 "MATERIAL_ANALYSIS_CONFIRMED_OCR_REVIEW_REQUIRED",
@@ -470,7 +497,7 @@ async def retry_ready_material_analysis(
         if (
             source.analysis_status == "ready"
             and recovery_enabled
-            and source.analysis_ocr_required_count > 0
+            and (source.analysis_ocr_required_count > 0 or extraction_outdated)
         ):
             # f1_0023 permits one immutable successor to a machine-ready
             # snapshot only when its persisted pages still carry OCR debt.
@@ -503,7 +530,8 @@ async def retry_ready_material_analysis(
     # One engine per run: checkpoint resume identity and fresh OCR must come
     # from the same provider, and providers are never mixed mid-process.
     engine = resolve_ocr_engine()
-    if recovery_enabled:
+    from ... import ocr_cache
+    if recovery_enabled and not ocr_cache.enabled():
         try:
             checkpoints = await load_ocr_checkpoints(
                 tenant,
@@ -538,18 +566,29 @@ async def retry_ready_material_analysis(
             future.cancel()
             raise LocalOcrError("MATERIAL_ANALYSIS_PERSIST_FAILED") from None
 
+    def _analyze(source_file, **kwargs):
+        if not ocr_cache.enabled():
+            return analyze_pdf(source_file, **kwargs)
+        from ...ingestion_context import current_capability
+        cap = current_capability()
+        if cap is None:
+            raise ocr_cache.OcrCacheError('OCR_CACHE_CAPABILITY_REQUIRED')
+        with ocr_cache.task_scope('pdf-analysis', cap.delivery_id, cap.dispatch_token,
+                                 tenant.enterprise_id, source.version_id):
+            return analyze_pdf(source_file, **kwargs)
+
     try:
         opened = await asyncio.to_thread(_open_ready_pdf, source)
         with closing(opened) as source_file:
             try:
                 result = await asyncio.to_thread(
-                    analyze_pdf,
+                    _analyze,
                     source_file,
                     expected_sha256=source.content_sha256,
                     ocr_checkpoints=checkpoints,
                     ocr_checkpoint_callback=(
                         _checkpoint_page
-                        if recovery_enabled
+                        if recovery_enabled and not ocr_cache.enabled()
                         else None
                     ),
                     ocr_pages=engine.pages,
@@ -704,6 +743,11 @@ async def _advance_to_previewing(tenant: Tenant, claim: _ProcessClaim) -> None:
 
 def _store_preview(claim: _ProcessClaim, result: PreviewResult) -> None:
     from ... import storage
+    from ... import source_gateway, ingestion_storage_gateway
+    from ...ingestion_context import restricted_ingestion
+    if restricted_ingestion() and source_gateway.gateway_enabled():
+        ingestion_storage_gateway.send_preview(claim.token, result)
+        return
 
     for artifact in result.units:
         stored = storage.store_ingestion_preview_unit(
@@ -733,7 +777,7 @@ def _store_preview(claim: _ProcessClaim, result: PreviewResult) -> None:
         raise RuntimeError("P3_PREVIEW_IDENTITY_INVALID")
     storage.store_ingestion_preview_unit(
         task_id=claim.task_id,
-        unit_id="manifest",
+        unit_id=str(uuid.uuid5(claim.task_id, 'manifest:' + result.sha256)) if os.environ.get('F1_PREVIEW_CONTENT_ADDRESSED') == '1' else 'manifest',
         content=manifest,
         content_type="application/json",
     )
@@ -765,6 +809,8 @@ async def _publish_ready(
                     "AND object_state='quarantined' AND quarantine_status='held' "
                     "AND processing_stage='previewing' AND scan_verdict='clean' "
                     "AND preview_status='generating' AND lease_token=:token "
+                    "AND content_sha256=:source_sha256 AND source_size=:source_size "
+                    "AND source_etag=:source_etag AND object_key=:source_key "
                     "AND lease_until > statement_timestamp() RETURNING id"
                 ),
                 {
@@ -775,6 +821,10 @@ async def _publish_ready(
                     "enterprise_id": tenant.enterprise_id,
                     "pipeline_kind": P3_PIPELINE_KIND,
                     "token": claim.token,
+                    "source_sha256": claim.content_sha256,
+                    "source_size": claim.source_size,
+                    "source_etag": claim.source_etag,
+                    "source_key": claim.object_key,
                 },
             )
         ).first()
@@ -804,6 +854,16 @@ async def _publish_ready(
                 "resource_id": str(claim.version_id),
             },
         )
+        # Native files do not pass through persist_material_analysis; their
+        # recovery path must survive a crash before the best-effort nudge.
+        # PDFs register only once analysis succeeds, otherwise a transient
+        # OCR failure could terminally block a prematurely dispatched pipeline.
+        if claim.kind != 'pdf':
+            from ..material_intake.service import _register_auto_pipeline_delivery_if_enabled
+
+            await _register_auto_pipeline_delivery_if_enabled(
+                session, tenant, claim.version_id
+            )
         await session.commit()
 
 
@@ -925,6 +985,9 @@ async def process_controlled_ingestion(
             phase = "preview"
             started_at = time.monotonic()
             preview = await asyncio.to_thread(build_preview, claim.kind, source_file)
+            if os.environ.get('F1_PREVIEW_CONTENT_ADDRESSED') == '1':
+                from .preview import content_addressed_preview
+                preview = content_addressed_preview(claim.task_id, preview)
             if time.monotonic() - started_at > PREVIEW_TIMEOUT_SECONDS:
                 raise PreviewFailure("P3_PREVIEW_TIMEOUT", retryable=True)
             await asyncio.to_thread(_store_preview, claim, preview)

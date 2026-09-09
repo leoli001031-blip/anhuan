@@ -15,15 +15,16 @@ import {
 } from "../api";
 import type { AnalysisReportApi } from "./AnalysisReportApi";
 import type { SessionAccess } from "./SessionAccess";
+import type { MembershipApi } from "./MembershipApi";
 import { HttpAnalysisReportApi } from "./HttpAnalysisReportApi";
 import { MockAnalysisReportApi } from "./MockAnalysisReportApi";
 import { ApiError } from "./errors";
-import type { SessionAccessV1 } from "./types";
+import type { SessionAccessV2 } from "./types";
 
 export const isMockData =
   import.meta.env.DEV && import.meta.env.VITE_MATERIAL_RAG_REPORT_MOCK === "1";
 
-export type AppApi = AnalysisReportApi & SessionAccess;
+export type AppApi = AnalysisReportApi & SessionAccess & MembershipApi;
 
 function createApi(getToken: () => string | null): AppApi {
   if (isMockData) {
@@ -117,7 +118,7 @@ export function useApi(): AppApi {
 }
 
 export interface SessionState {
-  session: SessionAccessV1 | null;
+  session: SessionAccessV2 | null;
   loading: boolean;
   error: unknown;
   reload: () => void;
@@ -138,7 +139,7 @@ function SessionAccessProvider({
 }) {
   const apiClient = useApi();
   const { isAuthenticated, isInitializing } = useAuth();
-  const [session, setSession] = useState<SessionAccessV1 | null>(null);
+  const [session, setSession] = useState<SessionAccessV2 | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<unknown>(null);
   const [nonce, setNonce] = useState(0);

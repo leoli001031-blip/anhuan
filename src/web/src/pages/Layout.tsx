@@ -1,3 +1,5 @@
+import { useSessionAccess } from "../adapters";
+import { canAccessLegacyPath } from "../adapters/SessionAccess";
 import { useEffect, useState } from "react";
 import { Layout as AntLayout, Menu, Button, Typography, Select } from "antd";
 import { Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -15,6 +17,7 @@ import { OnlineOfflineBadge } from "../features/p8";
 const { Header, Content } = AntLayout;
 
 export default function Layout() {
+  const { session } = useSessionAccess();
   const { user, logout, getAccessToken } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
@@ -110,7 +113,7 @@ export default function Layout() {
           theme="dark"
           mode="horizontal"
           selectedKeys={[selectedMenuKey]}
-          items={items}
+          items={session ? items.filter((item) => canAccessLegacyPath(session, item.key)) : []}
           onClick={({ key }) => navigate(key)}
           style={{ flex: "1 1 520px", minWidth: 280 }}
         />

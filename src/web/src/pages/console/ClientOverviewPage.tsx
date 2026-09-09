@@ -4,7 +4,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Col, Row, Spin, Typography } from "antd";
 import { Link, useParams } from "react-router-dom";
-import { useApi } from "../../adapters";
+import { useApi, isMockData } from "../../adapters";
 import type {
   MaterialItem,
   ProviderReportSummaryV1,
@@ -20,6 +20,7 @@ import { formatDateTime } from "../../components/ReportDocument";
 import StatusDot, { type StatusTone } from "../../components/StatusDot";
 import ClientShell from "./ClientShell";
 import { useClient } from "./useClient";
+import ClientPortalAccessPanel from "./ClientPortalAccessPanel";
 
 const MATERIAL_TONE: Record<string, StatusTone> = {
   processing: "processing",
@@ -175,6 +176,7 @@ export default function ClientOverviewPage() {
   return (
     <ClientShell clientId={clientId}>
       <OverviewBody clientId={clientId} />
+      {!isMockData && <ClientPortalAccessPanel clientId={clientId} />}
     </ClientShell>
   );
 }

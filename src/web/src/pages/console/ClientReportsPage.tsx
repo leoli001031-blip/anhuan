@@ -24,6 +24,7 @@ import { REPORT_STATUS_LABEL } from "../../adapters/types";
 import ErrorState from "../../components/ErrorState";
 import { formatDateTime } from "../../components/ReportDocument";
 import StatusDot, { type StatusTone } from "../../components/StatusDot";
+import { useAsyncContext } from "../../components/useAsyncContext";
 import ClientShell from "./ClientShell";
 import { useNarrow } from "./useNarrow";
 
@@ -45,6 +46,9 @@ export default function ClientReportsPage() {
   const { clientId = "" } = useParams();
   const api = useApi();
   const navigate = useNavigate();
+  const isCurrent = useAsyncContext(clientId);
+  const createSeq = useRef(0);
+  const createPending = useRef(false);
   const narrow = useNarrow();
   const [rows, setRows] = useState<ProviderReportSummaryV1[] | null>(null);
   const [error, setError] = useState<unknown>(null);
@@ -79,6 +83,8 @@ export default function ClientReportsPage() {
     setArchiveTarget(null);
     setArchiveReason("");
     setActionReportId(null);
+    setCreating(false);
+    createPending.current = false;
     createRequestId.current = null;
   }, [clientId]);
 
@@ -100,20 +106,22 @@ export default function ClientReportsPage() {
   }, [api, clientId, nonce, showArchived]);
 
   const create = async () => {
+    if (!isCurrent() || createPending.current) return;
+    createPending.current = true;
     if (!createRequestId.current) createRequestId.current = crypto.randomUUID();
     const requestId = createRequestId.current;
-    const seq = ++actionSeq.current;
+    const seq = ++createSeq.current;
     const epoch = contextEpoch.current;
     setCreating(true);
     try {
       const report = await api.createReport(clientId, requestId);
       // 旧客户的迟到创建不得导航走当前页面，也不得清新上下文的 request ID。
-      if (contextEpoch.current !== epoch) return;
+      if (!isCurrent() || contextEpoch.current !== epoch) return;
       createRequestId.current = null;
       message.success("报告已创建，请生成首个版本");
       navigate(`/console/clients/${clientId}/reports/${report.report_id}`);
     } catch (e) {
-      if (contextEpoch.current !== epoch) return;
+      if (!isCurrent() || contextEpoch.current !== epoch) return;
       if (errorKind(e) === "conflict") {
         createRequestId.current = null;
         message.warning("请求冲突，已为你刷新");
@@ -122,12 +130,15 @@ export default function ClientReportsPage() {
         message.error("创建失败，请重试");
       }
     } finally {
-      if (actionSeq.current === seq) setCreating(false);
+      if (isCurrent() && createSeq.current === seq) {
+        createPending.current = false;
+        setCreating(false);
+      }
     }
   };
 
   const submitArchive = async () => {
-    if (!archiveTarget) return;
+    if (!isCurrent() || !archiveTarget) return;
     // 提交前校验：弹窗目标绑定时的客户上下文必须仍是当前上下文，否则直接丢弃，
     // 不发起任何写请求（切客户时弹窗已被清理；此处防御弹窗残留的极端情况）。
     if (contextEpoch.current !== targetEpoch.current) {
@@ -142,41 +153,43 @@ export default function ClientReportsPage() {
     setActionReportId(target.report_id);
     try {
       await api.archiveReport(target.report_id, reason.length > 0 ? reason : undefined);
-      if (contextEpoch.current !== epoch) return;
+      if (!isCurrent() || contextEpoch.current !== epoch) return;
       message.success("报告已归档，可在“显示已归档”中恢复");
       setArchiveTarget(null);
       setArchiveReason("");
       setNonce((n) => n + 1);
     } catch (e) {
-      if (contextEpoch.current !== epoch) return;
+      if (!isCurrent() || contextEpoch.current !== epoch) return;
       if (errorKind(e) === "conflict") {
         message.error("报告存在进行中的生成/审核/发布，不能归档");
       } else {
         message.error("归档失败，请重试");
       }
     } finally {
-      if (actionSeq.current === seq) setActionReportId(null);
+      if (isCurrent() && actionSeq.current === seq) setActionReportId(null);
     }
   };
 
   const restore = async (row: ProviderReportSummaryV1) => {
+    if (!isCurrent()) return;
     const seq = ++actionSeq.current;
     const epoch = contextEpoch.current;
     setActionReportId(row.report_id);
     try {
       await api.unarchiveReport(row.report_id);
-      if (contextEpoch.current !== epoch) return;
+      if (!isCurrent() || contextEpoch.current !== epoch) return;
       message.success("报告已恢复，可继续正常流程");
       setNonce((n) => n + 1);
-    } catch (e) {
-      if (contextEpoch.current !== epoch) return;
+    } catch {
+      if (!isCurrent() || contextEpoch.current !== epoch) return;
       message.error("恢复失败，请重试");
     } finally {
-      if (actionSeq.current === seq) setActionReportId(null);
+      if (isCurrent() && actionSeq.current === seq) setActionReportId(null);
     }
   };
 
   const openArchive = (row: ProviderReportSummaryV1) => {
+    if (!isCurrent()) return;
     targetEpoch.current = contextEpoch.current;
     setArchiveReason("");
     setArchiveTarget(row);

@@ -4,6 +4,7 @@ Does not import or reuse seed_world(). Dedicated stack is stopped in finally.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.machinery
 import importlib.util
@@ -117,6 +118,18 @@ class AnalysisReportLocalBrowserFixturePostgresTests(unittest.TestCase):
                 )
             apply()
             apply()
+            # The browser needs evidence that the live source selector accepts,
+            # not only rows whose counts look eligible in a parallel SQL query.
+            async def read_live_sources():
+                from platform_foundation.f1.database import session_scope
+                from platform_foundation.f1.features.analysis_reports.repository import load_eligible_sources
+                async with session_scope(
+                    role="f1_api", enterprise_id=local_seed.ENTERPRISE_A, sub=TENANT_A_SUB
+                ) as session:
+                    return await load_eligible_sources(session, local_seed.ENTERPRISE_A, CRM_ACCOUNT_ID)
+            sources = asyncio.run(read_live_sources())
+            self.assertEqual({source.scope_kind for source in sources}, {"service_provider", "client"})
+            self.assertEqual(len(sources), 2)
             with stack._bootstrap() as connection:
                 self.assertEqual(
                     _memberships(connection, TENANT_A_SUB),
@@ -221,7 +234,10 @@ class AnalysisReportLocalBrowserFixturePostgresTests(unittest.TestCase):
             self._assert_fail_closed(stack, fingerprint)
         finally:
             stack.stop()
-        self.assertEqual(dedicated_counts(), (0, 0, 0))
+        self.assertEqual(
+            dedicated_counts(project_name=stack.project_name, project_id=stack.project_id),
+            (0, 0, 0),
+        )
         self.assertEqual(canonical_shared_fingerprint(), shared_before)
 
     def _assert_fail_closed(self, stack: PostgresIntegrationStack, fingerprint: str) -> None:

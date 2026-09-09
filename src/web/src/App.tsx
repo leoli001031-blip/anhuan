@@ -37,6 +37,8 @@ const EnterpriseList = lazy(() => import("./pages/EnterpriseList"));
 const LegacyQAPage = lazy(() => import("./pages/QAPage"));
 const AuditPage = lazy(() => import("./pages/AuditPage"));
 const AdminPage = lazy(() => import("./pages/AdminPage"));
+const JoinPage = lazy(() => import("./pages/JoinPage"));
+const MembersPage = lazy(() => import("./pages/MembersPage"));
 const InvitePage = lazy(() => import("./pages/InvitePage"));
 const ServiceCaseList = lazy(() => import("./pages/ServiceCaseList"));
 const ServiceCaseCreate = lazy(() => import("./pages/ServiceCaseCreate"));
@@ -88,7 +90,7 @@ function Callback() {
     if (started.current) return;
     started.current = true;
     completeSigninCallback()
-      .then(() => navigate("/", { replace: true }))
+      .then((destination) => navigate(destination, { replace: true }))
       .catch(() => setError("登录回调失败，请重试。"));
   }, [completeSigninCallback, navigate]);
   if (error) return <Alert type="error" message="登录失败" description={error} />;
@@ -121,6 +123,9 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={isAuthenticated ? <Navigate to="/" replace /> : <Login />} />
       <Route path="/callback" element={<Callback />} />
+      <Route path="/join" element={<JoinPage />} />
+      <Route path="/members" element={<Protected><MembersPage /></Protected>} />
+      <Route path="/account-setup" element={<Protected><Alert type="info" message="账号业务身份待配置" description="当前组织类型或成员职责尚未配置，请联系组织管理员完成配置后重新登录。" /></Protected>} />
       {/* 新 · 客户门户 */}
       <Route
         path="/portal"

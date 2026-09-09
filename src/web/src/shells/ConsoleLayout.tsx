@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Button, Drawer, Layout, Menu, Spin, Typography } from "antd";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useSessionAccess, isMockData } from "../adapters";
-import { homePathFor } from "../adapters/SessionAccess";
+import { canManageMembers, homePathFor } from "../adapters/SessionAccess";
 import { useAuth } from "../auth/OidcProvider";
 import ErrorState from "../components/ErrorState";
 import MockBadge from "../components/MockBadge";
@@ -34,6 +34,7 @@ export default function ConsoleLayout() {
   if (!session || session.product_role !== "provider_admin") {
     return <Navigate to={session ? homePathFor(session.product_role) : "/login"} replace />;
   }
+  const nav = [...NAV, ...(canManageMembers(session) ? [{key: "/members", label: "本企业成员"}] : [])];
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
@@ -80,7 +81,7 @@ export default function ConsoleLayout() {
             className="console-nav"
             mode="inline"
             selectedKeys={[selectedKey(location.pathname)]}
-            items={NAV}
+            items={nav}
             onClick={({ key }) => navigate(key)}
             style={{ border: "none", background: "transparent" }}
           />
@@ -95,7 +96,7 @@ export default function ConsoleLayout() {
           <Menu
             mode="inline"
             selectedKeys={[selectedKey(location.pathname)]}
-            items={NAV}
+            items={nav}
             onClick={({ key }) => {
               setNavOpen(false);
               navigate(key);

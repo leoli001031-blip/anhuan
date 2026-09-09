@@ -17,7 +17,7 @@ from typing import Any
 
 from fpdf import FPDF, FPDFException
 
-from .artifact import ReportArtifact, ReportArtifactInvalid, _integer, _text
+from .artifact import ReportArtifact, ReportArtifactInvalid, _integer, _text, _location
 from .contracts import SECTION_KEYS, SECTION_TITLES, TEMPLATE_TITLE
 
 
@@ -108,7 +108,7 @@ def render_pdf_artifact(payload: dict[str, Any]) -> ReportArtifact:
         pdf.multi_cell(0, 10, title, new_x="LMARGIN", new_y="NEXT")
         pdf.set_font("noto", "", 11)
         pdf.set_text_color(38, 56, 50)
-        pdf.multi_cell(0, 7.5, body, new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 7.5, body, new_x="LMARGIN", new_y="NEXT", align="L", wrapmode="CHAR")
         pdf.ln(4)
 
     pdf.set_font("noto", "", 14)
@@ -120,19 +120,19 @@ def render_pdf_artifact(payload: dict[str, Any]) -> ReportArtifact:
         name = _text(item.get("document_name"))
         excerpt = _text(item.get("excerpt"))
         source_version = _integer(item.get("version_number"))
-        page = _integer(item.get("page_number"))
+        location = _location(item)
         pdf.set_font("noto", "", 11)
         pdf.set_text_color(24, 50, 43)
         pdf.multi_cell(
             0,
             7.5,
-            f"[{index}] {name} 第 {source_version} 版 · 第 {page} 页",
+            f"[{index}] {name} 第 {source_version} 版 · {location}",
             new_x="LMARGIN",
-            new_y="NEXT",
+            new_y="NEXT", align="L", wrapmode="CHAR",
         )
         pdf.set_font("noto", "", 10)
         pdf.set_text_color(88, 112, 105)
-        pdf.multi_cell(0, 6.5, excerpt, new_x="LMARGIN", new_y="NEXT")
+        pdf.multi_cell(0, 6.5, excerpt, new_x="LMARGIN", new_y="NEXT", align="L", wrapmode="CHAR")
         pdf.ln(2)
 
     try:

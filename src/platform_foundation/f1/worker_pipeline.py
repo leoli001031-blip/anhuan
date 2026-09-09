@@ -37,6 +37,11 @@ async def _process_task(task_id: uuid.UUID) -> None:
         return
     if not await renew_upload_lease(claim.task_id, claim.lease_token):
         return
+    if (os.environ.get("F1_TASK_SOURCE_GATEWAY") == "1"
+            and os.environ.get("F1_EXTERNAL_PIPELINES_ENABLED", "").strip().lower() == "false"):
+        from . import indexing
+        await indexing.finish_claim(claim, status="failed", reason="EXTERNAL_PIPELINE_DISABLED")
+        return
     try:
         verify_stored_object(
             claim.object_key,

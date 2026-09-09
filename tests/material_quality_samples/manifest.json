@@ -1,0 +1,413 @@
+{
+  "schema_version": 1,
+  "scope": "synthetic",
+  "gold_provenance": "Manually authored expectations from fixture specification; not extracted by parser or model. JPEG text is a fixed transport stub.",
+  "samples": [
+    {
+      "id": "pdf_positive",
+      "format": "pdf",
+      "path": "sample.pdf",
+      "sha256": "ae1c07e46bb4b3b6278ed4dbd3121d3004015712bcb19a374adf3bf7a6558772",
+      "gold": [
+        {
+          "text": "SYNTHETIC discharge inspection: COD 42.50 mg/L; mass 1.25 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 1
+          }
+        },
+        {
+          "text": "SYNTHETIC second inspection: COD 38.25 mg/L; mass 2.50 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 2
+          }
+        }
+      ]
+    },
+    {
+      "id": "pdf_corrupt",
+      "format": "pdf",
+      "path": "corrupt.bin",
+      "sha256": "fd7fe834c65f6a11feef3e9e28e5c37892a7ff2eeba1aea9f981a3859fb0e91e",
+      "gold": [
+        {
+          "text": "SYNTHETIC discharge inspection: COD 42.50 mg/L; mass 1.25 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 1
+          }
+        },
+        {
+          "text": "SYNTHETIC second inspection: COD 38.25 mg/L; mass 2.50 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 2
+          }
+        }
+      ],
+      "expected_failure": "PARSER_OR_INPUT_ERROR"
+    },
+    {
+      "id": "docx_positive",
+      "format": "docx",
+      "path": "sample.docx",
+      "sha256": "51367035d436723be031551ad5129ff8949aa47f5f1a8c9c55f5a6d6b48cccc2",
+      "gold": [
+        {
+          "text": "合成排口记录 COD 42.50 mg/L",
+          "locator": {
+            "schema_version": 2,
+            "kind": "docx_block",
+            "body_index": 1,
+            "row_index": null,
+            "cell_index": null,
+            "grid_column": null,
+            "grid_span": null,
+            "paragraph_index": null,
+            "part": "word/document.xml"
+          }
+        },
+        {
+          "text": "合成危废记录 1.25 kg",
+          "locator": {
+            "schema_version": 2,
+            "kind": "docx_block",
+            "body_index": 2,
+            "row_index": null,
+            "cell_index": null,
+            "grid_column": null,
+            "grid_span": null,
+            "paragraph_index": null,
+            "part": "word/document.xml"
+          }
+        },
+        {
+          "text": "合成复测 COD 38.25 mg/L",
+          "locator": {
+            "schema_version": 2,
+            "kind": "docx_block",
+            "body_index": 3,
+            "row_index": 1,
+            "cell_index": 1,
+            "grid_column": 1,
+            "grid_span": 1,
+            "paragraph_index": 1,
+            "part": "word/document.xml"
+          }
+        }
+      ]
+    },
+    {
+      "id": "docx_corrupt",
+      "format": "docx",
+      "path": "corrupt.bin",
+      "sha256": "fd7fe834c65f6a11feef3e9e28e5c37892a7ff2eeba1aea9f981a3859fb0e91e",
+      "gold": [
+        {
+          "text": "合成排口记录 COD 42.50 mg/L",
+          "locator": {
+            "schema_version": 2,
+            "kind": "docx_block",
+            "body_index": 1,
+            "row_index": null,
+            "cell_index": null,
+            "grid_column": null,
+            "grid_span": null,
+            "paragraph_index": null,
+            "part": "word/document.xml"
+          }
+        },
+        {
+          "text": "合成危废记录 1.25 kg",
+          "locator": {
+            "schema_version": 2,
+            "kind": "docx_block",
+            "body_index": 2,
+            "row_index": null,
+            "cell_index": null,
+            "grid_column": null,
+            "grid_span": null,
+            "paragraph_index": null,
+            "part": "word/document.xml"
+          }
+        },
+        {
+          "text": "合成复测 COD 38.25 mg/L",
+          "locator": {
+            "schema_version": 2,
+            "kind": "docx_block",
+            "body_index": 3,
+            "row_index": 1,
+            "cell_index": 1,
+            "grid_column": 1,
+            "grid_span": 1,
+            "paragraph_index": 1,
+            "part": "word/document.xml"
+          }
+        }
+      ],
+      "expected_failure": "PARSER_OR_INPUT_ERROR"
+    },
+    {
+      "id": "xlsx_positive",
+      "format": "xlsx",
+      "path": "sample.xlsx",
+      "sha256": "689953b02811860cfa8434d11372d6094643891da472fbf5d47114a905b0782c",
+      "gold": [
+        {
+          "text": "COD mg/L",
+          "locator": {
+            "schema_version": 2,
+            "kind": "xlsx_cells",
+            "sheet_id": 1,
+            "sheet_name": "合成排口",
+            "part": "xl/worksheets/sheet1.xml",
+            "cell_range": "A1"
+          }
+        },
+        {
+          "text": "42.5",
+          "locator": {
+            "schema_version": 2,
+            "kind": "xlsx_cells",
+            "sheet_id": 1,
+            "sheet_name": "合成排口",
+            "part": "xl/worksheets/sheet1.xml",
+            "cell_range": "B1"
+          }
+        },
+        {
+          "text": "质量 kg",
+          "locator": {
+            "schema_version": 2,
+            "kind": "xlsx_cells",
+            "sheet_id": 2,
+            "sheet_name": "合成危废",
+            "part": "xl/worksheets/sheet2.xml",
+            "cell_range": "A1"
+          }
+        },
+        {
+          "text": "1.25",
+          "locator": {
+            "schema_version": 2,
+            "kind": "xlsx_cells",
+            "sheet_id": 2,
+            "sheet_name": "合成危废",
+            "part": "xl/worksheets/sheet2.xml",
+            "cell_range": "B1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "xlsx_corrupt",
+      "format": "xlsx",
+      "path": "corrupt.bin",
+      "sha256": "fd7fe834c65f6a11feef3e9e28e5c37892a7ff2eeba1aea9f981a3859fb0e91e",
+      "gold": [
+        {
+          "text": "COD mg/L",
+          "locator": {
+            "schema_version": 2,
+            "kind": "xlsx_cells",
+            "sheet_id": 1,
+            "sheet_name": "合成排口",
+            "part": "xl/worksheets/sheet1.xml",
+            "cell_range": "A1"
+          }
+        },
+        {
+          "text": "42.5",
+          "locator": {
+            "schema_version": 2,
+            "kind": "xlsx_cells",
+            "sheet_id": 1,
+            "sheet_name": "合成排口",
+            "part": "xl/worksheets/sheet1.xml",
+            "cell_range": "B1"
+          }
+        },
+        {
+          "text": "质量 kg",
+          "locator": {
+            "schema_version": 2,
+            "kind": "xlsx_cells",
+            "sheet_id": 2,
+            "sheet_name": "合成危废",
+            "part": "xl/worksheets/sheet2.xml",
+            "cell_range": "A1"
+          }
+        },
+        {
+          "text": "1.25",
+          "locator": {
+            "schema_version": 2,
+            "kind": "xlsx_cells",
+            "sheet_id": 2,
+            "sheet_name": "合成危废",
+            "part": "xl/worksheets/sheet2.xml",
+            "cell_range": "B1"
+          }
+        }
+      ],
+      "expected_failure": "PARSER_OR_INPUT_ERROR"
+    },
+    {
+      "id": "jpeg_positive",
+      "format": "jpeg",
+      "path": "sample.jpeg",
+      "sha256": "2a9c246aa34521aeff745efa3f0c30b4f367be5cfaba8c2fdaa2b279c46b402c",
+      "gold": [
+        {
+          "text": "SYNTHETIC COD 42.50 mg/L; mass 1.25 kg",
+          "locator": {
+            "schema_version": 2,
+            "kind": "image",
+            "source_width": 600,
+            "source_height": 160,
+            "rendered_width": 600,
+            "rendered_height": 160,
+            "rendered_sha256": "11bfebdbdb6f155243ecdae7c8c65a07fd4bc7f0b26a0a0455cf0ca2dcd52dd4",
+            "exif_orientation": 1
+          }
+        }
+      ],
+      "synthetic_ocr": {
+        "text": "SYNTHETIC COD 42.50 mg/L; mass 1.25 kg",
+        "rendered_sha256": "11bfebdbdb6f155243ecdae7c8c65a07fd4bc7f0b26a0a0455cf0ca2dcd52dd4"
+      }
+    },
+    {
+      "id": "jpeg_corrupt",
+      "format": "jpeg",
+      "path": "corrupt.bin",
+      "sha256": "fd7fe834c65f6a11feef3e9e28e5c37892a7ff2eeba1aea9f981a3859fb0e91e",
+      "gold": [
+        {
+          "text": "SYNTHETIC COD 42.50 mg/L; mass 1.25 kg",
+          "locator": {
+            "schema_version": 2,
+            "kind": "image",
+            "source_width": 600,
+            "source_height": 160,
+            "rendered_width": 600,
+            "rendered_height": 160,
+            "rendered_sha256": "11bfebdbdb6f155243ecdae7c8c65a07fd4bc7f0b26a0a0455cf0ca2dcd52dd4",
+            "exif_orientation": 1
+          }
+        }
+      ],
+      "synthetic_ocr": {
+        "text": "SYNTHETIC COD 42.50 mg/L; mass 1.25 kg",
+        "rendered_sha256": "11bfebdbdb6f155243ecdae7c8c65a07fd4bc7f0b26a0a0455cf0ca2dcd52dd4"
+      },
+      "expected_failure": "PARSER_OR_INPUT_ERROR"
+    },
+    {
+      "id": "gold_number_negative",
+      "format": "pdf",
+      "path": "sample.pdf",
+      "sha256": "ae1c07e46bb4b3b6278ed4dbd3121d3004015712bcb19a374adf3bf7a6558772",
+      "gold": [
+        {
+          "text": "SYNTHETIC discharge inspection: COD 425.0 mg/L; mass 1.25 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 1
+          }
+        },
+        {
+          "text": "SYNTHETIC second inspection: COD 38.25 mg/L; mass 2.50 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 2
+          }
+        }
+      ],
+      "expected_failure": "numbers_exact"
+    },
+    {
+      "id": "gold_unit_negative",
+      "format": "pdf",
+      "path": "sample.pdf",
+      "sha256": "ae1c07e46bb4b3b6278ed4dbd3121d3004015712bcb19a374adf3bf7a6558772",
+      "gold": [
+        {
+          "text": "SYNTHETIC discharge inspection: COD 42.50 kg; mass 1.25 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 1
+          }
+        },
+        {
+          "text": "SYNTHETIC second inspection: COD 38.25 mg/L; mass 2.50 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 2
+          }
+        }
+      ],
+      "expected_failure": "units_exact"
+    },
+    {
+      "id": "gold_omission_negative",
+      "format": "pdf",
+      "path": "sample.pdf",
+      "sha256": "ae1c07e46bb4b3b6278ed4dbd3121d3004015712bcb19a374adf3bf7a6558772",
+      "gold": [
+        {
+          "text": "SYNTHETIC discharge unextracted-note inspection: COD 42.50 mg/L; mass 1.25 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 1
+          }
+        },
+        {
+          "text": "SYNTHETIC second inspection: COD 38.25 mg/L; mass 2.50 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 2
+          }
+        }
+      ],
+      "expected_failure": "no_omissions"
+    },
+    {
+      "id": "gold_location_negative",
+      "format": "pdf",
+      "path": "sample.pdf",
+      "sha256": "ae1c07e46bb4b3b6278ed4dbd3121d3004015712bcb19a374adf3bf7a6558772",
+      "gold": [
+        {
+          "text": "SYNTHETIC discharge inspection: COD 42.50 mg/L; mass 1.25 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 3
+          }
+        },
+        {
+          "text": "SYNTHETIC second inspection: COD 38.25 mg/L; mass 2.50 kg.",
+          "locator": {
+            "schema_version": 2,
+            "kind": "pdf_page",
+            "page_number": 2
+          }
+        }
+      ],
+      "expected_failure": "locations_exact"
+    }
+  ]
+}

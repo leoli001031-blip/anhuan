@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import tempfile
 import unittest
 import uuid
@@ -106,6 +107,7 @@ class _Env:
         for name in self._names:
             os.environ.pop(name, None)
         testcase.addCleanup(self._restore)
+        testcase.addCleanup(shutil.rmtree, self.directory)
 
     def _restore(self) -> None:
         for name, value in self._original.items():
@@ -217,6 +219,28 @@ class LlmReportGeneratorContracts(unittest.TestCase):
         with self.assertRaises(GenerationFailed) as raised:
             LlmReportGenerator(transport=transport).generate(_frozen())
         self.assertEqual(raised.exception.reason, "REPORT_LLM_OUTPUT_INVALID")
+
+    def test_reordered_inline_references_follow_the_same_citation_map(self) -> None:
+        env = _Env(self)
+        env.enable()
+        frozen = _frozen()
+        body = "排放合规见证据1；整改缺项见[4]。再次核对【1】及[证据4]。"
+        transport, _ = _capture_transport(_chat_envelope(_model_payload([4, 1], body)))
+        report = LlmReportGenerator(transport=transport).generate(frozen)
+        section = next(item for item in report.sections if item.key == "key_findings")
+        self.assertEqual(section.body, "排放合规见证据2；整改缺项见[证据1]。再次核对【证据2】及[证据1]。")
+        self.assertEqual(report.citations[0].document_version_id, frozen.sources[1].document_version_id)
+        self.assertEqual(report.citations[1].document_version_id, frozen.sources[0].document_version_id)
+
+    def test_unknown_actual_block_and_unlisted_body_reference_are_fixed_failures(self) -> None:
+        env = _Env(self)
+        env.enable()
+        for indices, body in (([1, 5], _LONG_BODY), ([1, 4], "见证据2"), ([4, 1], "见证据1、4")):
+            with self.subTest(indices=indices, body=body):
+                transport, _ = _capture_transport(_chat_envelope(_model_payload(indices, body)))
+                with self.assertRaises(GenerationFailed) as raised:
+                    LlmReportGenerator(transport=transport).generate(_frozen())
+                self.assertEqual(raised.exception.reason, "REPORT_LLM_OUTPUT_INVALID")
 
     def test_malformed_json_rejected(self) -> None:
         env = _Env(self)

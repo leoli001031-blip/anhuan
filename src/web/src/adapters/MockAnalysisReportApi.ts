@@ -2,6 +2,7 @@
 // 仅在 import.meta.env.DEV && VITE_MATERIAL_RAG_REPORT_MOCK === "1" 时由工厂启用（见 index.ts），
 // 组件不直接引用本文件；启用时所有页面显示“本地合成数据”标记。
 import { ApiError } from "./errors";
+import { assertClientRequestId, normalizeClientCreate } from "./clientCreation";
 import type {
   AnalysisReportApi,
   HtmlReportArtifact,
@@ -12,7 +13,7 @@ import { normalizeTransitionEvidence } from "./AnalysisReportApi";
 import type {
   ArchiveResultV1,
   ClientAccount,
-  ClientStage,
+  CreateClientInput,
   ExceptionItem,
   GenerationAcceptedV1,
   JobStatusV1,
@@ -23,11 +24,13 @@ import type {
   QaAnswer,
   ReviewEventV1,
   ReportStatus,
-  SessionAccessV1,
+  SessionAccessV2,
   VersionDetailV1,
   VersionHistoryItemV1,
 } from "./types";
 import type { SessionAccess } from "./SessionAccess";
+import type { MembershipApi, MembershipCommand } from "./MembershipApi";
+import { MockMembershipApi } from "./MockMembershipApi";
 import {
   SYNTHETIC_MANAGEMENT_HEALTH,
   type ManagementHealthSnapshot,
@@ -134,8 +137,9 @@ ${sections}<section><h2>引用</h2><ol>${citations}</ol></section></body></html>
   };
 }
 
-export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
+export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess, MembershipApi {
   private readonly role: "provider_admin" | "client_user";
+  private readonly memberships: MockMembershipApi;
   private clients: ClientAccount[];
   private sharedMaterials: MaterialItem[];
   private clientMaterials: Record<string, MaterialItem[]>;
@@ -143,6 +147,7 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
   private exceptions: ExceptionItem[];
   private jobs = new Map<string, { versionId: string; reportId: string; pollsLeft: number }>();
   private seq = 100;
+  private clientCreates = new Map<string, {signature: string; clientId: string}>();
   private createByRequest = new Map<string, string>();
   private generateByRequest = new Map<string, GenerationAcceptedV1>();
 
@@ -151,6 +156,7 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
       import.meta.env.VITE_MATERIAL_RAG_REPORT_MOCK_ROLE === "client"
         ? "client_user"
         : "provider_admin";
+    this.memberships = new MockMembershipApi(this.role === "client_user" ? CLIENT_A_ID : "11111111-1111-4111-8111-111111111111");
     const now = new Date().toISOString();
     this.clients = [
       { id: CLIENT_A_ID, name: "蓝海化工有限公司", stage: "active", industryNote: null, regionNote: null, updatedAt: now, nextFollowUpAt: "2026-09-05T09:00:00+00:00" },
@@ -244,11 +250,17 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     return `${prefix}-${this.seq}`;
   }
 
-  async getSessionAccess(): Promise<SessionAccessV1> {
+  async getSessionAccess(): Promise<SessionAccessV2> {
     await delay(120);
+    const membershipRole = this.memberships.currentRole();
+    const productRole = !membershipRole ? "unconfigured" : this.role === "client_user" ? "client_user"
+      : membershipRole === "enterprise_admin" ? "provider_admin"
+      : membershipRole === "plant_admin" ? "provider_consultant"
+      : membershipRole === "auditor" ? "provider_reviewer" : "unconfigured";
     return {
-      schema: "anhuan-analysis-report-session-v1",
-      product_role: this.role,
+      schema: "anhuan-analysis-report-session-v2",
+      product_role: productRole,
+      membership_role: membershipRole,
       enterprise_id:
         this.role === "client_user"
           ? CLIENT_A_ID
@@ -256,11 +268,14 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
       template_id: "enterprise-ehs-material-analysis-v1",
       template_title: "企业安环资料分析报告",
       capabilities:
-        this.role === "client_user"
+        productRole === "client_user"
           ? ["list_published", "read_published"]
-          : ["list_client_reports", "create_report", "generate", "review", "publish", "withdraw"],
+          : productRole === "provider_admin" ? ["list_client_reports", "create_report", "generate", "review", "publish", "withdraw"] : [],
     };
   }
+
+  listMemberships() { return this.memberships.listMemberships(); }
+  changeMembership(id: string, command: MembershipCommand) { return this.memberships.changeMembership(id, command); }
 
   // —— 客户端 ——
 
@@ -350,20 +365,29 @@ export class MockAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     return { ...found };
   }
 
-  async createClient(input: { name: string; stage: ClientStage }): Promise<ClientAccount> {
+  async createClient(input: CreateClientInput): Promise<ClientAccount> {
+    assertClientRequestId(input.requestId);
+    const normalized = normalizeClientCreate({display_name: input.name, stage: input.stage});
     await delay();
+    if (this.role !== "provider_admin" || this.memberships.currentRole() !== "enterprise_admin") {
+      throw new ApiError(403, "CRM_MANAGER_REQUIRED", false);
+    }
+    const signature = JSON.stringify(normalized);
+    const previous = this.clientCreates.get(input.requestId);
+    if (previous) {
+      if (previous.signature !== signature) throw new ApiError(409, "CRM_ACCOUNT_REQUEST_CONFLICT", false);
+      const found = this.clients.find(client => client.id === previous.clientId);
+      if (!found) throw new ApiError(409, "CRM_ACCOUNT_RECEIPT_INVALID", false);
+      return {...found};
+    }
     const client: ClientAccount = {
-      id: this.newId("client"),
-      name: input.name,
-      stage: input.stage,
-      industryNote: null,
-      regionNote: null,
-      updatedAt: new Date().toISOString(),
-      nextFollowUpAt: null,
+      id: crypto.randomUUID(), name: normalized.display_name, stage: normalized.stage,
+      industryNote: null, regionNote: null, updatedAt: new Date().toISOString(), nextFollowUpAt: null,
     };
     this.clients.push(client);
     this.clientMaterials[client.id] = [];
-    return { ...client };
+    this.clientCreates.set(input.requestId, {signature, clientId: client.id});
+    return {...client};
   }
 
   // —— 运营台 · 材料 ——

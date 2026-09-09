@@ -56,6 +56,10 @@ from ...features.p3.service import (
 )
 from ...features.p3.processor import resume_controlled_ingestion
 from ...features.p3.scanner import ScanFailure, scanner_version
+from ...features.evidence.review import ReviewWriteIn
+from ...features.evidence.review_service import MaterialReviewOut, ReviewReceiptOut, get_review, write_review
+from ...features.evidence.status import NativeExtractionStatus, NativeFragmentsOut, get_fragments as get_native_fragments, get_status as get_native_status
+from ...features.evidence.recovery import NativeRecoveryIn, NativeRecoveryOut, recover as recover_native, missing_candidates
 from ...features.material_intake.contracts import (
     MaterialAnalysisOut,
     SetMaterialKindIn,
@@ -445,6 +449,78 @@ async def process_version(
             # keeps the stable delivery identity idempotent.
             await advance_auto_pipeline(tenant, version_id)
         return await get_version(tenant, version_id)
+    except IngestionError as error:
+        raise _http_error(error) from None
+    except Exception:
+        raise _unavailable() from None
+
+
+@router.get("/versions/{version_id}/native-extraction", response_model=NativeExtractionStatus)
+async def native_extraction_status(
+    version_id: uuid.UUID,
+    tenant: Tenant = Depends(tenant_from_header),
+) -> NativeExtractionStatus:
+    try:
+        return await get_native_status(tenant, version_id)
+    except IngestionError as error:
+        raise _http_error(error) from None
+    except Exception:
+        raise _unavailable() from None
+
+
+@router.post('/versions/{version_id}/native-extraction/recover', response_model=NativeRecoveryOut)
+async def recover_native_extraction(version_id: uuid.UUID, request: NativeRecoveryIn,
+                                    tenant: Tenant = Depends(tenant_from_header)):
+    try:
+        return await recover_native(tenant, version_id, request)
+    except IngestionError as error:
+        raise _http_error(error) from None
+    except Exception:
+        raise _unavailable() from None
+
+
+@router.get('/native-extraction/recovery-candidates')
+async def native_recovery_candidates(scope_kind: Literal['service_provider','client'], client_account_id: uuid.UUID | None = None, after: uuid.UUID | None = None,
+    limit: int = Query(default=50, ge=1, le=100), tenant: Tenant = Depends(tenant_from_header)):
+    try:
+        return await missing_candidates(tenant, scope_kind=scope_kind, client_account_id=client_account_id, after=after, limit=limit)
+    except IngestionError as error:
+        raise _http_error(error) from None
+    except Exception:
+        raise _unavailable() from None
+
+
+@router.get("/versions/{version_id}/native-extraction/{revision_id}/fragments", response_model=NativeFragmentsOut)
+async def native_extraction_fragments(
+    version_id: uuid.UUID,
+    revision_id: uuid.UUID,
+    after: int = Query(default=-1, ge=-1, le=19999),
+    limit: int = Query(default=50, ge=1, le=100),
+    tenant: Tenant = Depends(tenant_from_header),
+) -> NativeFragmentsOut:
+    try:
+        return await get_native_fragments(tenant, version_id, revision_id, after=after, limit=limit)
+    except IngestionError as error:
+        raise _http_error(error) from None
+    except Exception:
+        raise _unavailable() from None
+
+
+@router.get("/versions/{version_id}/review", response_model=MaterialReviewOut)
+async def material_review(version_id: uuid.UUID, tenant: Tenant = Depends(tenant_from_header)) -> MaterialReviewOut:
+    try:
+        return await get_review(tenant, version_id)
+    except IngestionError as error:
+        raise _http_error(error) from None
+    except Exception:
+        raise _unavailable() from None
+
+
+@router.post("/versions/{version_id}/review", response_model=ReviewReceiptOut)
+async def save_material_review(version_id: uuid.UUID, request: ReviewWriteIn,
+                               tenant: Tenant = Depends(tenant_from_header)) -> ReviewReceiptOut:
+    try:
+        return await write_review(tenant, version_id, request)
     except IngestionError as error:
         raise _http_error(error) from None
     except Exception:

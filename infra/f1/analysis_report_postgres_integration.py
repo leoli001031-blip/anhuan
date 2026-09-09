@@ -14,6 +14,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
@@ -25,11 +26,10 @@ import psycopg
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = ROOT / "infra/f1/docker-compose.analysis-report-postgres-integration.yml"
-DOCKER = Path("/Applications/Docker.app/Contents/Resources/bin/docker")
+DOCKER = Path(shutil.which("docker") or "/Applications/Docker.app/Contents/Resources/bin/docker")
 SCOPE = "analysis-report-postgres-integration"
 PYTHON = sys.executable
 FIXTURE_NS = uuid.UUID("3e7c1d0a-8b24-4f11-9d56-21a9c4e0b7f2")
-PARSER_VERSION = "pgint1"
 ENTERPRISE_C = uuid.UUID("20000000-0000-4000-8000-00000000000c")
 DUAL_SUB = "c0ffee00-1111-4111-8111-00000000dual"
 CLIENT_SUB = "c1a11e00-2222-4222-8222-0000000client"
@@ -220,7 +220,27 @@ def canonical_shared_fingerprint(docker: Path = DOCKER) -> bytes:
     ).encode("utf-8")
 
 
-def dedicated_counts() -> tuple[int, int, int]:
+def _resource_filters(
+    *, project_name: str | None = None, project_id: str | None = None
+) -> list[str]:
+    if (project_name is None) != (project_id is None):
+        raise ValueError("PROJECT_IDENTITY_PAIR_REQUIRED")
+    filters = ["--filter", f"label=io.anhuan.scope={SCOPE}"]
+    if project_name is not None:
+        if not project_name or not project_id:
+            raise ValueError("PROJECT_IDENTITY_REQUIRED")
+        filters.extend([
+            "--filter", f"label=com.docker.compose.project={project_name}",
+            "--filter", f"label=io.anhuan.project-id={project_id}",
+        ])
+    return filters
+
+
+def dedicated_counts(
+    *, project_name: str | None = None, project_id: str | None = None
+) -> tuple[int, int, int]:
+    """Count this run when identified; unscoped calls are read-only inventory."""
+    filters = _resource_filters(project_name=project_name, project_id=project_id)
     def count(args: list[str]) -> int:
         raw = subprocess.check_output([str(DOCKER), *args], text=True).strip()
         return len([line for line in raw.splitlines() if line])
@@ -229,8 +249,7 @@ def dedicated_counts() -> tuple[int, int, int]:
         [
             "ps",
             "-a",
-            "--filter",
-            f"label=io.anhuan.scope={SCOPE}",
+            *filters,
             "--format",
             "{{.ID}}",
         ]
@@ -239,8 +258,7 @@ def dedicated_counts() -> tuple[int, int, int]:
         [
             "volume",
             "ls",
-            "--filter",
-            f"label=io.anhuan.scope={SCOPE}",
+            *filters,
             "--format",
             "{{.Name}}",
         ]
@@ -249,8 +267,7 @@ def dedicated_counts() -> tuple[int, int, int]:
         [
             "network",
             "ls",
-            "--filter",
-            f"label=io.anhuan.scope={SCOPE}",
+            *filters,
             "--format",
             "{{.ID}}",
         ]
@@ -278,7 +295,10 @@ class PostgresIntegrationStack:
         self.project_name = f"anhuan-ar-pgint-{self.run_id[:12]}"
         self.database = f"f1_arpg_{self.run_id[:12]}"
         self.host_port = _free_port()
-        self.control_dir = Path(f"/private/tmp/anhuan-ar-pgint-{self.run_id[:12]}")
+        # Preserve the local macOS fixture's closed path; Linux CI uses its
+        # writable temporary root instead of requiring /private to exist.
+        control_root = Path("/private/tmp") if sys.platform == "darwin" else Path(tempfile.gettempdir())
+        self.control_dir = control_root / f"anhuan-ar-pgint-{self.run_id[:12]}"
         self.passwords = {
             "bootstrap": secrets.token_hex(24),
             "migration": secrets.token_hex(24),
@@ -286,6 +306,9 @@ class PostgresIntegrationStack:
             "worker": secrets.token_hex(24),
             "f1_api": secrets.token_hex(24),
             "f1_worker": secrets.token_hex(24),
+            "f1_source_reader": secrets.token_hex(24),
+            "f1_report_worker": secrets.token_hex(24),
+            "f1_ingestion_worker": secrets.token_hex(24),
         }
         self.secrets_dir: Path | None = None
         self.before_fingerprint = b""
@@ -350,7 +373,9 @@ class PostgresIntegrationStack:
         )
 
     def start(self) -> None:
-        if dedicated_counts() != (0, 0, 0):
+        if dedicated_counts(
+            project_name=self.project_name, project_id=self.project_id
+        ) != (0, 0, 0):
             raise HarnessError("DEDICATED_PREEXISTING")
         self.before_fingerprint = canonical_shared_fingerprint()
         self.control_dir.mkdir(mode=0o700)
@@ -393,7 +418,11 @@ class PostgresIntegrationStack:
         _write_secret(
             self.secrets_dir / "f1_worker_password", self.passwords["f1_worker"]
         )
+        _write_secret(self.secrets_dir / "f1_source_reader_password", self.passwords["f1_source_reader"])
+        _write_secret(self.secrets_dir / "f1_report_worker_password", self.passwords["f1_report_worker"])
+        _write_secret(self.secrets_dir / "f1_ingestion_worker_password", self.passwords["f1_ingestion_worker"])
         _write_secret(self.secrets_dir / "f1_material_rag_key", secrets.token_hex(32))
+        _write_secret(self.secrets_dir / "f1_qa_key", secrets.token_hex(32))
         compose_env = self.control_dir / "compose.env"
         _write_secret(
             compose_env,
@@ -532,7 +561,7 @@ class PostgresIntegrationStack:
                 "SELECT string_agg(version_num, ',' ORDER BY version_num) "
                 "FROM f1.alembic_version"
             ).fetchone()
-            if head is None or head[0] != "f1_0026":
+            if head is None or head[0] != "f1_0044":
                 self.stop()
                 raise HarnessError("SEED_HEAD_MISMATCH")
             local_seed._ensure_enterprise(
@@ -544,6 +573,8 @@ class PostgresIntegrationStack:
             local_seed._ensure_enterprise(
                 connection, ENTERPRISE_C, "Local Enterprise C", "LOCAL-C"
             )
+            connection.execute("UPDATE f1.enterprise SET business_kind='service_provider' WHERE id=%s", (local_seed.ENTERPRISE_A,))
+            connection.execute("UPDATE f1.enterprise SET business_kind='client' WHERE id=%s", (local_seed.ENTERPRISE_B,))
             for binding in local_seed.BINDINGS:
                 local_seed._ensure_binding(connection, binding)
             local_seed._ensure_binding(
@@ -970,6 +1001,11 @@ class PostgresIntegrationStack:
         asyncio.run(_dispose())
 
     def stop(self) -> None:
+        # Scope is shared by every integration run.  Both identities must match
+        # before leftovers may be selected for deletion, including partial starts.
+        filters = _resource_filters(
+            project_name=self.project_name, project_id=self.project_id
+        )
         compose_env = self.control_dir / "compose.env"
         docker_env = (
             self._compose_docker_env() if self.secrets_dir is not None else _docker_env()
@@ -1001,8 +1037,7 @@ class PostgresIntegrationStack:
                 str(DOCKER),
                 "ps",
                 "-aq",
-                "--filter",
-                f"label=io.anhuan.scope={SCOPE}",
+                *filters,
             ],
             text=True,
         ).strip()
@@ -1019,8 +1054,7 @@ class PostgresIntegrationStack:
                 "volume",
                 "ls",
                 "-q",
-                "--filter",
-                f"label=io.anhuan.scope={SCOPE}",
+                *filters,
             ],
             text=True,
         ).strip()
@@ -1037,8 +1071,7 @@ class PostgresIntegrationStack:
                 "network",
                 "ls",
                 "-q",
-                "--filter",
-                f"label=io.anhuan.scope={SCOPE}",
+                *filters,
             ],
             text=True,
         ).strip()
@@ -1052,7 +1085,9 @@ class PostgresIntegrationStack:
         if self.control_dir.exists():
             shutil.rmtree(self.control_dir)
         self.started = False
-        self.dedicated_after = dedicated_counts()
+        self.dedicated_after = dedicated_counts(
+            project_name=self.project_name, project_id=self.project_id
+        )
         after = canonical_shared_fingerprint()
         self.shared_match = int(after == self.before_fingerprint)
         self.cleanup_status = (
@@ -1073,6 +1108,9 @@ def _insert_unit(
     actor_id: uuid.UUID,
     scope_kind: str,
 ) -> None:
+    from platform_foundation.f1.features.material_intake.ocr import (
+        PDF_TEXT_PARSER_VERSION,
+    )
     from platform_foundation.f1.features.material_rag.security import (
         canonical_unit,
         encrypt_text,
@@ -1135,7 +1173,7 @@ def _insert_unit(
         source_sha256=source_sha,
         page_number=1,
         ordinal=1,
-        parser_version=PARSER_VERSION,
+        parser_version=PDF_TEXT_PARSER_VERSION,
         text=body,
     )
     ciphertext, aad_sha = encrypt_text(unit.body.reveal(), unit_aad(unit))
@@ -1152,7 +1190,7 @@ def _insert_unit(
             record_id,
             version_id,
             source_sha,
-            PARSER_VERSION,
+            PDF_TEXT_PARSER_VERSION,
             ciphertext,
             unit.body_sha256,
             aad_sha,

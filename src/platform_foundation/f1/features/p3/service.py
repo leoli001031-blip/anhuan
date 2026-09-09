@@ -821,9 +821,31 @@ async def finalize_quarantine(
     source_etag: str,
     source_size: int,
 ) -> None:
+    if type(source_size) is not int or source_size != reservation.size or not source_etag:
+        raise IngestionError("P3_QUARANTINE_FINALIZE_CONFLICT", http_status=409)
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
     ) as session:
+        accepted = (await session.execute(text(
+            "SELECT task.object_state,task.source_etag,task.source_size "
+            "FROM f1.upload_task task JOIN f1.document_version version "
+            "ON version.upload_task_id=task.id AND version.enterprise_id=task.enterprise_id "
+            "WHERE task.id=:task_id AND task.enterprise_id=:enterprise_id "
+            "AND version.id=:version_id AND version.source_document_id=:source_id "
+            "AND task.content_sha256=:sha256 AND task.object_key=:object_key "
+            "AND task.source_size=:size AND task.pipeline_kind=:pipeline_kind FOR UPDATE OF task"
+        ), {"task_id":reservation.task_id,"enterprise_id":tenant.enterprise_id,
+            "version_id":reservation.version_id,"source_id":reservation.source_document_id,
+            "sha256":reservation.content_sha256,"object_key":reservation.object_key,
+            "size":reservation.size,"pipeline_kind":P3_PIPELINE_KIND})).first()
+        if accepted is None:
+            raise IngestionError("P3_QUARANTINE_FINALIZE_CONFLICT", http_status=409)
+        if accepted[0] in {"quarantined", "ready"}:
+            if accepted[1] != source_etag or accepted[2] != source_size:
+                raise IngestionError("P3_QUARANTINE_FINALIZE_CONFLICT", http_status=409)
+            # Another request already committed these bytes. Its current
+            # processing token, preview, release/rejection and audit prevail.
+            return
         updated = (
             await session.execute(
                 text(
@@ -837,7 +859,7 @@ async def finalize_quarantine(
                     "AND content_sha256=:content_sha256 "
                     "AND object_key=:object_key "
                     "AND pipeline_kind=:pipeline_kind "
-                    "AND object_state IN ('reserved','write_failed','quarantined') "
+                    "AND object_state IN ('reserved','write_failed') "
                     "RETURNING id"
                 ),
                 {
@@ -881,18 +903,24 @@ async def mark_quarantine_failed(
     async with session_scope(
         role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
     ) as session:
-        await session.execute(
+        updated = await session.execute(
             text(
                 "UPDATE f1.upload_task SET object_state='write_failed', "
                 "quarantine_status='blocked', status='failed', "
                 "processing_stage='failed', "
                 "error_reason='P3_QUARANTINE_WRITE_FAILED', "
                 "updated_at=statement_timestamp() "
-                "WHERE id=:task_id AND pipeline_kind=:pipeline_kind "
-                "AND object_state<>'quarantined'"
+                "WHERE id=:task_id AND enterprise_id=:enterprise_id "
+                "AND pipeline_kind=:pipeline_kind AND content_sha256=:sha256 "
+                "AND object_key=:object_key AND source_size=:size "
+                "AND object_state='reserved' RETURNING id"
             ),
-            {"task_id": reservation.task_id, "pipeline_kind": P3_PIPELINE_KIND},
+            {"task_id": reservation.task_id, "pipeline_kind": P3_PIPELINE_KIND,
+             "enterprise_id":tenant.enterprise_id,"sha256":reservation.content_sha256,
+             "object_key":reservation.object_key,"size":reservation.size},
         )
+        if updated.first() is None:
+            return
         await session.execute(
             text(
                 "INSERT INTO f1.audit_log "
@@ -1628,7 +1656,20 @@ async def act_on_version(
                 rearm_terminal=True,
             )
 
-        if action == "release" and _material_rag_orchestration_enabled():
+        if action == "release" and str(row["object_key"]).endswith((".docx", ".xlsx", ".jpg")):
+            from ..evidence.repository import native_extraction_enabled, register_in_session
+
+            if native_extraction_enabled():
+                from ..evidence.formats import format_for_key
+
+                await register_in_session(session, version_id, format_for_key(str(row["object_key"])))
+                from ..material_pipeline.coordinator import auto_pipeline_enabled
+                if auto_pipeline_enabled():
+                    from ..material_pipeline.repository import register_delivery_in_session
+                    await register_delivery_in_session(session, tenant, version_id, rearm_terminal=True)
+
+        if (action == "release" and str(row["object_key"]).endswith(".pdf")
+            and _material_rag_orchestration_enabled()):
             from platform_foundation.f1.features.material_rag.repository import (
                 enqueue_job_in_session,
             )

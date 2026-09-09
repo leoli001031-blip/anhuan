@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { Button, Card, Form, Input, Select, Typography, message } from "antd";
 import { useAuth } from "../auth/OidcProvider";
+import { Link } from "react-router-dom";
+import { invitationLink } from "../features/invitations/invitationFlow";
 import { api } from "../api";
 
 const ROLES = ["enterprise_admin", "plant_admin", "partner", "auditor"];
@@ -23,22 +25,6 @@ export default function InvitePage() {
     }
   };
 
-  const consume = async (values: { token: string }) => {
-    try {
-      await api("/v1/invitations/consume", {
-        method: "POST",
-        token: getAccessToken(),
-        body: {
-          token: values.token,
-          keycloak_sub: "",
-          email: "",
-        },
-      });
-      message.success("邀请已消费");
-    } catch (e) {
-      message.error(String(e));
-    }
-  };
 
   return (
     <div style={{ maxWidth: 560 }}>
@@ -60,20 +46,11 @@ export default function InvitePage() {
         </Form>
         {token && (
           <Typography.Paragraph style={{ marginTop: 12 }} copyable>
-            邀请链接：{token}
+            {invitationLink(token, window.location.origin)}
           </Typography.Paragraph>
         )}
       </Card>
-      <Card title="消费邀请">
-        <Form onFinish={consume} layout="vertical">
-          <Form.Item name="token" label="邀请 token" rules={[{ required: true }]}>
-            <Input.TextArea rows={3} />
-          </Form.Item>
-          <Button type="primary" htmlType="submit">
-            消费
-          </Button>
-        </Form>
-      </Card>
+      <Typography.Paragraph><Link to="/join">已有邀请？接受邀请并加入企业</Link></Typography.Paragraph>
     </div>
   );
 }

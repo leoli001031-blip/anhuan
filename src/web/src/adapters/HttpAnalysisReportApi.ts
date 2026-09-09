@@ -1,3 +1,4 @@
+import { citationPosition } from "./evidenceLocation";
 // HttpAnalysisReportApi：默认实现，直连后端。
 // 报告域端点严格遵循冻结合同 v1；问答/客户/材料复用基线已有路由。
 // 身份：Authorization: Bearer + 请求开始时冻结的企业快照（X-Enterprise-Id）。
@@ -5,6 +6,7 @@
 // 不得从 URL/正文指定客户或租户身份；问答 request_id 由 adapter 本地生成。
 import { getTenantSnapshot, tenantFetch } from "../api";
 import { ApiError } from "./errors";
+import { assertClientCreateReceipt, assertClientRequestId, normalizeClientCreate } from "./clientCreation";
 import type {
   AnalysisReportApi,
   HtmlReportArtifact,
@@ -15,6 +17,7 @@ import { normalizeTransitionEvidence } from "./AnalysisReportApi";
 import type {
   ArchiveResultV1,
   ClientAccount,
+  CreateClientInput,
   ClientStage,
   ExceptionItem,
   GenerationAcceptedV1,
@@ -25,11 +28,12 @@ import type {
   PublishedReportDetailV1,
   PublishedReportSummaryV1,
   QaAnswer,
-  SessionAccessV1,
+  SessionAccessV2,
   VersionDetailV1,
   VersionHistoryItemV1,
 } from "./types";
 import type { SessionAccess } from "./SessionAccess";
+import { HttpMembershipApi, type MembershipApi, type MembershipCommand } from "./MembershipApi";
 import {
   parseArchiveResult,
   parseGeneration,
@@ -148,7 +152,8 @@ function qaInt(row: Record<string, unknown>, key: string): number {
 
 function parseQaCitation(value: unknown): QaAnswer["citations"][number] {
   const row = qaRecord(value);
-  if (!hasExactKeys(row, QA_CITATION_KEYS)) qaContractError();
+  const expected = row.locator != null ? new Set([...QA_CITATION_KEYS, "locator", "location", "evidence_revision_id"]) : QA_CITATION_KEYS;
+  if (!hasExactKeys(row, expected)) qaContractError();
   qaUuid(row, "canonical_unit_id");
   qaUuid(row, "document_record_id");
   qaUuid(row, "document_version_id");
@@ -160,8 +165,11 @@ function parseQaCitation(value: unknown): QaAnswer["citations"][number] {
   }
   return {
     documentName: qaString(row, "document_name"),
+    documentVersionId: qaUuid(row, 'document_version_id'),
+    fragmentId: qaUuid(row, 'canonical_unit_id'),
+    sourceSha256: String(row.source_sha256),
     versionNumber: qaInt(row, "version_number"),
-    pageNumber: qaInt(row, "page_number"),
+    ...(() => {try {return citationPosition(row)} catch {return qaContractError()}})(),
     snippet: qaString(row, "snippet"),
   };
 }
@@ -245,14 +253,19 @@ function safeHtmlFilename(contentDisposition: string | null): string | null {
   return normalized;
 }
 
-export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
+export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess, MembershipApi {
   private readonly getToken: () => string | null;
+  private readonly memberships: HttpMembershipApi;
   private readonly qaRequestIds = new Map<string, string>();
   private qaTenantGeneration: number | null = null;
 
   constructor(getToken: () => string | null) {
     this.getToken = getToken;
+    this.memberships = new HttpMembershipApi(getToken);
   }
+
+  listMemberships() { return this.memberships.listMemberships(); }
+  changeMembership(id: string, command: MembershipCommand) { return this.memberships.changeMembership(id, command); }
 
   private async request<T>(
     path: string,
@@ -323,7 +336,7 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
 
   // —— 身份面 ——
 
-  async getSessionAccess(): Promise<SessionAccessV1> {
+  async getSessionAccess(): Promise<SessionAccessV2> {
     const { payload, enterpriseId } = await this.request<unknown>("/v1/session/access");
     const session = parseSessionAccess(payload);
     if (enterpriseId == null || session.enterprise_id !== enterpriseId) {
@@ -415,14 +428,14 @@ export class HttpAnalysisReportApi implements AnalysisReportApi, SessionAccess {
     return toClient(payload);
   }
 
-  async createClient(input: { name: string; stage: ClientStage }): Promise<ClientAccount> {
-    const { payload } = await this.request<RawCrmAccount>(
+  async createClient(input: CreateClientInput): Promise<ClientAccount> {
+    assertClientRequestId(input.requestId);
+    const body = normalizeClientCreate({display_name: input.name, stage: input.stage});
+    const { payload, enterpriseId, status } = await this.request<RawCrmAccount>(
       "/v1/views-reports/crm/accounts",
-      {
-        method: "POST",
-        body: { display_name: input.name, stage: input.stage },
-      },
+      {method: "POST", body: {...body, request_id: input.requestId}},
     );
+    assertClientCreateReceipt(payload, enterpriseId, status);
     return toClient(payload);
   }
 

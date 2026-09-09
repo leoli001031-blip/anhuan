@@ -8,8 +8,8 @@ with the transaction so pooled connections never leak tenant scope.
 
 The runtime role DSNs are built from the F1 host/port/db-name config plus
 the role's own secret file — the migration DSN (``f0d_migration``) is never
-parsed or used by the API/worker.  Only ``f1_api`` and ``f1_worker`` are
-accepted as session roles.
+parsed or used by the API/worker.  The task-source and report-generation logins are separately allowlisted and
+accept no caller-supplied tenant or task context.
 """
 from __future__ import annotations
 
@@ -18,17 +18,22 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 from urllib.parse import quote
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 from .config import pg_database, pg_host, pg_port
 from .secret_files import read_f1_secret_text
+from .ingestion_context import current_capability, restricted_ingestion
 
-ROLE_PASSWORDS = {"f1_api": "f1_api_password", "f1_worker": "f1_worker_password"}
+ROLE_PASSWORDS = {"f1_api": "f1_api_password", "f1_worker": "f1_worker_password", "f1_source_reader": "f1_source_reader_password", "f1_report_worker": "f1_report_worker_password"}
+ROLE_PASSWORDS['f1_ingestion_worker'] = 'f1_ingestion_worker_password'
 ROLE_PASSWORD_FILE_ENVS = {
     "f1_api": "F1_API_PASSWORD_FILE",
     "f1_worker": "F1_WORKER_PASSWORD_FILE",
+    "f1_source_reader": "F1_SOURCE_READER_PASSWORD_FILE",
+    "f1_report_worker": "F1_REPORT_WORKER_PASSWORD_FILE",
+    "f1_ingestion_worker": "F1_INGESTION_WORKER_PASSWORD_FILE",
 }
 _ALLOWED_ROLES = frozenset(ROLE_PASSWORDS)
 
@@ -65,7 +70,7 @@ def _get_factory(role: str) -> async_sessionmaker[AsyncSession]:
     if role not in _ALLOWED_ROLES:
         raise ValueError("F1_ROLE_INVALID")
     if role not in _factories:
-        dsn = _api_dsn() if role == "f1_api" else _worker_dsn()
+        dsn = _api_dsn() if role == "f1_api" else (_worker_dsn() if role == "f1_worker" else _role_dsn(role))
         engine = create_async_engine(
             dsn,
             pool_pre_ping=True,
@@ -119,6 +124,16 @@ async def session_scope(
     The tenant context is transaction-local (SET LOCAL), so a connection
     returned to the pool never carries another request's enterprise.
     """
+    capability = current_capability()
+    if role == 'f1_api' and (capability is not None or restricted_ingestion()):
+        if capability is None:
+            raise ValueError('INGESTION_CAPABILITY_REQUIRED')
+        role = 'f1_ingestion_worker'
+    if role == 'f1_ingestion_worker' and capability is None and any(
+            x is not None for x in (enterprise_id, sub, task_id, lease_token)):
+        raise ValueError('INGESTION_CAPABILITY_REQUIRED')
+    if role in {"f1_source_reader", "f1_report_worker"} and any(x is not None for x in (enterprise_id, sub, task_id, lease_token)):
+        raise ValueError("F1_SOURCE_READER_CONTEXT_FORBIDDEN" if role == "f1_source_reader" else "F1_REPORT_WORKER_CONTEXT_FORBIDDEN")
     if role == "f1_api" and (task_id is not None or lease_token is not None):
         raise ValueError("F1_API_TASK_CONTEXT_FORBIDDEN")
     if role == "f1_worker" and enterprise_id is not None:
@@ -129,10 +144,24 @@ async def session_scope(
     factory = _get_factory(role)
     async with factory() as session:  # type: ignore[union-attr]
         try:
+            if role == 'f1_ingestion_worker' and capability is not None:
+                await session.execute(text(
+                    "SELECT set_config('f1.ingestion_delivery_id',:id,true),"
+                    "set_config('f1.ingestion_dispatch_token',:token,true)"
+                ), {'id': str(capability.delivery_id), 'token': str(capability.dispatch_token)})
             if enterprise_id is not None or sub or task_id is not None:
                 await _set_context(
                     session, enterprise_id, sub, task_id, lease_token
                 )
+            if role == 'f1_ingestion_worker' and capability is not None and enterprise_id is not None:
+                # SQL RLS/triggers protect each statement. The trusted worker
+                # additionally rechecks the live capability immediately before
+                # its commit, after any Python/OCR callback scheduling delay.
+                def check_commit(sync_session):
+                    context = sync_session.execute(text('SELECT f1.ingestion_worker_context(true)')).scalar_one()
+                    if context is None:
+                        raise RuntimeError('INGESTION_CAPABILITY_INVALID')
+                event.listen(session.sync_session, 'before_commit', check_commit)
             yield session
         finally:
             # Never leave an open transaction on a pooled connection.

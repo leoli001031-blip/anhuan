@@ -11,6 +11,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from ...auth import Tenant
+from ...business_identity import product_role_for
 from ...database import session_scope
 from . import health, repository
 from .artifact import ReportArtifact, ReportArtifactInvalid, render_html_artifact
@@ -25,9 +26,7 @@ from .contracts import (
     HealthSnapshotUnavailable,
     LOCAL_FLAG,
     PROVIDER_CAPABILITIES,
-    PROVIDER_MEMBER_ROLES,
     RECOVERABLE_GENERATION_FAILURE_REASONS,
-    ProductRole,
     ReportNotFound,
     ReportTransitionInvalid,
     RequestIdConflict,
@@ -66,23 +65,19 @@ def generation_enabled() -> bool:
     return os.environ.get(LOCAL_FLAG) == "1" and os.environ.get(ENGINEERING_FLAG) == "1"
 
 
-def product_role_for(tenant: Tenant) -> ProductRole:
-    membership = tenant.role or ""
-    if membership in PROVIDER_MEMBER_ROLES:
-        return "provider_admin"
-    return "client_user"
-
 
 def session_access(tenant: Tenant) -> dict[str, Any]:
     role = product_role_for(tenant)
     payload = {
         "schema": SCHEMA_SESSION,
         "product_role": role,
+        "membership_role": tenant.role,
         "enterprise_id": str(tenant.enterprise_id),
         "template_id": TEMPLATE_ID,
         "template_title": TEMPLATE_TITLE,
         "capabilities": list(
-            PROVIDER_CAPABILITIES if role == "provider_admin" else CLIENT_CAPABILITIES
+            PROVIDER_CAPABILITIES if role == "provider_admin" else
+            CLIENT_CAPABILITIES if role == "client_user" else ()
         ),
     }
     _forbid_leaks(payload)
@@ -247,7 +242,8 @@ async def get_published(tenant: Tenant, report_id: uuid.UUID) -> dict[str, Any]:
                 "document_version_id": str(item["document_version_id"]),
                 "document_name": item["document_name"],
                 "version_number": int(item["version_number"]),
-                "page_number": int(item["page_number"]),
+                "page_number": int(item["page_number"]) if item["page_number"] is not None else None,
+                **_citation_identity(item),
                 "excerpt": item["excerpt"],
             }
             for item in row["citations"]
@@ -623,6 +619,11 @@ async def job_status(tenant: Tenant, job_id: uuid.UUID) -> dict[str, Any]:
         "version_id": str(row["version_id"]),
         "status": row["status"],
         "error_reason": row["error_reason"],
+        "delivery": {
+            "state": row["delivery_state"],
+            "attempt": int(row["delivery_attempt"]),
+            "reason_code": row["delivery_reason_code"],
+        } if row.get("delivery_state") is not None else None,
     }
     _forbid_leaks(payload)
     return payload
@@ -659,7 +660,8 @@ async def version_detail(tenant: Tenant, version_id: uuid.UUID) -> dict[str, Any
                 "document_version_id": str(item["document_version_id"]),
                 "document_name": item["document_name"],
                 "version_number": int(item["version_number"]),
-                "page_number": int(item["page_number"]),
+                "page_number": int(item["page_number"]) if item["page_number"] is not None else None,
+                **_citation_identity(item),
                 "excerpt": item["excerpt"],
             }
             for item in payload.get("citations", [])
@@ -728,16 +730,17 @@ async def apply_transition(
         )
         if version is None:
             raise ReportNotFound()
-        locked_report = None
-        if action != "withdraw":
-            # Serialize review/publish against a concurrent generation fork.
-            # The earlier unlocked version read is only descriptive; this
-            # report-row lock is the authority for the current-version fence.
-            locked_report = await repository.lock_report_for_generation(
-                session,
-                tenant.enterprise_id,
-                version["report_id"],
-            )
+        # Every workflow mutation takes report -> version locks in that
+        # order, including withdrawal of an older published version. The
+        # withdrawal contract does not require the current-version fence,
+        # but it must serialize with a concurrent replacement publication.
+        locked_report = await repository.lock_report_for_generation(
+            session,
+            tenant.enterprise_id,
+            version["report_id"],
+        )
+        if locked_report is None:
+            raise ReportNotFound()
         if (
             action != "withdraw"
             and (
@@ -781,7 +784,8 @@ async def apply_transition(
                                 ),
                                 "document_name": item["document_name"],
                                 "version_number": int(item["version_number"]),
-                                "page_number": int(item["page_number"]),
+                                "page_number": int(item["page_number"]) if item["page_number"] is not None else None,
+                **_citation_identity(item),
                                 "excerpt": item["excerpt"],
                             }
                             for item in complete.get("citations", [])
@@ -985,7 +989,8 @@ async def archive_report(
             await session.execute(
                 text(
                     "SELECT id,archived_at FROM f1.analysis_report "
-                    "WHERE enterprise_id=:enterprise_id AND id=:report_id"
+                    "WHERE enterprise_id=:enterprise_id AND id=:report_id "
+                    "FOR UPDATE"
                 ),
                 {"enterprise_id": tenant.enterprise_id, "report_id": report_id},
             )
@@ -1034,10 +1039,9 @@ async def archive_report(
                 "reason": reason,
             },
         )
-        # Same-transaction audit event: the insert guard re-authenticates the
-        # actor and proves the report row was archived in this transaction.
-        # Idempotent repeats (already archived) never reach this branch, so
-        # one logical operation yields exactly one event.
+        # The database binds this event to a captured OLD/NEW archive
+        # transition. The row lock makes concurrent repeats observe the
+        # committed archive above and return without another transition.
         await session.execute(
             text(
                 "INSERT INTO f1.analysis_report_management_event "
@@ -1069,7 +1073,8 @@ async def unarchive_report(
             await session.execute(
                 text(
                     "SELECT archived_at FROM f1.analysis_report "
-                    "WHERE enterprise_id=:enterprise_id AND id=:report_id"
+                    "WHERE enterprise_id=:enterprise_id AND id=:report_id "
+                    "FOR UPDATE"
                 ),
                 {"enterprise_id": tenant.enterprise_id, "report_id": report_id},
             )
@@ -1111,3 +1116,12 @@ async def unarchive_report(
         )
         await session.commit()
     return {"report_id": str(report_id), "archived": False, "already_unarchived": False}
+
+
+def _citation_identity(item: dict) -> dict:
+    if item.get('locator') is None:
+        return {}
+    from .contracts import evidence_location
+    return {'locator': item['locator'], 'location': evidence_location(item['page_number'], item['locator']),
+        'evidence_revision_id': str(item['evidence_revision_id']), 'fragment_id': str(item['fragment_id']),
+        'evidence_body_sha256': item['evidence_body_sha256']}

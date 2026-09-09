@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import uuid
 
@@ -31,6 +32,14 @@ _ACTIVE_STATUSES = frozenset(
 )
 
 
+def continuation_queue_name() -> str:
+    if (os.environ.get('F1_PIPELINE_CONTINUATIONS_ON_INGESTION') == '1'
+            or os.environ.get('F1_REPORT_WORKER_RESTRICTED') == '1'):
+        from ..p3.delivery_queue import QUEUE_NAME
+        return QUEUE_NAME
+    return REPORT_QUEUE_NAME
+
+
 def _sub(value: str) -> str:
     if (
         not isinstance(value, str)
@@ -48,6 +57,8 @@ def _sub_fingerprint(value: str) -> str:
 
 
 def _failed_reason(queue_name: str, stable_id: str) -> str | None:
+    if queue_name == continuation_queue_name() and queue_name != REPORT_QUEUE_NAME:
+        stable_id += '-ingestion'
     queue = Queue(queue_name, connection=Redis.from_url(REDIS_URL))
     existing = queue.fetch_job(stable_id)
     if existing is None or existing.get_status(refresh=True) != JobStatus.FAILED:
@@ -67,6 +78,10 @@ def _enqueue(
     timeout: int,
     retry: Retry,
 ) -> None:
+    # RQ job IDs are global across queues. A legacy job still running on the
+    # report queue must not suppress its transfer to the ingestion queue.
+    if queue_name == continuation_queue_name() and queue_name != REPORT_QUEUE_NAME:
+        stable_id += '-ingestion'
     queue = Queue(queue_name, connection=Redis.from_url(REDIS_URL))
     existing = queue.fetch_job(stable_id)
     if existing is not None:
@@ -132,7 +147,7 @@ def enqueue_report_stage(
     from .worker import run_report_stage
 
     _enqueue(
-        queue_name=REPORT_QUEUE_NAME,
+        queue_name=continuation_queue_name(),
         stable_id=f"f1-material-auto-report-{version_id}",
         function=run_report_stage,
         args=(str(enterprise_id), _sub(provider_sub), str(version_id)),
@@ -154,7 +169,7 @@ def enqueue_reconcile_stage(
     from .worker import run_reconcile_stage
 
     _enqueue(
-        queue_name=REPORT_QUEUE_NAME,
+        queue_name=continuation_queue_name(),
         stable_id=f"f1-material-auto-reconcile-{version_id}",
         function=run_reconcile_stage,
         args=(str(enterprise_id), _sub(provider_sub), str(version_id)),
@@ -172,7 +187,7 @@ def enqueue_recovery_sweep(
 
     actor_sub = _sub(provider_sub)
     _enqueue(
-        queue_name=REPORT_QUEUE_NAME,
+        queue_name=continuation_queue_name(),
         stable_id=(
             f"f1-material-auto-sweep-{enterprise_id}-"
             f"{_sub_fingerprint(actor_sub)}"
@@ -198,7 +213,7 @@ def enqueue_durable_delivery(
     from .worker import run_durable_delivery
 
     _enqueue(
-        queue_name=REPORT_QUEUE_NAME,
+        queue_name=continuation_queue_name(),
         # A reclaimed DB lease has a new token and must not be suppressed by a
         # stale active RQ registry entry from the previous lease.
         stable_id=(
@@ -218,9 +233,9 @@ def pipeline_dispatch_failure_reason(version_id: uuid.UUID) -> str | None:
     if not isinstance(version_id, uuid.UUID):
         raise ValueError("MATERIAL_PIPELINE_IDENTITY_INVALID")
     return _failed_reason(
-        REPORT_QUEUE_NAME, f"f1-material-auto-reconcile-{version_id}"
+        continuation_queue_name(), f"f1-material-auto-reconcile-{version_id}"
     ) or _failed_reason(
-        REPORT_QUEUE_NAME, f"f1-material-auto-report-{version_id}"
+        continuation_queue_name(), f"f1-material-auto-report-{version_id}"
     )
 
 

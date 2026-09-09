@@ -28,6 +28,7 @@ from .ocr import (
     OcrPageResult,
     ocr_pdf_pages,
 )
+from .pdf_images import page_requires_visual_ocr
 
 
 _WHITESPACE_RE = re.compile(r"[\t\r\f\v ]+")
@@ -243,7 +244,10 @@ def _page_classification(
         if ocr_result.two_column_candidate:
             columns = True
             column_confidence = max(column_confidence, 520_000)
-    ocr_required = embedded_character_count < 40 and not (
+    has_images = page_requires_visual_ocr(page)
+    if has_images and embedded_character_count >= 20:
+        primary_kind = "mixed"
+    ocr_required = (embedded_character_count < 40 or has_images) and not (
         ocr_result is not None and ocr_result.ocr_applied
     )
     reason_codes: list[str] = []
@@ -626,8 +630,8 @@ def analyze_pdf(
 
     ocr_page_numbers = tuple(
         page_number
-        for page_number, _page, text, _fragments in extracted_pages
-        if len(re.sub(r"\s+", "", text)) < 40
+        for page_number, page, text, _fragments in extracted_pages
+        if len(re.sub(r"\s+", "", text)) < 40 or page_requires_visual_ocr(page)
     )
     ocr_results: dict[int, OcrPageResult] = {}
     try:
@@ -689,7 +693,9 @@ def analyze_pdf(
     applied_ocr_pages: set[int] = set()
     for page_number, page, embedded_text, fragments in extracted_pages:
         ocr_result = ocr_results.get(page_number)
-        effective_text = embedded_text
+        # A visual page may contain clipped/covered native text. Without a
+        # complete OCR result it must not feed field candidates or evidence.
+        effective_text = "" if page_requires_visual_ocr(page) else embedded_text
         if ocr_result is not None and ocr_result.ocr_applied:
             effective_text = _normalize_text(ocr_result.text)
         if ocr_result is not None and ocr_result.ocr_applied:

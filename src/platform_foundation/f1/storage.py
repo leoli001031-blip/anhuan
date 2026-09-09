@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import re
 import uuid
 from dataclasses import dataclass
@@ -73,6 +74,11 @@ _PREVIEW_UNIT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
 
 def _client() -> Minio:
+    if os.environ.get('F1_STORAGE_SERVICE_CREDENTIALS') == '1':
+        # Missing candidate credentials fail closed; never fall back to root.
+        user = read_f1_secret_text('minio_service_user', file_env='F1_MINIO_SERVICE_USER_FILE')
+        password = read_f1_secret_text('minio_service_password', file_env='F1_MINIO_SERVICE_PASSWORD_FILE')
+        return Minio(MINIO_ENDPOINT, access_key=user, secret_key=password, secure=False)
     user = read_f1_secret_text(
         "minio_root_user", file_env="F1_MINIO_ROOT_USER_FILE"
     )
@@ -185,6 +191,8 @@ def store_stream(
 def _ensure_bucket(client: Minio, bucket: str) -> None:
     if bucket not in {BUCKET, QUARANTINE_BUCKET, PREVIEW_BUCKET}:
         raise StorageError("BUCKET_INVALID")
+    if os.environ.get('F1_STORAGE_SERVICE_CREDENTIALS') == '1':
+        return  # The one-shot provisioner creates buckets; runtime cannot list them.
     if not client.bucket_exists(bucket):
         client.make_bucket(bucket)
 
@@ -255,7 +263,8 @@ def _read_bucket_bytes(
         stat = client.stat_object(bucket, object_key)
         response = client.get_object(bucket, object_key)
     except S3Error as error:
-        raise StorageError("SOURCE_OBJECT_MISSING") from error
+        code = "SOURCE_OBJECT_MISSING" if error.code in {"NoSuchKey", "NoSuchObject"} else "SOURCE_OBJECT_STAT_FAILED"
+        raise StorageError(code) from error
     except Exception as error:
         raise StorageError("SOURCE_OBJECT_STAT_FAILED") from error
     digest = hashlib.sha256()
@@ -327,6 +336,39 @@ def open_quarantine_source(
     return io.BytesIO(payload)
 
 
+def read_released_native_source(
+    object_key: str, expected_sha256: str, expected_size: int,
+) -> bytes:
+    """Read the released copy once and bind the returned bytes to its source.
+
+    The source ETag belongs to the quarantine object. A copied object's ETag
+    is not assumed equal; the immutable byte length and SHA are verified here.
+    """
+    if not _OPAQUE_KEY_RE.fullmatch(object_key) or not object_key.endswith((".docx", ".xlsx", ".jpg")):
+        raise StorageError("OBJECT_KEY_INVALID")
+    maximum = (20 if object_key.endswith(".jpg") else 25) * 1024 * 1024
+    if type(expected_size) is not int or not 1 <= expected_size <= maximum:
+        raise StorageError("SOURCE_SIZE_MISMATCH")
+    stored, payload = _read_bucket_bytes(BUCKET, object_key, max_bytes=expected_size)
+    if stored.sha256 != expected_sha256 or stored.size != expected_size:
+        raise StorageError("SOURCE_IDENTITY_MISMATCH")
+    return payload
+
+
+def read_released_material_source(object_key: str, expected_sha256: str, expected_size: int) -> bytes:
+    """Original citation viewer, including immutable historical PDF sources."""
+    if not object_key.endswith('.pdf'):
+        return read_released_native_source(object_key, expected_sha256, expected_size)
+    if not _OPAQUE_KEY_RE.fullmatch(object_key):
+        raise StorageError('OBJECT_KEY_INVALID')
+    if type(expected_size) is not int or not 1 <= expected_size <= 50 * 1024 * 1024:
+        raise StorageError('SOURCE_SIZE_MISMATCH')
+    stored, payload = _read_bucket_bytes(BUCKET, object_key, max_bytes=expected_size)
+    if stored.sha256 != expected_sha256 or stored.size != expected_size:
+        raise StorageError('SOURCE_IDENTITY_MISMATCH')
+    return payload
+
+
 def _preview_object_key(task_id: uuid.UUID, unit_id: str, content_type: str) -> str:
     if not isinstance(task_id, uuid.UUID) or _PREVIEW_UNIT_ID_RE.fullmatch(unit_id) is None:
         raise StorageError("OBJECT_KEY_INVALID")
@@ -360,6 +402,17 @@ def read_ingestion_preview_manifest(
     *, task_id: uuid.UUID, expected_sha256: str
 ) -> bytes:
     """Read the bounded canonical manifest that authenticates all units."""
+    if os.environ.get('F1_PREVIEW_CONTENT_ADDRESSED') == '1':
+        object_key = _preview_object_key(task_id, str(uuid.uuid5(task_id, 'manifest:' + expected_sha256)), 'application/json')
+        try:
+            stored, payload = _read_bucket_bytes(PREVIEW_BUCKET, object_key, max_bytes=256 * 1024)
+        except StorageError as error:
+            if str(error) != 'SOURCE_OBJECT_MISSING':
+                raise
+        else:
+            if stored.sha256 != expected_sha256:
+                raise StorageError('PREVIEW_IDENTITY_MISMATCH')
+            return payload
     object_key = _preview_object_key(task_id, "manifest", "application/json")
     stored, payload = _read_bucket_bytes(
         PREVIEW_BUCKET, object_key, max_bytes=256 * 1024

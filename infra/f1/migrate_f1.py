@@ -32,7 +32,7 @@ from sqlalchemy.engine import Connection, URL, make_url  # noqa: E402
 from platform_foundation.f1.config import pg_database, pg_host, pg_port  # noqa: E402
 
 ROLES = ("f1_api", "f1_worker")
-ROLE_LIMITS = {"f1_api": 20, "f1_worker": 10}
+ROLE_LIMITS = {"f1_api": 20, "f1_worker": 10, "f1_source_reader": 8, "f1_report_worker": 6, "f1_ingestion_worker": 6}
 DEFINER_ROLES = (
     "f1_auth_definer",
     "f1_identity_read_definer",
@@ -46,6 +46,14 @@ DEFINER_ROLES = (
     "f1_material_pipeline_definer",
     "f1_material_ingestion_definer",
     "f1_analysis_report_definer",
+    "f1_report_transition_definer",
+    "f1_client_access_definer",
+    "f1_membership_definer",
+    "f1_material_evidence_definer",
+    "f1_source_read_definer",
+    "f1_report_generate_definer",
+    "f1_ingestion_process_definer",
+    "f1_ocr_cache_definer",
 )
 DEFINER_OWNERS = {
     "f1.session_authorized(uuid)": "f1_auth_definer",
@@ -129,6 +137,31 @@ REPORT_DELIVERY_DEFINER_OWNERS = {
         "f1_analysis_report_definer"
     ),
 }
+REPORT_TRANSITION_DEFINER_OWNERS = {
+    "f1.capture_analysis_report_transition()": "f1_report_transition_definer",
+    "f1.bind_analysis_report_transition_event()": "f1_report_transition_definer",
+    "f1.require_analysis_report_transition_event()": "f1_report_transition_definer",
+}
+CLIENT_ACCESS_DEFINER_OWNERS = {
+    "f1.manage_client_portal(uuid,uuid,text,text)": "f1_client_access_definer",
+    "f1.issue_client_portal_invite(uuid,text,text,timestamptz)": "f1_client_access_definer",
+    "f1.read_client_portal(uuid)": "f1_client_access_definer",
+}
+MEMBERSHIP_DEFINER_OWNERS = {
+    "f1.read_memberships()": "f1_membership_definer",
+    "f1.lock_current_membership()": "f1_membership_definer",
+    "f1.manage_membership(uuid,uuid,text,text)": "f1_membership_definer",
+}
+NATIVE_EVIDENCE_DEFINER_OWNERS = {
+    "f1." + signature: "f1_material_evidence_definer" for signature in (
+        "register_native_extraction_job(uuid,text,text)",
+        "claim_native_extraction_jobs(integer,integer)",
+        "read_native_extraction_claim(uuid,uuid)",
+        "renew_native_extraction_lease(uuid,uuid,integer)",
+        "finish_native_extraction_failure(uuid,uuid,text,integer)",
+        "finalize_native_extraction(uuid,uuid,jsonb)",
+    )
+}
 F1_ALLOWED_MIGRATE_TARGETS = frozenset(
     {
         "f1_0014",
@@ -144,11 +177,29 @@ F1_ALLOWED_MIGRATE_TARGETS = frozenset(
         "f1_0024",
         "f1_0025",
         "f1_0026",
+        "f1_0027",
+        "f1_0028",
+        "f1_0029",
+        "f1_0030",
+        "f1_0031",
+        "f1_0032",
+        "f1_0033",
+        "f1_0034",
+        "f1_0035",
+        "f1_0036",
+        "f1_0037",
+        "f1_0038",
+        "f1_0039",
+        "f1_0040",
+        "f1_0041",
+        "f1_0042",
+        "f1_0043",
+        "f1_0044",
     }
 )
 F1_DEFAULT_MIGRATE_TARGET = "f1_0014"
 F1_MATERIAL_RAG_MIGRATE_TARGET = "f1_0016"
-F1_ANALYSIS_REPORT_MIGRATE_TARGET = "f1_0026"
+F1_ANALYSIS_REPORT_MIGRATE_TARGET = "f1_0044"
 
 
 def _closed_f1_migrate_target(target: object) -> str:
@@ -158,15 +209,50 @@ def _closed_f1_migrate_target(target: object) -> str:
 
 
 def _definer_owners_for_target(target: str) -> dict[str, str]:
+    target = _closed_f1_migrate_target(target)
     owners = dict(ALL_DEFINER_OWNERS)
-    if target in {"f1_0020", "f1_0021", "f1_0022", "f1_0023", "f1_0024", "f1_0025", "f1_0026"}:
+    if target >= "f1_0020":
         owners.update(ANALYSIS_REPORT_DEFINER_OWNERS)
-    if target in {"f1_0021", "f1_0022", "f1_0023", "f1_0024", "f1_0025", "f1_0026"}:
+    if target >= "f1_0021":
         owners.update(MATERIAL_PIPELINE_DEFINER_OWNERS)
-    if target in {"f1_0023", "f1_0024", "f1_0025", "f1_0026"}:
+    if target >= "f1_0023":
         owners.update(MATERIAL_INGESTION_DEFINER_OWNERS)
         owners.update(REPORT_REVOCATION_DEFINER_OWNERS)
         owners.update(REPORT_DELIVERY_DEFINER_OWNERS)
+    if target >= "f1_0027":
+        owners.update(REPORT_TRANSITION_DEFINER_OWNERS)
+    if target >= "f1_0031":
+        owners.update(CLIENT_ACCESS_DEFINER_OWNERS)
+    if target >= "f1_0032":
+        owners.update(MEMBERSHIP_DEFINER_OWNERS)
+    if target >= "f1_0034":
+        owners.update(NATIVE_EVIDENCE_DEFINER_OWNERS)
+    if target >= "f1_0035":
+        owners["f1.read_native_extraction_fragments(uuid,uuid,integer,integer)"] = "f1_material_evidence_definer"
+    if target >= "f1_0036":
+        for signature in ("read_material_review(uuid)", "write_material_review(jsonb)", "probe_material_review_request(uuid,uuid,text)"):
+            owners["f1." + signature] = "f1_material_evidence_definer"
+    if target >= "f1_0037":
+        owners["f1.read_citation_original(uuid,uuid,uuid,uuid)"] = "f1_material_evidence_definer"
+        owners["f1.read_effective_material_state(uuid)"] = "f1_material_evidence_definer"
+        owners["f1.read_effective_material_sources(uuid[])"] = "f1_material_evidence_definer"
+        owners["f1.guard_effective_citation()"] = "f1_material_evidence_definer"
+    if target >= "f1_0038":
+        owners["f1.recover_native_extraction(uuid,uuid,uuid,text,text)"] = "f1_material_evidence_definer"
+    if target >= "f1_0039":
+        owners["f1.read_review_original(uuid,uuid,uuid)"] = "f1_material_evidence_definer"
+    if target >= "f1_0040":
+        owners["f1.read_leased_task_source(text,uuid,uuid)"] = "f1_source_read_definer"
+    if target >= "f1_0041":
+        for signature in ("read_report_worker_delivery(uuid,uuid)", "finish_report_worker_delivery(uuid,uuid,text,text,integer)", "claim_report_worker_generation(uuid,uuid)", "read_report_worker_sources(uuid,uuid)", "finish_report_worker_generation(uuid,uuid,text,jsonb)"):
+            owners["f1." + signature] = "f1_report_generate_definer"
+    if target >= "f1_0042":
+        for signature in ("read_ingestion_worker_delivery(uuid,uuid)", "finish_ingestion_worker_delivery(uuid,uuid,text,text,integer)", "ingestion_worker_context(boolean)", "register_ingestion_worker_pipeline()"):
+            owners["f1." + signature] = "f1_ingestion_process_definer"
+    if target >= "f1_0043":
+        owners["f1.read_ingestion_task_source(uuid,uuid,uuid,boolean)"] = "f1_source_read_definer"
+    if target >= "f1_0044":
+        owners["f1.leased_ocr_cache(text,uuid,uuid,uuid,text,integer,text,jsonb)"] = "f1_ocr_cache_definer"
     return owners
 
 
@@ -256,12 +342,18 @@ def _migration_dsn() -> str:
 
 
 def _provision_roles(
-    connection: psycopg.Connection, database_name: str
+    connection: psycopg.Connection, database_name: str, *, target: str = "f1_0014"
 ) -> None:
     passwords = {
         "f1_api": _read_secret("f1_api_password"),
         "f1_worker": _read_secret("f1_worker_password"),
     }
+    if target >= "f1_0040":
+        passwords["f1_source_reader"] = _read_secret("f1_source_reader_password")
+    if target >= "f1_0041":
+        passwords["f1_report_worker"] = _read_secret("f1_report_worker_password")
+    if target >= "f1_0042":
+        passwords["f1_ingestion_worker"] = _read_secret("f1_ingestion_worker_password")
     for role in DEFINER_ROLES:
         exists = connection.execute(
             "SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)
@@ -326,7 +418,7 @@ def _provision_roles(
                 )
             )
 
-    protected_roles = list((*DEFINER_ROLES, *ROLES))
+    protected_roles = list((*DEFINER_ROLES, *passwords))
     membership = connection.execute(
         "SELECT 1 FROM pg_auth_members AS m "
         "JOIN pg_roles AS granted ON granted.oid = m.roleid "
@@ -468,24 +560,36 @@ def _finalize_definer_owners(
         if current_owner == role:
             continue
         _alter_owner_by_oid(connection, resolved[signature][0], role)
-    if target in {"f1_0020", "f1_0021", "f1_0022", "f1_0023", "f1_0024", "f1_0025", "f1_0026"}:
+    if target >= "f1_0020":
         # Bootstrap alone can grant a new definer access to session_authorized:
         # that function is already owned by the isolated auth definer on replay.
         connection.execute(
             "GRANT EXECUTE ON FUNCTION f1.current_enterprise_id(), "
             "f1.session_authorized(uuid) TO f1_aeco_read_definer"
         )
-    if target in {"f1_0021", "f1_0022", "f1_0023", "f1_0024", "f1_0025", "f1_0026"}:
+    if target >= "f1_0021":
         connection.execute(
             "GRANT EXECUTE ON FUNCTION f1.session_authorized(uuid), "
             "f1.resolve_current_enterprises() "
             "TO f1_material_pipeline_definer"
         )
-    if target in {"f1_0023", "f1_0024", "f1_0025", "f1_0026"}:
+    if target >= "f1_0023":
         connection.execute(
             "GRANT EXECUTE ON FUNCTION f1.session_authorized(uuid) "
             "TO f1_material_ingestion_definer,f1_analysis_report_definer"
         )
+    if target >= "f1_0027":
+        connection.execute(
+            "GRANT EXECUTE ON FUNCTION f1.current_enterprise_id(), "
+            "f1.current_sub(), f1.session_authorized(uuid) "
+            "TO f1_report_transition_definer"
+        )
+    if target >= "f1_0032":
+        connection.execute("GRANT EXECUTE ON FUNCTION f1.current_enterprise_id(), f1.current_sub() TO f1_membership_definer")
+    if target >= "f1_0031":
+        connection.execute("GRANT EXECUTE ON FUNCTION f1.current_enterprise_id(), f1.current_sub() TO f1_client_access_definer")
+    if target >= "f1_0044":
+        connection.execute("GRANT EXECUTE ON FUNCTION f1.read_leased_task_source(text,uuid,uuid), f1.read_ingestion_task_source(uuid,uuid,uuid,boolean) TO f1_ocr_cache_definer")
     _assert_owner_map(connection, resolved, expected_owners=owners)
 
 
@@ -523,7 +627,7 @@ def migrate_with_connection(
 
     ``target`` is an internal closed set: default engineering stays at
     ``f1_0014``; the dedicated material-RAG migrator may request ``f1_0016``;
-    the dedicated analysis-report migrator may request ``f1_0024``.  The
+    the dedicated analysis-report migrator may request ``f1_0044``.  The
     optional callback is intentionally Python-only and is used by the
     closeout failure-atomicity test.  Neither the target nor the callback is
     exposed through argv or an environment switch.
@@ -542,7 +646,7 @@ def migrate_with_connection(
     ):
         raise RuntimeError("F1_BOOTSTRAP_CONNECTION_IDENTITY_MISMATCH")
 
-    _provision_roles(raw, pg_database())
+    _provision_roles(raw, pg_database(), target=target)
     _ensure_f1_version_schema(raw)
     connection.exec_driver_sql("SET LOCAL ROLE f0d_migration")
     try:

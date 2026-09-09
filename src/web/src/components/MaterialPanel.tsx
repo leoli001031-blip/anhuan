@@ -22,7 +22,10 @@ import {
   message,
 } from "antd";
 import { Link } from "react-router-dom";
-import { isMockData, useApi } from "../adapters";
+import { isMockData, useApi, useSessionAccess } from "../adapters";
+import { completePendingWrite } from "../adapters/pendingWrites";
+import { pendingUpload, validateDocumentReceipt } from "../features/p3/uploadWrite";
+import BatchMaterialUploadModal from "./BatchMaterialUploadModal";
 import { ApiError } from "../adapters/errors";
 import type { MaterialItem, MaterialStatus } from "../adapters/types";
 import { MATERIAL_STATUS_LABEL } from "../adapters/types";
@@ -61,6 +64,9 @@ import type {
   VersionSummary,
 } from "../features/p3/types";
 import ErrorState from "./ErrorState";
+import NativeEvidenceStatus from "./NativeEvidenceStatus";
+import MaterialReviewPanel from "./MaterialReviewPanel";
+import { useAsyncContext } from "./useAsyncContext";
 import StatusDot, { type StatusTone } from "./StatusDot";
 import { formatDateTime } from "./ReportDocument";
 
@@ -119,17 +125,31 @@ function ocrOutcomeTag(page: MaterialPageClassification) {
   return <Tag>原生文本</Tag>;
 }
 
-function pdfCapabilityOf(capabilities: IngestionCapabilities | null) {
-  return capabilities?.allowed_types.find((item) => item.content_type === "application/pdf") ?? null;
+const MATERIAL_CONTENT_TYPES = [
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "image/jpeg",
+];
+
+function materialCapabilitiesOf(capabilities: IngestionCapabilities | null) {
+  return capabilities?.allowed_types.filter((item) => MATERIAL_CONTENT_TYPES.includes(item.content_type)) ?? [];
 }
 
-function validatePdfFile(file: File, capabilities: IngestionCapabilities | null): string | null {
-  if (!file.name.toLowerCase().endsWith(".pdf")) return "请选择 PDF 文件";
+function materialMaxBytes(item: IngestionCapabilities["allowed_types"][number], capabilities: IngestionCapabilities) {
+  return Math.min(item.max_file_bytes, capabilities.limits.max_file_bytes,
+    item.content_type === "image/jpeg" ? 20 * 1024 * 1024
+      : MATERIAL_CONTENT_TYPES.slice(1, 3).includes(item.content_type) ? 25 * 1024 * 1024 : Infinity);
+}
+
+function validateMaterialFile(file: File, capabilities: IngestionCapabilities | null): string | null {
+  const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+  if (![".pdf", ".docx", ".xlsx", ".jpg", ".jpeg"].includes(extension)) return "请选择 PDF、DOCX、Excel 或 JPEG 文件";
   if (file.size <= 0) return reasonCopy("EMPTY_FILE");
   if (!capabilities) return null;
-  const pdfCapability = pdfCapabilityOf(capabilities);
-  if (!pdfCapability) return reasonCopy("FILE_TYPE_NOT_ALLOWED");
-  const maxBytes = Math.min(pdfCapability.max_file_bytes, capabilities.limits.max_file_bytes);
+  const format = materialCapabilitiesOf(capabilities).find((item) => item.extensions.some((value) => value.toLowerCase() === extension));
+  if (!format) return reasonCopy("FILE_TYPE_NOT_ALLOWED");
+  const maxBytes = materialMaxBytes(format, capabilities);
   if (file.size > maxBytes) return `${reasonCopy("FILE_TOO_LARGE")}（上限 ${formatBytes(maxBytes)}）`;
   return null;
 }
@@ -393,6 +413,7 @@ const PIPELINE_STATUS_TONE: Record<AutoPipelineStageStatus, StatusTone> = {
 };
 
 const POLLABLE_PENDING_REASONS = new Set([
+  "EFFECTIVE_EXTRACTION_PENDING",
   "INGESTION_PROCESSING",
   "INGESTION_RETRY_WAIT",
   "MATERIAL_INGESTION_DELIVERY_FAILED",
@@ -1113,11 +1134,11 @@ function DocumentDrawer({
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
   const latest = detail?.latest_version ?? null;
-  const pdfUploadAvailable =
+  const formatUploadAvailable =
     capabilities?.upload_enabled === true &&
-    capabilities.allowed_types.some((item) => item.content_type === "application/pdf");
+    materialCapabilitiesOf(capabilities).length > 0;
   const canUploadVersion =
-    detail?.allowed_actions.includes("upload_version") === true && pdfUploadAvailable;
+    detail?.allowed_actions.includes("upload_version") === true && formatUploadAvailable;
 
   return (
     <Drawer
@@ -1128,7 +1149,7 @@ function DocumentDrawer({
       extra={
         canUploadVersion ? (
           <Button size="small" onClick={() => setVersionUploadOpen(true)}>
-            上传 PDF 新版本
+            上传新版本
           </Button>
         ) : null
       }
@@ -1161,7 +1182,9 @@ function DocumentDrawer({
               </div>
             )}
           </section>
-          {latest && (
+          {latest && MATERIAL_CONTENT_TYPES.slice(1).includes(latest.content_type) ? (
+            <NativeEvidenceStatus key={latest.id} version={latest} />
+          ) : latest && (
             <MaterialAnalysisSection
               version={latest}
               clientAccountId={clientId}
@@ -1169,6 +1192,7 @@ function DocumentDrawer({
               onRequestUpload={onRequestUpload}
             />
           )}
+          {latest?.quarantine_status === "released" && <MaterialReviewPanel key={latest.id} versionId={latest.id} onChanged={reload} />}
           {latest && (
             <section>
               <Typography.Text strong>安全预览</Typography.Text>
@@ -1214,8 +1238,8 @@ function DocumentDrawer({
           mode="version"
           token={getAccessToken()}
           documentId={detail.id}
-          capabilities={capabilities}
-          acceptedContentTypes={["application/pdf"]}
+          capabilities={capabilities ? { ...capabilities, allowed_types: materialCapabilitiesOf(capabilities).map((item) => ({ ...item, max_file_bytes: materialMaxBytes(item, capabilities) })) } : null}
+          acceptedContentTypes={MATERIAL_CONTENT_TYPES}
           onCancel={() => setVersionUploadOpen(false)}
           onSuccess={() => {
             setVersionUploadOpen(false);
@@ -1238,7 +1262,8 @@ export default function MaterialPanel({
   clientId?: string;
 }) {
   const api = useApi();
-  const { getAccessToken } = useAuth();
+  const { getAccessToken, user } = useAuth();
+  const { session } = useSessionAccess();
   const narrow = useNarrow();
   const [rows, setRows] = useState<MaterialItem[] | null>(null);
   const [docs, setDocs] = useState<DocumentSummary[] | null>(null);
@@ -1247,16 +1272,44 @@ export default function MaterialPanel({
   const [error, setError] = useState<unknown>(null);
   const [nonce, setNonce] = useState(0);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [batchOpen, setBatchOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [form] = Form.useForm<{ name: string }>();
   const [file, setFile] = useState<File | null>(null);
   const [openDocId, setOpenDocId] = useState<string | null>(null);
-  // 上传幂等键：一次未知结果期间保持不变；成功/冲突/重开流程才更新
-  const uploadKeyRef = useRef<string | null>(null);
+  const uploadFlight = useRef(false);
+  const isListCurrent = useAsyncContext(`${scope}:${clientId ?? ""}:${nonce}`);
+  const uploadContext = `${session?.enterprise_id ?? ''}:${user?.profile.sub ?? ''}:${scope}:${clientId ?? ''}`;
+  const isUploadCurrent = useAsyncContext(uploadContext);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pageError, setPageError] = useState(false);
+  const [pollNonce, setPollNonce] = useState(0);
+  const pagesLoaded = useRef(1);
+  const collectionRevision = useRef(0);
+  const morePending = useRef(false);
+  const cursorRef = useRef(nextCursor);
+  cursorRef.current = nextCursor;
+
+  useEffect(() => {
+    setUploadOpen(false);
+    setBatchOpen(false);
+    uploadFlight.current = false;
+    setUploading(false);
+    setFile(null);
+    form.resetFields();
+  }, [uploadContext, form]);
 
   useEffect(() => {
     let active = true;
     // 域/客户变化：先清旧状态再加载。
+    ++collectionRevision.current;
+    pagesLoaded.current = 1;
+    morePending.current = false;
+    setNextCursor(null);
+    setLoadingMore(false);
+    setPageError(false);
+    setOpenDocId(null);
     setRows(null);
     setDocs(null);
     setCapabilities(null);
@@ -1294,7 +1347,10 @@ export default function MaterialPanel({
       })
         .then((collection) => {
           assertScopePure(collection, scope, clientId);
-          if (active) setDocs(collection.items);
+          if (active && isListCurrent()) {
+            setDocs(collection.items);
+            setNextCursor(collection.next_cursor);
+          }
         })
         .catch((e) => {
           if (active) setError(toApiError(e));
@@ -1303,36 +1359,84 @@ export default function MaterialPanel({
     return () => {
       active = false;
     };
-  }, [api, getAccessToken, scope, clientId, nonce]);
+  }, [api, getAccessToken, scope, clientId, nonce, isListCurrent]);
 
-  // 活动状态静默刷新：不清空现有列表，不显示加载指示
-  useEffect(() => {
-    if (isMockData || !docs) return;
-    if (!docs.some((d) => ACTIVE_STAGES.has(stageOf(d)))) return;
-    const timer = setTimeout(() => {
-      listIngestionDocuments(getAccessToken(), {
+  const loadMore = async () => {
+    if (!isListCurrent() || !nextCursor || nextCursor !== cursorRef.current || morePending.current) return;
+    morePending.current = true;
+    const revision = ++collectionRevision.current;
+    setLoadingMore(true);
+    setPageError(false);
+    try {
+      const collection = await listIngestionDocuments(getAccessToken(), {
         scopeKind: scope === "shared" ? "service_provider" : "client",
         clientAccountId: scope === "client" ? clientId : undefined,
         limit: 100,
-      })
-        .then((collection) => {
+        cursor: nextCursor,
+      });
+      assertScopePure(collection, scope, clientId);
+      if (!isListCurrent() || revision !== collectionRevision.current) return;
+      setDocs((previous) => {
+        const merged = new Map((previous ?? []).map((doc) => [doc.id, doc]));
+        for (const doc of collection.items) merged.set(doc.id, doc);
+        return [...merged.values()];
+      });
+      pagesLoaded.current += 1;
+      setNextCursor(collection.next_cursor);
+    } catch {
+      if (isListCurrent() && revision === collectionRevision.current) setPageError(true);
+    } finally {
+      if (isListCurrent() && revision === collectionRevision.current) {
+        morePending.current = false;
+        setLoadingMore(false);
+      }
+    }
+  };
+
+  // Refresh the complete loaded window, following fresh server cursors. Never
+  // collapse a multi-page list to its first page or overwrite a newer load-more.
+  useEffect(() => {
+    if (isMockData || !docs || loadingMore) return;
+    if (!docs.some((d) => ACTIVE_STAGES.has(stageOf(d)))) return;
+    let active = true;
+    const timer = setTimeout(async () => {
+      if (!active || !isListCurrent() || morePending.current) return;
+      const revision = ++collectionRevision.current;
+      const pageCount = pagesLoaded.current;
+      const refreshed = new Map<string, DocumentSummary>();
+      let cursor: string | null = null;
+      try {
+        for (let page = 0; page < pageCount; page += 1) {
+          const collection = await listIngestionDocuments(getAccessToken(), {
+            scopeKind: scope === "shared" ? "service_provider" : "client",
+            clientAccountId: scope === "client" ? clientId : undefined,
+            limit: 100,
+            cursor,
+          });
+          if (!active || !isListCurrent() || revision !== collectionRevision.current) return;
           assertScopePure(collection, scope, clientId);
-          setDocs(collection.items);
-        })
-        .catch(() => {
-          // 静默刷新失败不打断当前视图，下一轮继续
-        });
+          for (const doc of collection.items) refreshed.set(doc.id, doc);
+          cursor = collection.next_cursor;
+          if (!cursor) break;
+        }
+        setDocs([...refreshed.values()]);
+        setNextCursor(cursor);
+      } catch {
+        // Keep the visible window and schedule another quiet attempt.
+        if (active && isListCurrent() && revision === collectionRevision.current) {
+          setPollNonce((value) => value + 1);
+        }
+      }
     }, 5000);
-    return () => clearTimeout(timer);
-  }, [docs, getAccessToken, scope, clientId]);
+    return () => { active = false; clearTimeout(timer); };
+  }, [docs, getAccessToken, scope, clientId, loadingMore, pollNonce, isListCurrent]);
 
   const openUpload = () => {
-    uploadKeyRef.current = crypto.randomUUID();
     setUploadOpen(true);
   };
 
   const closeUpload = () => {
-    if (uploading) {
+    if (uploadFlight.current) {
       message.info("文件上传中，完成后才能关闭此窗口");
       return;
     }
@@ -1347,15 +1451,17 @@ export default function MaterialPanel({
   };
 
   const upload = useCallback(async () => {
-    if (!file) return;
-    const validationError = validatePdfFile(file, isMockData ? null : capabilities);
+    if (!file || !isUploadCurrent() || uploadFlight.current) return;
+    const validationError = validateMaterialFile(file, isMockData ? null : capabilities);
     if (validationError) {
       message.error(validationError);
       return;
     }
-    const values = await form.validateFields();
+    uploadFlight.current = true;
     setUploading(true);
     try {
+      const values = await form.validateFields();
+      if (!isUploadCurrent()) return;
       if (isMockData) {
         await api.uploadMaterial({
           file,
@@ -1364,40 +1470,45 @@ export default function MaterialPanel({
           clientId,
         });
       } else {
-        await createIngestionDocument(
+        const target = {
+          kind: scope === "shared" ? "service_provider" as const : "client" as const,
+          client_account_id: scope === "client" ? (clientId ?? null) : null,
+        };
+        const identity = await pendingUpload(session?.enterprise_id ?? '', user?.profile.sub ?? '', file,
+          {displayName:(values.name || file.name).trim(),scope:target});
+        if (!isUploadCurrent()) return;
+        const result = await createIngestionDocument(
           getAccessToken(),
-          values.name || file.name,
+          (values.name || file.name).trim(),
           file,
-          uploadKeyRef.current ?? crypto.randomUUID(),
+          identity.requestId,
           undefined,
           "unknown",
-          {
-            kind: scope === "shared" ? "service_provider" : "client",
-            client_account_id: scope === "client" ? (clientId ?? null) : null,
-          },
+          target,
         );
+        validateDocumentReceipt(result,file,target);
+        completePendingWrite(identity);
       }
+      if (!isUploadCurrent()) return;
       // 只陈述事实，不伪造进度百分比
       message.success("文件已接收，正在处理");
-      uploadKeyRef.current = null; // 明确成功：允许下次生成新键
       setUploadOpen(false);
       setFile(null);
       form.resetFields();
       setNonce((n) => n + 1);
     } catch (e) {
+      if (!isUploadCurrent()) return;
       const code = (e as { code?: string })?.code;
-      if (code === "IDEMPOTENCY_CONFLICT") {
-        // 明确冲突：更换键并允许重试
-        uploadKeyRef.current = crypto.randomUUID();
-        message.error("请求标识冲突，请重试");
+      if (code === "IDEMPOTENCY_CONFLICT" || code === "P3_IDEMPOTENCY_KEY_CONFLICT") {
+        message.error("上传请求与已有记录冲突，请检查材料列表");
       } else {
         // 未知结果：保持同一幂等键
         message.error(isMockData ? "上传失败，请重试" : userFacingIngestionError(e));
       }
     } finally {
-      setUploading(false);
+      if (isUploadCurrent()) {uploadFlight.current=false;setUploading(false)}
     }
-  }, [api, capabilities, file, form, scope, clientId, getAccessToken]);
+  }, [api, capabilities, file, form, scope, clientId, getAccessToken, isUploadCurrent, session?.enterprise_id, user?.profile.sub]);
 
   if (error) {
     return <ErrorState error={error} onRetry={() => setNonce((n) => n + 1)} />;
@@ -1409,37 +1520,35 @@ export default function MaterialPanel({
     (capabilities !== null &&
       capabilities.upload_enabled &&
       capabilities.scanner.state === "ready" &&
-      pdfCapabilityOf(capabilities) !== null);
+      materialCapabilitiesOf(capabilities).length > 0);
   const uploadBlockReason = !isMockData && capabilities
     ? !capabilities.upload_enabled
       ? reasonCopy(capabilities.disabled_reason_code ?? "SCAN_ENGINE_UNAVAILABLE")
       : capabilities.scanner.state !== "ready"
         ? "安全检查暂不可用，上传已暂停"
-        : !pdfCapabilityOf(capabilities)
-          ? "当前环境未开放 PDF 上传"
+        : materialCapabilitiesOf(capabilities).length === 0
+          ? "当前环境未开放材料上传"
         : null
     : capabilityError
       ? "上传能力读取失败"
       : null;
 
-  const pdfCapability = pdfCapabilityOf(capabilities);
-  const pdfMaxBytes = pdfCapability && capabilities
-    ? Math.min(pdfCapability.max_file_bytes, capabilities.limits.max_file_bytes)
-    : null;
-  const pdfAccept = pdfCapability
-    ? [pdfCapability.content_type, ...pdfCapability.extensions].join(",")
-    : "application/pdf,.pdf";
+  const formats = materialCapabilitiesOf(capabilities);
+  const materialAccept = formats.length
+    ? formats.flatMap((item) => [item.content_type, ...item.extensions]).join(",")
+    : ".pdf,.docx,.xlsx,.jpg,.jpeg";
 
   const uploadButton = uploadAllowed ? (
-    <Button type="primary" onClick={openUpload}>
-      {scope === "shared" ? "上传共享 PDF" : "上传客户 PDF"}
-    </Button>
+    <Space><Button type="primary" onClick={openUpload}>
+      {scope === "shared" ? "上传共享材料" : "上传客户材料"}
+    </Button>{!isMockData && <Button onClick={()=>setBatchOpen(true)}>批量上传</Button>}</Space>
   ) : null;
 
   function uploadModal() {
     return (
+      <>
       <Modal
-        title={scope === "shared" ? "上传共享 PDF" : "上传客户 PDF"}
+        title={scope === "shared" ? "上传共享材料" : "上传客户材料"}
         open={uploadOpen}
         onOk={() => void upload()}
         onCancel={closeUpload}
@@ -1472,10 +1581,10 @@ export default function MaterialPanel({
           </Form.Item>
           <Form.Item label="文件" required>
             <Upload
-              accept={pdfAccept}
+              accept={materialAccept}
               disabled={uploading}
               beforeUpload={(f) => {
-                const validationError = validatePdfFile(f, isMockData ? null : capabilities);
+                const validationError = validateMaterialFile(f, isMockData ? null : capabilities);
                 if (validationError) {
                   setFile(null);
                   message.error(validationError);
@@ -1491,16 +1600,20 @@ export default function MaterialPanel({
                 return true;
               }}
             >
-              <Button disabled={uploading}>选择 PDF</Button>
+              <Button disabled={uploading}>选择文件</Button>
             </Upload>
             <Typography.Text type="secondary" style={{ display: "block", marginTop: 8 }}>
-              {pdfMaxBytes === null
-                ? isMockData ? "仅支持 PDF" : "正在读取 PDF 大小上限"
-                : `仅支持 PDF，单个文件不超过 ${formatBytes(pdfMaxBytes)}`}
+              {capabilities
+                ? formats.map((item) => `${item.extensions.map((value) => value.toUpperCase()).join("/")}：单个文件不超过 ${formatBytes(materialMaxBytes(item, capabilities))}`).join("；")
+                : isMockData ? "支持 PDF、DOCX、Excel、JPEG" : "正在读取允许格式与大小上限"}
             </Typography.Text>
           </Form.Item>
         </Form>
       </Modal>
+      {!isMockData && <BatchMaterialUploadModal open={batchOpen} capabilities={capabilities}
+        scope={{kind:scope==='shared'?'service_provider':'client',client_account_id:scope==='client'?(clientId ?? null):null}}
+        onCancel={()=>setBatchOpen(false)} onReceived={()=>setNonce(n=>n+1)} onInspect={setOpenDocId} />}
+      </>
     );
   }
 
@@ -1565,7 +1678,7 @@ export default function MaterialPanel({
       <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
         {docs === null
           ? "正在加载材料…"
-          : `共 ${counts.total} 份 · 处理中 ${counts.processing} · 待确认 ${counts.pendingConfirm} · 失败 ${counts.failed} · 入库处理完成 ${counts.done}`}
+          : `${nextCursor ? "已加载" : "共"} ${counts.total} 份 · 处理中 ${counts.processing} · 待确认 ${counts.pendingConfirm} · 失败 ${counts.failed} · 入库处理完成 ${counts.done}`}
         {uploadBlockReason ? `（${uploadBlockReason}）` : ""}
       </Typography.Paragraph>
       <Typography.Paragraph type="secondary" style={{ marginTop: -6, marginBottom: 12, fontSize: 13 }}>
@@ -1676,6 +1789,14 @@ export default function MaterialPanel({
             },
           ]}
         />
+      )}
+      {nextCursor && (
+        <div style={{ textAlign: "center", marginTop: 16 }}>
+          {pageError && <Typography.Paragraph type="danger">后续材料加载失败，已加载的材料仍可查看。</Typography.Paragraph>}
+          <Button loading={loadingMore} onClick={() => void loadMore()}>
+            {pageError ? "重试加载更多材料" : "加载更多材料"}
+          </Button>
+        </div>
       )}
       {openDocId && (
         <DocumentDrawer

@@ -64,6 +64,12 @@ def main() -> int:
         )
 
         dispatchers.append(dispatch_pending_ingestion_deliveries)
+    from .features.evidence.repository import native_extraction_enabled
+
+    if native_extraction_enabled():
+        from .features.evidence.dispatcher import dispatch_pending_native_jobs
+
+        dispatchers.append(dispatch_pending_native_jobs)
     while not _STOP.is_set():
         state = "ok"
         for dispatch in dispatchers:

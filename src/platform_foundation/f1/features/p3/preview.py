@@ -177,6 +177,19 @@ def build_preview(kind: str, file_obj: BinaryIO) -> PreviewResult:
     return result
 
 
+def content_addressed_preview(task_id, result: PreviewResult) -> PreviewResult:
+    """A delayed write can only replace an object with identical bytes."""
+    from dataclasses import replace
+    import uuid
+    units = tuple(replace(unit, id=str(uuid.uuid5(task_id,
+        f'{unit.ordinal}:{unit.content_type}:{unit.sha256}'))) for unit in result.units)
+    payload = {'kind': result.kind, 'units': [_unit_manifest(unit) for unit in units]}
+    encoded = _canonical_preview(payload)
+    if result.kind != 'image' and len(encoded) + sum(len(unit.content) for unit in units) > MAX_PREVIEW_BYTES:
+        raise PreviewFailure('P3_PREVIEW_OUTPUT_LIMIT')
+    return replace(result, payload=payload, units=units, sha256=hashlib.sha256(encoded).hexdigest())
+
+
 def _unit_manifest(unit: PreviewUnitArtifact) -> dict[str, object]:
     return {
         "id": unit.id,
@@ -668,11 +681,13 @@ def _jpeg_preview(file_obj: BinaryIO) -> tuple[dict[str, int], bytes]:
         or width * height > MAX_JPEG_PIXELS
     ):
         raise PreviewFailure("P3_JPEG_PIXEL_LIMIT")
-    sanitized = _strip_jpeg_metadata(data)
-    sanitized_width, sanitized_height = _jpeg_dimensions(sanitized)
-    if (sanitized_width, sanitized_height) != (width, height):
-        raise PreviewFailure("P3_JPEG_CORRUPT")
-    return {"image_width": width, "image_height": height}, sanitized
+    from ..material_intake.jpeg_renderer import JpegRenderError, render_jpeg
+    try:
+        rendered = render_jpeg(data, expected_sha256=hashlib.sha256(data).hexdigest())
+    except JpegRenderError as error:
+        reason = "P3_JPEG_PIXEL_LIMIT" if str(error) == "JPEG_PIXEL_LIMIT" else "P3_JPEG_CORRUPT"
+        raise PreviewFailure(reason) from None
+    return {"image_width": rendered.width, "image_height": rendered.height}, rendered.image
 
 
 def _strip_jpeg_metadata(data: bytes) -> bytes:

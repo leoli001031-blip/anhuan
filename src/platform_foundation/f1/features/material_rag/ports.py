@@ -27,12 +27,14 @@ class ReleasedUnitRecord:
     document_record_id: uuid.UUID
     document_version_id: uuid.UUID
     source_sha256: str
-    page_number: int
+    page_number: int | None
     body_sha256: str
     body: str
     scope_kind: ScopeKind
     document_name: str
     version_number: int
+    locator: dict | None = None
+    evidence_revision_id: uuid.UUID | None = None
 
 
 class MaterialRagRepository(Protocol):

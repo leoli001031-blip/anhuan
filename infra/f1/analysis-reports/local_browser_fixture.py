@@ -5,7 +5,7 @@ the default f1_0014 compose, never creates realm users or passwords, and
 never writes real personal data.
 
 Requires dual local flags, pgint closed-set identity, and alembic head
-exactly f1_0023. Reuses realm subjects tenant-a (provider A) and invitee
+exactly f1_0044. Reuses realm subjects tenant-a (provider A) and invitee
 (client B). employee remains enterprise A / plant_admin and is never
 rewritten. Extra memberships and wrong roles fail-closed; this fixture
 never deletes memberships or overwrites roles.
@@ -57,7 +57,11 @@ PROVIDER_SCOPE_FALLBACK_ID = uuid.uuid5(
     FIXTURE_NS, "provider-scope:enterprise-a"
 )
 CRM_DISPLAY_NAME = "Local analysis-report audience B"
-PARSER_VERSION = "arfix1"
+from platform_foundation.f1.features.material_intake.ocr import (
+    PDF_TEXT_PARSER_VERSION, extract_pdf_text_pages,
+)
+
+PARSER_VERSION = PDF_TEXT_PARSER_VERSION
 PROVIDER_MATERIAL_LABEL = "arfix-provider"
 CLIENT_MATERIAL_LABEL = "arfix-client"
 
@@ -68,17 +72,17 @@ _DISPLAY_TITLES = {
 }
 _MATERIAL_BODIES = {
     PROVIDER_MATERIAL_LABEL: (
-        "服务商共享制度要求每月检查污染治理设施，并保存运行记录。"
+        "Inspect pollution treatment equipment monthly. Keep the inspection date, operating condition, maintenance owner and incident resolution in the operating log."
     ),
     CLIENT_MATERIAL_LABEL: (
-        "企业废气治理采用活性炭吸附装置，运行台账每月归档。"
+        "The factory treats exhaust gas with activated carbon adsorption. Archive operating logs monthly, including replacement dates, carbon usage, inspector and incident response."
     ),
 }
 
 PROJECT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 PROJECT_NAME_RE = re.compile(r"^anhuan-ar-pgint-([0-9a-f]{12})$")
 DATABASE_RE = re.compile(r"^f1_arpg_([0-9a-f]{12})$")
-CONTROL_DIR_RE = re.compile(r"^/private/tmp/anhuan-ar-pgint-([0-9a-f]{12})$")
+CONTROL_DIR_RE = re.compile(r"^/(?:private/)?tmp/anhuan-ar-pgint-([0-9a-f]{12})$")
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"})
 BOOTSTRAP_ROLE = "f0d_bootstrap"
 
@@ -192,7 +196,7 @@ def _preflight_target_identity(
         "SELECT string_agg(version_num, ',' ORDER BY version_num), count(*) "
         "FROM f1.alembic_version"
     ).fetchone()
-    if head is None or tuple(head) != ("f1_0026", 1):
+    if head is None or tuple(head) != ("f1_0044", 1):
         raise RuntimeError("LOCAL_REPORT_FIXTURE_HEAD_MISMATCH")
 
 
@@ -448,6 +452,49 @@ def _ensure_client_scope(connection: psycopg.Connection) -> uuid.UUID:
     return CLIENT_SCOPE_ID
 
 
+def _synthetic_material_source(label: str) -> tuple[bytes, str]:
+    """Produce a real one-page PDF and extract it with the current parser.
+
+    This is pre-indexed synthetic workflow data, not an upload/scan test.
+    Parser identity and source hash come from actual parsing, never relabelled
+    hand-written evidence. Optional OCR/cloud paths are forbidden here.
+    """
+    import io
+    import textwrap
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    # Explicit simple visible text keeps this workflow fixture independent of
+    # OCR availability. Chinese/embedded-font quality has a separate OCR gate.
+    writer = PdfWriter()
+    page = writer.add_blank_page(620, 800)
+    font = DictionaryObject({NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica")})
+    page[NameObject("/Resources")] = DictionaryObject({NameObject("/Font"):
+        DictionaryObject({NameObject("/F1"): writer._add_object(font)})})
+    lines = [label, *textwrap.wrap(_MATERIAL_BODIES[label], width=72)]
+    operations = []
+    for ordinal, line in enumerate(lines):
+        escaped = line.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+        operations.append(f"BT /F1 12 Tf 40 {740 - ordinal * 26} Td ({escaped}) Tj ET")
+    content = DecodedStreamObject()
+    content.set_data("\n".join(operations).encode("ascii"))
+    page[NameObject("/Contents")] = writer._add_object(content)
+    output = io.BytesIO()
+    writer.write(output)
+    source = output.getvalue()
+
+    def no_ocr(*_args, **_kwargs):
+        raise RuntimeError("LOCAL_REPORT_FIXTURE_UNEXPECTED_OCR")
+
+    pages = extract_pdf_text_pages(source, ocr_pages=no_ocr)
+    if (len(pages) != 1 or pages[0].parser_backend != PARSER_VERSION
+            or pages[0].ocr_required or not pages[0].text.strip()):
+        raise RuntimeError("LOCAL_REPORT_FIXTURE_EXTRACTION_INVALID")
+    return source, pages[0].text
+
+
 def _insert_synthetic_unit(
     connection: psycopg.Connection,
     *,
@@ -460,11 +507,11 @@ def _insert_synthetic_unit(
     task_id = _stable_material_id("task", label)
     version_id = _stable_material_id("version", label)
     unit_id = _stable_material_id("unit", label)
-    source_sha = hashlib.sha256(f"arfix|{label}|{local_seed.ENTERPRISE_A}".encode()).hexdigest()
+    source, body = _synthetic_material_source(label)
+    source_sha = hashlib.sha256(source).hexdigest()
     object_key = f"arfix/{label}"
     # 展示名面向客户可见，用业务化标题；内部 label/object_key/散列保持原样。
     title = _DISPLAY_TITLES[label]
-    body = _MATERIAL_BODIES[label]
     body_sha = hashlib.sha256(body.encode("utf-8")).hexdigest()
     aad = unit_aad_for_identity(
         enterprise_id=local_seed.ENTERPRISE_A,
@@ -482,9 +529,9 @@ def _insert_synthetic_unit(
     connection.execute(
         "INSERT INTO f1.document "
         "(id,enterprise_id,object_key,filename,size,content_type,status,"
-        "knowledge_scope_id) VALUES (%s,%s,%s,%s,32,'application/pdf','done',%s) "
+        "knowledge_scope_id) VALUES (%s,%s,%s,%s,%s,'application/pdf','done',%s) "
         "ON CONFLICT (id) DO NOTHING",
-        (document_id, local_seed.ENTERPRISE_A, object_key, f"{label}.pdf", scope_id),
+        (document_id, local_seed.ENTERPRISE_A, object_key, f"{label}.pdf", len(source), scope_id),
     )
     connection.execute(
         "INSERT INTO f1.document_record "
@@ -528,10 +575,7 @@ def _insert_synthetic_unit(
         "document_version_id,source_sha256,page_number,ordinal,parser_version,"
         "body_ciphertext,body_sha256,body_aad_sha256) "
         "VALUES (%s,%s,%s,%s,%s,%s,1,1,%s,%s,%s,%s) "
-        "ON CONFLICT (id) DO UPDATE SET "
-        "body_ciphertext=EXCLUDED.body_ciphertext,"
-        "body_sha256=EXCLUDED.body_sha256,"
-        "body_aad_sha256=EXCLUDED.body_aad_sha256",
+        "ON CONFLICT (id) DO NOTHING",
         (
             unit_id,
             local_seed.ENTERPRISE_A,
@@ -546,11 +590,12 @@ def _insert_synthetic_unit(
         ),
     )
     stored = connection.execute(
-        "SELECT body_ciphertext,body_sha256,body_aad_sha256 "
+        "SELECT body_ciphertext,body_sha256,body_aad_sha256,source_sha256,parser_version "
         "FROM f1.material_rag_unit WHERE id=%s",
         (unit_id,),
     ).fetchone()
-    if stored is None or str(stored[1]) != body_sha:
+    if (stored is None or str(stored[1]) != body_sha
+            or str(stored[3]) != source_sha or str(stored[4]) != PARSER_VERSION):
         raise RuntimeError("LOCAL_REPORT_FIXTURE_UNIT_MISMATCH")
     try:
         restored = decrypt_text(bytes(stored[0]), aad, str(stored[2]))

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Drawer, Typography } from "antd";
 import type { CitationV1, SectionV1 } from "../adapters/types";
 import { SECTION_ORDER } from "../adapters/types";
+import OriginalEvidenceView from './OriginalEvidenceView';
 
 export function formatDateTime(iso: string): string {
   // ISO → "2026-08-21 10:00"，不做时区转换以外的任何加工
@@ -58,7 +59,7 @@ export default function ReportDocument({
                       [{i + 1}]
                     </button>{" "}
                     <Typography.Text>
-                      {c.documentName} · 第 {c.pageNumber} 页（第 {c.versionNumber} 版）
+                      {c.documentName} · {c.location ?? `第 ${c.pageNumber} 页`}（第 {c.versionNumber} 版）
                     </Typography.Text>
                     <div>
                       <Typography.Text type="secondary" style={{ fontSize: 13 }}>
@@ -83,9 +84,11 @@ export default function ReportDocument({
               <Typography.Text strong>{open.documentName}</Typography.Text>
             </Typography.Paragraph>
             <Typography.Paragraph type="secondary">
-              第 {open.versionNumber} 版 · 第 {open.pageNumber} 页
+              第 {open.versionNumber} 版 · {open.location ?? `第 ${open.pageNumber} 页`}
             </Typography.Paragraph>
             <Typography.Paragraph>{open.excerpt}</Typography.Paragraph>
+            <OriginalEvidenceView key={open.citation_id} target={{citationId:open.citation_id,documentVersionId:open.document_version_id,
+              locator:open.locator ?? {schema_version:2,kind:'pdf_page',page_number:open.pageNumber}}} />
           </div>
         )}
       </Drawer>

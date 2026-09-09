@@ -4,29 +4,27 @@ The adapter is opt-in through ``F1_MATERIAL_CLOUD_OCR_PROVIDER``
 (``glm_vision`` for Zhipu GLM, ``ark_vision`` for VolcEngine Ark) and reads
 its bearer key from a 0600 regular-file secret.  It is fail-closed
 everywhere: a missing or wrongly permissioned key file, a missing model id, a
-non-HTTPS base URL, a page whose image cannot be extracted as JPEG, and any
+non-HTTPS base URL, a page whose visible layout cannot be rendered as JPEG, and any
 transport failure all produce fixed-code ``OCR_UNAVAILABLE`` page results, so
 callers keep ``OCR_REQUIRED`` semantics instead of partial success.  The local
 FIFO runtime remains the authoritative engine whenever it is enabled; the two
 providers are never silently mixed in one process.
 
 OCR plaintext exists only in returned in-memory values and is persisted by the
-caller through the authenticated encrypted checkpoint envelope.  The API key is
+caller through an authenticated encrypted checkpoint or task-bound cache envelope.  The API key is
 read from a 0600 regular file and never appears in errors, logs, or request
-echoes.  Page images are bounded, and request/response byte buffers are zeroed
-after use.  Python ``str`` content returned by the API cannot be zeroed in
-place; callers must treat it as customer-confidential, exactly like FIFO OCR
-text.
+echoes. Page images are bounded and mutable request buffers are zeroed after
+use. Immutable image/response bytes and Python strings cannot be zeroed in
+place; callers must treat them as customer-confidential, exactly like FIFO OCR
+text. Child processes retain no plaintext files and exit after each exchange.
 """
 from __future__ import annotations
 
 import base64
 import hashlib
-import io
 import json
 import math
 import os
-import ssl
 import stat
 import time
 from collections.abc import Callable, Iterable
@@ -34,17 +32,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 from urllib.error import HTTPError, URLError
-from urllib.request import (
-    HTTPRedirectHandler,
-    HTTPSHandler,
-    ProxyHandler,
-    Request,
-    build_opener,
-)
-
-from pypdf import PdfReader
 
 from .ocr import (
+    CLOUD_OCR_PARSER_BACKEND,
     MAX_OCR_PAGE_TEXT_CHARACTERS,
     MAX_OCR_PAGES_PER_DOCUMENT,
     DEFAULT_OCR_PAGES_PER_DOCUMENT,
@@ -53,15 +43,20 @@ from .ocr import (
     _MAX_OCR_TOTAL_TIMEOUT_SECONDS,
     OCR_PARSER_BACKEND,
     LocalOcrConfig,
+    LocalOcrError,
     OcrPageResult,
     _normalize_embedded_text,
     _read_source,
     ocr_pdf_pages,
 )
+from .cloud_ocr_transport import bounded_https_exchange
+from .pdf_renderer import (
+    PdfRenderError, render_pdf_page, PAGE_TIMEOUT_SECONDS,
+    TOTAL_RENDER_TIMEOUT_SECONDS,
+)
 from ..p3.contracts import MAX_PDF_PAGES
 
 
-CLOUD_OCR_PARSER_BACKEND = "cloud-vision-chat-1"
 CLOUD_OCR_PROVIDERS = frozenset(("ark_vision", "glm_vision"))
 _DEFAULT_CLOUD_OCR_BASE_URLS = {
     "ark_vision": "https://ark.cn-beijing.volces.com/api/plan/v3",
@@ -71,9 +66,6 @@ DEFAULT_CLOUD_OCR_BASE_URL = _DEFAULT_CLOUD_OCR_BASE_URLS["ark_vision"]
 CLOUD_OCR_TRANSPORT = Callable[
     [str, dict[str, str], bytearray, float], bytes
 ]
-# Ark rejects request bodies beyond roughly 10 MiB; keep a stricter margin so
-# the bounded page image size stays the only variable component.
-_MAX_PAGE_IMAGE_BYTES = 6 * 1024 * 1024
 MAX_CLOUD_OCR_RESPONSE_BYTES = 4 * 1024 * 1024
 _TRUE_VALUES = frozenset(("1", "true", "yes", "on"))
 
@@ -84,13 +76,6 @@ _CLOUD_OCR_PROMPT = (
 )
 
 CloudOcrCapabilityState = Literal["disabled", "unavailable", "ready"]
-
-
-class _NoRedirectHandler(HTTPRedirectHandler):
-    """Refuse redirects so page images can never leave the configured origin."""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise HTTPError(newurl, code, "CLOUD_OCR_REDIRECT_REFUSED", headers, fp)
 
 
 class CloudOcrError(RuntimeError):
@@ -321,123 +306,16 @@ def _cloud_fallback_result(
     )
 
 
-def _tls_context() -> ssl.SSLContext:
-    """A verifying TLS context rooted in certifi when the bundle is present.
-
-    Some host Pythons ship without system CA roots; the pinned ``certifi``
-    dependency provides them.  Verification is never disabled.
-    """
-    context = ssl.create_default_context()
-    try:
-        import certifi
-    except ImportError:
-        return context
-    try:
-        return ssl.create_default_context(cafile=certifi.where())
-    except (OSError, ssl.SSLError):
-        return context
-
-
-def _default_transport(
-    url: str, headers: dict[str, str], body: bytearray, timeout: float
-) -> bytes:
-    request = Request(
-        url,
-        data=bytes(body),
-        headers=headers,
-        method="POST",
-    )
-    opener = build_opener(
-        _NoRedirectHandler,
-        ProxyHandler({}),
-        HTTPSHandler(context=_tls_context()),
-    )
-    with opener.open(request, timeout=timeout) as response:  # noqa: S310
-        if response.status != 200:
-            raise CloudOcrError("OCR_UNAVAILABLE")
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = response.read(64 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > MAX_CLOUD_OCR_RESPONSE_BYTES:
-                raise CloudOcrError("OCR_UNAVAILABLE")
-            chunks.append(chunk)
-    return b"".join(chunks)
-
-
-def _page_jpegs(
-    reader: PdfReader, page: object
-) -> tuple[list[bytes], bool]:
-    """Return every distinct DCTDecode image on the page, largest first.
-
-    Returns ``(images, has_uncoverable)``.  ``has_uncoverable`` is True when
-    the page contains at least one image XObject this adapter cannot process
-    (Flate, CCITT, JPX, bad dimensions, oversized stream).  The caller must
-    fail closed on such pages — sending only the DCTDecode subset and
-    reporting the page as fully recognized would silently drop content.
-    A page with no image XObjects at all returns ``([], False)`` so the
-    caller falls through to the standard unavailable path.
-    """
-    try:
-        resources = page["/Resources"]
-        if resources is None:
-            return [], False
-        xobjects = resources.get("/XObject")
-        if xobjects is None:
-            return [], False
-        found: list[tuple[int, bytes]] = []
-        seen_hashes: set[bytes] = set()
-        non_image_count = 0
-        for reference in xobjects.values():
-            image = (
-                reference.get_object()
-                if hasattr(reference, "get_object")
-                else reference
-            )
-            try:
-                if image.get("/Subtype") != "/Image":
-                    non_image_count += 1
-                    continue
-                filters = image.get("/Filter")
-                if isinstance(filters, list):
-                    normalized = tuple(
-                        str(item) for item in filters
-                    )
-                else:
-                    normalized = (str(filters),)
-                if normalized != ("/DCTDecode",):
-                    non_image_count += 1
-                    continue
-                width = int(image.get("/Width", 0))
-                height = int(image.get("/Height", 0))
-                if width <= 0 or height <= 0:
-                    non_image_count += 1
-                    continue
-                data = image.get_data()
-            except Exception:
-                non_image_count += 1
-                continue
-            if not isinstance(data, bytes) or not 1 <= len(data) <= _MAX_PAGE_IMAGE_BYTES:
-                non_image_count += 1
-                continue
-            digest = hashlib.sha256(data).digest()
-            if digest in seen_hashes:
-                continue
-            seen_hashes.add(digest)
-            found.append((width * height, data))
-        found.sort(key=lambda item: item[0], reverse=True)
-        return [data for _, data in found], non_image_count > 0
-    except Exception:
-        return [], False
+def _default_transport(url: str, headers: dict[str, str], body: bytearray, timeout: float) -> bytes:
+    return bounded_https_exchange(url, headers, body, timeout)
 
 
 def _chat_response_text(raw: bytes, dialect: str = "chat") -> str:
     try:
         value = json.loads(raw.decode("utf-8", "strict"))
         if dialect == "anthropic":
+            if value.get("stop_reason") != "end_turn":
+                raise ValueError("incomplete")
             blocks = value["content"]
             if not isinstance(blocks, list) or not blocks:
                 raise ValueError("content")
@@ -452,6 +330,8 @@ def _chat_response_text(raw: bytes, dialect: str = "chat") -> str:
             choices = value["choices"]
             if not isinstance(choices, list) or len(choices) != 1:
                 raise ValueError("choices")
+            if choices[0].get("finish_reason") != "stop":
+                raise ValueError("incomplete")
             message = choices[0]["message"]
             content = message["content"]
             if not isinstance(content, str):
@@ -459,7 +339,13 @@ def _chat_response_text(raw: bytes, dialect: str = "chat") -> str:
             text = content
     except Exception:
         raise CloudOcrError("OCR_UNAVAILABLE") from None
-    return _normalize_embedded_text(text)
+    if len(text) > MAX_OCR_PAGE_TEXT_CHARACTERS:
+        raise CloudOcrError("OCR_UNAVAILABLE")
+    try:
+        text.encode("utf-8", "strict")
+        return _normalize_embedded_text(text)
+    except (LocalOcrError, UnicodeError):
+        raise CloudOcrError("OCR_UNAVAILABLE") from None
 
 
 def _dialect_endpoint(dialect: str) -> tuple[str, dict[str, str]]:
@@ -553,6 +439,8 @@ def cloud_ocr_pdf_pages(
     """
     active = config or CloudOcrConfig.from_environment()
     active_transport = transport or _default_transport
+    from ... import ocr_cache
+    from . import pdf_renderer, ocr
     try:
         requested = tuple(sorted(set(page_numbers)))
     except (TypeError, ValueError):
@@ -577,22 +465,12 @@ def cloud_ocr_pdf_pages(
             for page in requested
         )
 
+    document_deadline = time.monotonic() + active.total_timeout_seconds
+    render_budget = TOTAL_RENDER_TIMEOUT_SECONDS
     body = _read_source(source)
     source_sha256 = hashlib.sha256(body).hexdigest()
     if expected_sha256 is not None and source_sha256 != expected_sha256:
         raise CloudOcrError("OCR_SOURCE_IDENTITY_MISMATCH")
-    try:
-        reader = PdfReader(io.BytesIO(body), strict=True)
-    except Exception:
-        raise CloudOcrError("OCR_SOURCE_INVALID") from None
-    if reader.is_encrypted:
-        raise CloudOcrError("OCR_SOURCE_ENCRYPTED")
-    page_count = len(reader.pages)
-    if not 1 <= page_count <= MAX_PDF_PAGES or any(
-        page > page_count for page in requested
-    ):
-        raise CloudOcrError("OCR_PAGE_INVALID")
-
     try:
         api_key = _read_api_key(active.api_key_file)  # type: ignore[arg-type]
     except CloudOcrError:
@@ -610,7 +488,6 @@ def cloud_ocr_pdf_pages(
         "Content-Type": "application/json",
         **extra_headers,
     }
-    document_deadline = time.monotonic() + active.total_timeout_seconds
     results: list[OcrPageResult] = []
     for index, page_number in enumerate(requested):
         if index >= active.max_pages:
@@ -636,100 +513,60 @@ def cloud_ocr_pdf_pages(
                 )
             )
             continue
-        images, has_uncoverable = _page_jpegs(
-            reader, reader.pages[page_number - 1]
-        )
-        result: OcrPageResult | None = None
-        if images and has_uncoverable:
-            # The page mixes processable JPEGs with images this adapter
-            # cannot send (Flate/CCITT/JPX).  Recognizing only the JPEG
-            # subset would silently drop the rest; fail the whole page.
-            result = _cloud_fallback_result(
-                page_number,
-                state="unavailable",
-                reason_code="OCR_UNAVAILABLE",
+        result = _cloud_fallback_result(page_number, state="unavailable", reason_code="OCR_UNAVAILABLE")
+        payload = bytearray()
+        render_started = time.monotonic()
+        try:
+            image = render_pdf_page(
+                body, page_number, required_page=max(requested),
+                timeout=min(remaining, render_budget, PAGE_TIMEOUT_SECONDS),
             )
-            images = ()
-        if images:
-            texts: list[str] = []
-            total_characters = 0
-            combined_length = 0
-            ok = True
-            for image in images:
-                payload = _build_page_request(
-                    dialect=active.dialect, model=active.model, image=image
-                )
-                try:
-                    raw = active_transport(
-                        url,
-                        headers,
-                        payload,
-                        min(
-                            remaining,
-                            active.request_timeout_seconds,
-                        ),
-                    )
-                    if not 1 <= len(raw) <= MAX_CLOUD_OCR_RESPONSE_BYTES:
-                        raise CloudOcrError("OCR_UNAVAILABLE")
-                    text = _chat_response_text(raw, active.dialect)
-                except (CloudOcrError, HTTPError, URLError, OSError, ValueError):
-                    ok = False
-                finally:
-                    payload[:] = b"\0" * len(payload)
-                    payload.clear()
-                if not ok:
-                    break
-                characters = sum(
-                    not character.isspace() for character in text
-                )
-                if characters > MAX_OCR_PAGE_TEXT_CHARACTERS:
-                    ok = False
-                    break
-                texts.append(text)
-                total_characters += characters
+            render_budget -= time.monotonic() - render_started
+            remaining = document_deadline - time.monotonic()
+            if remaining <= 0 or render_budget <= 0:
+                raise CloudOcrError("OCR_UNAVAILABLE")
+            # Exactly one complete visible page goes to the model. Native
+            # text may be hidden/clipped, and is never appended separately.
+            payload = _build_page_request(dialect=active.dialect, model=active.model, image=image)
+            ticket = ocr_cache.Ticket(source_sha256, page_number, ocr_cache.cloud_identity(
+                active, payload, CLOUD_OCR_PARSER_BACKEND,
+                ocr_cache.code_identity(__file__, pdf_renderer.__file__, ocr.__file__)))
+            cached = ticket.load()
+            if cached is None:
                 remaining = document_deadline - time.monotonic()
                 if remaining <= 0:
-                    ok = False
-                    break
-            if ok:
-                combined = "\n".join(texts)
-                # Per-image checks cap each response, but the merged page
-                # text also has a downstream checkpoint limit.  Reject
-                # before marking applied, not after the DB rejects it.
-                if len(combined) > MAX_OCR_PAGE_TEXT_CHARACTERS:
-                    ok = False
-            if ok and total_characters >= 40:
-                combined = "\n".join(texts)
-                result = OcrPageResult(
-                    page_number=page_number,
-                    text=combined,
-                    status="applied",
-                    reason_code="OCR_APPLIED",
-                    ocr_applied=True,
-                    character_count=total_characters,
-                    parser_backend=CLOUD_OCR_PARSER_BACKEND,
-                    source_unit_id=_source_unit_id(
-                        source_sha256, page_number, CLOUD_OCR_PARSER_BACKEND
-                    ),
-                )
-            elif ok and total_characters < 40:
-                result = OcrPageResult(
-                    page_number=page_number,
-                    text="\n".join(texts),
-                    status="insufficient_text",
-                    reason_code="OCR_OUTPUT_INSUFFICIENT",
-                    ocr_applied=False,
-                    character_count=total_characters,
-                    parser_backend=CLOUD_OCR_PARSER_BACKEND,
-                )
-            # If not ok, result stays None and falls through to the
-            # fail-closed fallback below.
-        if result is None:
-            result = _cloud_fallback_result(
-                page_number,
-                state="unavailable",
-                reason_code="OCR_UNAVAILABLE",
+                    raise CloudOcrError('OCR_UNAVAILABLE')
+                raw = active_transport(url, headers, payload, min(remaining, active.request_timeout_seconds))
+                if time.monotonic() >= document_deadline or not 1 <= len(raw) <= MAX_CLOUD_OCR_RESPONSE_BYTES:
+                    raise CloudOcrError("OCR_UNAVAILABLE")
+                text = _chat_response_text(raw, active.dialect)
+                if sum(not c.isspace() for c in text) >= 40:
+                    text = ocr_cache.cached_text(ticket.save({'text': text}), minimum=40)
+            else:
+                text = ocr_cache.cached_text(cached, minimum=40)
+            if time.monotonic() >= document_deadline:
+                raise CloudOcrError('OCR_UNAVAILABLE')
+            if len(text) > MAX_OCR_PAGE_TEXT_CHARACTERS:
+                raise CloudOcrError("OCR_UNAVAILABLE")
+            characters = sum(not character.isspace() for character in text)
+            applied = characters >= 40
+            result = OcrPageResult(
+                page_number=page_number, text=text,
+                status="applied" if applied else "insufficient_text",
+                reason_code="OCR_APPLIED" if applied else "OCR_OUTPUT_INSUFFICIENT",
+                ocr_applied=applied, character_count=characters,
+                parser_backend=CLOUD_OCR_PARSER_BACKEND,
+                source_unit_id=_source_unit_id(source_sha256, page_number, CLOUD_OCR_PARSER_BACKEND) if applied else None,
             )
+        except PdfRenderError as error:
+            render_budget -= time.monotonic() - render_started
+            if str(error) in {"OCR_SOURCE_INVALID", "OCR_SOURCE_ENCRYPTED", "OCR_PAGE_INVALID"}:
+                raise CloudOcrError(str(error)) from None
+        except (CloudOcrError, ocr_cache.OcrCacheError, HTTPError, URLError, OSError, ValueError):
+            pass
+        finally:
+            payload[:] = b"\0" * len(payload)
+            payload.clear()
         results.append(result)
         if result.ocr_applied and completed_page_callback is not None:
             # Mirrors the FIFO contract: a failed durable checkpoint write must

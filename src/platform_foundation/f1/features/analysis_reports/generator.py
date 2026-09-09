@@ -12,6 +12,7 @@ from typing import Iterable
 
 from .contracts import (
     EligibleSource,
+    EvidenceUnit,
     FrozenSourceSet,
     GeneratedCitation,
     GeneratedReport,
@@ -67,7 +68,8 @@ _RISK_TERMS = (
 @dataclass(frozen=True, slots=True)
 class _EvidenceSentence:
     source: EligibleSource
-    page_number: int
+    page_number: int | None
+    unit: EvidenceUnit
     ordinal: int
     text: str
     topics: tuple[str, ...]
@@ -99,8 +101,6 @@ def _classify(text: str) -> tuple[tuple[str, ...], bool]:
 def _evidence_sentences(frozen: FrozenSourceSet) -> list[_EvidenceSentence]:
     sentences: list[_EvidenceSentence] = []
     for source in frozen.sources:
-        if source.page_number < 1:
-            raise GenerationFailed("REPORT_CITATION_PAGE_INVALID")
         if not _HEX64.fullmatch(source.source_sha256):
             raise GenerationFailed("REPORT_SOURCE_HASH_INVALID")
 
@@ -108,9 +108,9 @@ def _evidence_sentences(frozen: FrozenSourceSet) -> list[_EvidenceSentence]:
         evidence_units = getattr(source, "evidence_units", ())
         for unit in sorted(
             evidence_units,
-            key=lambda item: (int(item.page_number), int(item.ordinal)),
+            key=lambda item: (item.page_number or 0, item.ordinal),
         ):
-            if unit.page_number < 1 or unit.ordinal < 1:
+            if unit.ordinal < 1:
                 raise GenerationFailed("REPORT_EVIDENCE_POSITION_INVALID")
             if not _HEX64.fullmatch(unit.body_sha256):
                 raise GenerationFailed("REPORT_EVIDENCE_HASH_INVALID")
@@ -122,6 +122,7 @@ def _evidence_sentences(frozen: FrozenSourceSet) -> list[_EvidenceSentence]:
                     _EvidenceSentence(
                         source=source,
                         page_number=unit.page_number,
+                        unit=unit,
                         ordinal=unit.ordinal,
                         text=part,
                         topics=topics,
@@ -156,7 +157,7 @@ def _select_citations(
 
     def add(candidate: _EvidenceSentence) -> None:
         source_id = candidate.source.document_version_id
-        key = (source_id, candidate.page_number, candidate.text)
+        key = (source_id, candidate.unit.location, candidate.text)
         if key not in selected_keys and len(selected) < citation_limit:
             selected.append(candidate)
             selected_keys.add(key)
@@ -183,7 +184,7 @@ def _citation_number(
     for index, item in enumerate(selected, start=1):
         if (
             item.source.document_version_id == source_id
-            and item.page_number == candidate.page_number
+            and item.unit.location == candidate.unit.location
             and item.text == candidate.text
         ):
             return index
@@ -260,12 +261,14 @@ class EvidenceDrivenReportGenerator:
                 version_number=item.source.version_number,
                 page_number=item.page_number,
                 excerpt=item.text,
+                locator=item.unit.locator, evidence_revision_id=item.unit.evidence_revision_id,
+                fragment_id=item.unit.fragment_id, evidence_body_sha256=item.unit.body_sha256 if item.unit.locator is not None else None,
             )
             for item in selected
         )
         provider_sources = [s for s in frozen.sources if s.scope_kind == "service_provider"]
         client_sources = [s for s in frozen.sources if s.scope_kind == "client"]
-        pages = {(item.source.document_version_id, item.page_number) for item in sentences}
+        pages = {(item.source.document_version_id, item.unit.location) for item in sentences}
         topic_labels = [
             label
             for label, _terms in _TOPICS
@@ -279,7 +282,7 @@ class EvidenceDrivenReportGenerator:
         bodies = {
             "source_scope": (
                 f"本次仅分析已冻结的服务方材料 {len(provider_sources)} 份、"
-                f"本企业材料 {len(client_sources)} 份，共 {len(pages)} 个有文本证据的页面。"
+                f"本企业材料 {len(client_sources)} 份，共 {len(pages)} 个有文本证据的位置。"
                 f"材料范围：{source_names}。"
             ),
             "status_summary": (
@@ -291,7 +294,7 @@ class EvidenceDrivenReportGenerator:
             "remediation": _remediation_body(selected),
             "citations": "\n".join(
                 f"[证据{index}] 《{citation.document_name}》v{citation.version_number} "
-                f"第{citation.page_number}页：{citation.excerpt}"
+                f"{citation.location}：{citation.excerpt}"
                 for index, citation in enumerate(citations, start=1)
             ),
             "usage_boundary": (

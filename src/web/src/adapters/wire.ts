@@ -1,3 +1,4 @@
+import { citationPosition } from "./evidenceLocation";
 // Frozen-contract wire parsers. Missing required fields fail closed;
 // callers must not invent defaults.
 import { ApiError } from "./errors";
@@ -16,7 +17,7 @@ import type {
   ReportStatus,
   SectionKey,
   SectionV1,
-  SessionAccessV1,
+  SessionAccessV2,
   VersionDetailV1,
   VersionHistoryItemV1,
 } from "./types";
@@ -31,7 +32,7 @@ import {
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SECTION_KEYS = new Set<SectionKey>(SECTION_ORDER.map((item) => item.key));
-const PRODUCT_ROLES = new Set<ProductRole>(["provider_admin", "client_user"]);
+const PRODUCT_ROLES = new Set<ProductRole>(["provider_admin", "provider_consultant", "provider_reviewer", "client_user", "technical_admin", "unconfigured"]);
 const REPORT_STATUSES = new Set<ReportStatus>([
   "empty",
   "queued",
@@ -144,16 +145,21 @@ export function parseCitation(raw: unknown): CitationV1 {
     document_version_id: reqUuid(row, "document_version_id"),
     documentName: reqString(row, "document_name"),
     versionNumber: reqInt(row, "version_number", 1),
-    pageNumber: reqInt(row, "page_number", 1),
+    ...(() => {try {return citationPosition(row)} catch {return wireError("CONTRACT_FIELD_MISSING")}})(),
     excerpt: reqString(row, "excerpt"),
   };
 }
 
-export function parseSessionAccess(raw: unknown): SessionAccessV1 {
+export function parseSessionAccess(raw: unknown): SessionAccessV2 {
   const row = asRecord(raw, "CONTRACT_FIELD_MISSING");
   reqConst(row, "schema", SESSION_SCHEMA);
   const productRole = reqString(row, "product_role");
   if (!PRODUCT_ROLES.has(productRole as ProductRole)) {
+    wireError("CONTRACT_FIELD_MISSING");
+  }
+  const membershipRole = row.membership_role;
+  if (membershipRole != null && (typeof membershipRole !== "string" ||
+    !["super_admin", "enterprise_admin", "plant_admin", "auditor", "partner"].includes(membershipRole))) {
     wireError("CONTRACT_FIELD_MISSING");
   }
   const capabilities = reqArray(row, "capabilities").map((item) => {
@@ -165,6 +171,7 @@ export function parseSessionAccess(raw: unknown): SessionAccessV1 {
   return {
     schema: SESSION_SCHEMA,
     product_role: productRole as ProductRole,
+    ...(membershipRole !== undefined ? {membership_role: membershipRole as SessionAccessV2["membership_role"]} : {}),
     enterprise_id: reqUuid(row, "enterprise_id"),
     template_id: reqConst(row, "template_id", "enterprise-ehs-material-analysis-v1"),
     template_title: reqConst(row, "template_title", TEMPLATE_TITLE),
@@ -283,12 +290,28 @@ export function parseJobStatus(raw: unknown): JobStatusV1 {
   ) {
     wireError("CONTRACT_FIELD_MISSING");
   }
+  let delivery: JobStatusV1["delivery"] = null;
+  // Older servers omit this additive projection; absence is unknown, not pending.
+  if (row.delivery !== undefined && row.delivery !== null) {
+    const value = asRecord(row.delivery, "CONTRACT_FIELD_MISSING");
+    const state = reqString(value, "state");
+    if (!["pending", "dispatched", "retry_wait", "done", "blocked"].includes(state)) {
+      wireError("CONTRACT_FIELD_MISSING");
+    }
+    const attempt = reqInt(value, "attempt", 0);
+    const reason = value.reason_code;
+    if (attempt > 100 || (reason !== null && (typeof reason !== "string" || !ERROR_REASON_RE.test(reason)))) {
+      wireError("CONTRACT_FIELD_MISSING");
+    }
+    delivery = { state: state as NonNullable<JobStatusV1["delivery"]>["state"], attempt, reason_code: reason as string | null };
+  }
   return {
     schema: "anhuan-analysis-report-job-v1",
     job_id: reqUuid(row, "job_id"),
     version_id: reqUuid(row, "version_id"),
     status: status as JobStatusV1["status"],
     error_reason: errorReason as string | null,
+    delivery,
   };
 }
 

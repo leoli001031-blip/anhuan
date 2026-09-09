@@ -1,0 +1,70 @@
+name: Acceptance evidence
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'codex/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    name: acceptance-${{ matrix.mode }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [offline, integration, restore, browser]
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      F1_KEYCLOAK_ISSUER_URL: http://material-rag.invalid/realms/anhuan
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements/requirements-f1.lock
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        if: matrix.mode == 'offline' || matrix.mode == 'browser'
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/web/package-lock.json
+      - name: Install hash-locked Python dependencies
+        shell: bash
+        run: |
+          mkdir -p .local/acceptance
+          python -m pip install --require-hashes -r requirements/requirements-f1.lock 2>&1 | tee .local/acceptance/python-install.log
+      - name: Install locked frontend dependencies
+        if: matrix.mode == 'offline'
+        working-directory: src/web
+        shell: bash
+        run: npm ci 2>&1 | tee ../../.local/acceptance/npm-install.log
+      - name: Pull digest-pinned isolated PostgreSQL harness images
+        if: matrix.mode != 'offline'
+        shell: bash
+        run: |
+          docker pull redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2 2>&1 | tee .local/acceptance/redis-pull.log
+          docker pull postgres:18.3-bookworm@sha256:80630f83606d8db77d30b3851b16a9f78be2d0d4dda6f7b82a1fdca5ebe3acba 2>&1 | tee .local/acceptance/postgres-pull.log
+      - name: Verify system Chrome for isolated browser journey
+        if: matrix.mode == 'browser'
+        shell: bash
+        run: google-chrome --version 2>&1 | tee .local/acceptance/chrome-version.log
+      - name: Run acceptance gate
+        shell: bash
+        run: python -B scripts/acceptance_gate.py --mode '${{ matrix.mode }}' --evidence-dir .local/acceptance --timeout 1800
+      - name: Upload complete evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: acceptance-${{ matrix.mode }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .local/acceptance
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

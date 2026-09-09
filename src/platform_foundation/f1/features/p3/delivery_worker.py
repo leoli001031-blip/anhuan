@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import socket
 import uuid
@@ -11,6 +12,7 @@ from redis import Redis
 from rq import Queue, Worker
 
 from ...auth import Tenant, memberships_for_sub
+from ...ingestion_context import ingestion_capability, restricted_ingestion
 from ..material_intake.service import get_material_analysis
 from .contracts import IngestionError, public_reason_code, reason_is_retryable
 from .delivery_queue import QUEUE_NAME, REDIS_URL
@@ -29,7 +31,10 @@ _OWNER_CHARS = re.compile(r"[^A-Za-z0-9_.:-]+")
 
 def _worker_name() -> str:
     host = _OWNER_CHARS.sub("-", socket.gethostname()).strip("-") or "unknown"
-    return f"material-ingestion.{host[:80]}"
+    # RQ keeps a crashed process registration until its heartbeat expires.
+    # A restarted container keeps its hostname, so each process needs a fresh
+    # identity; durable work ownership is still fenced by PostgreSQL tokens.
+    return f"material-ingestion.{host[:80]}.{uuid.uuid4().hex}"
 
 
 def _retry_delay(
@@ -48,6 +53,16 @@ def _retry_delay(
 async def _manager_tenant(
     enterprise_id: uuid.UUID, actor_sub: str
 ) -> Tenant | None:
+    if restricted_ingestion():
+        from sqlalchemy import text
+        from ...database import session_scope
+
+        async with session_scope(role='f1_ingestion_worker') as session:
+            context = (await session.execute(text('SELECT f1.ingestion_worker_context(false)'))).scalar_one()
+        if context is None or context['enterprise_id'] != str(enterprise_id) or context['actor_sub'] != actor_sub:
+            return None
+        role = context['role']
+        return Tenant(enterprise_id=enterprise_id, sub=actor_sub, roles=(role,), role=role)
     memberships = await memberships_for_sub(actor_sub)
     membership = next(
         (
@@ -98,7 +113,7 @@ async def _resolved_outcome(
     return "blocked", reason, None
 
 
-async def _run_durable_ingestion(
+async def _run_ingestion_body(
     delivery_id: uuid.UUID, dispatch_token: uuid.UUID
 ) -> None:
     claim = await read_delivery_claim(delivery_id, dispatch_token)
@@ -119,7 +134,8 @@ async def _run_durable_ingestion(
                 claim.id,
                 claim.dispatch_token,
                 outcome="blocked",
-                reason_code="MATERIAL_INGESTION_ACTOR_REVOKED",
+                reason_code=("MATERIAL_INGESTION_CAPABILITY_INVALID" if restricted_ingestion()
+                             else "MATERIAL_INGESTION_ACTOR_REVOKED"),
             )
             return
 
@@ -140,11 +156,12 @@ async def _run_durable_ingestion(
             reason_code=reason,
             retry_seconds=retry_seconds,
         )
-        if finished and outcome == "done" and tenant.role in {
+        if (os.environ.get('F1_PIPELINE_COORDINATOR_GATEWAY') != '1'
+                and finished and outcome == "done" and tenant.role in {
             "super_admin",
             "enterprise_admin",
-        }:
-            # Successful analysis already registers the downstream delivery in
+        }):
+            # Successful preview/analysis registers the downstream delivery in
             # the same PostgreSQL transaction.  This call is only a low-latency
             # nudge; failure cannot roll ingestion truth back.
             try:
@@ -183,6 +200,14 @@ async def _run_durable_ingestion(
             reason_code="MATERIAL_INGESTION_DELIVERY_FAILED",
             retry_seconds=_retry_delay(30, claim.attempt, cap_seconds=120),
         )
+
+
+async def _run_durable_ingestion(delivery_id: uuid.UUID, dispatch_token: uuid.UUID) -> None:
+    if restricted_ingestion():
+        with ingestion_capability(delivery_id, dispatch_token):
+            await _run_ingestion_body(delivery_id, dispatch_token)
+        return
+    await _run_ingestion_body(delivery_id, dispatch_token)
 
 
 def run_durable_ingestion(delivery_id: str, dispatch_token: str) -> None:

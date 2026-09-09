@@ -391,12 +391,30 @@ class AlembicOrchestrationContracts(unittest.TestCase):
                     "f1_0024",
                     "f1_0025",
                     "f1_0026",
+                    "f1_0027",
+                    "f1_0028",
+                    "f1_0029",
+                    "f1_0030",
+                    "f1_0031",
+                    "f1_0032",
+                    "f1_0033",
+                    "f1_0034",
+                    "f1_0035",
+                    "f1_0036",
+                    "f1_0037",
+                    "f1_0038",
+                    "f1_0039",
+                    "f1_0040",
+                    "f1_0041",
+                    "f1_0042",
+                    "f1_0043",
+                    "f1_0044",
                 }
             ),
         )
         self.assertEqual(migrate_f1.F1_DEFAULT_MIGRATE_TARGET, "f1_0014")
         self.assertEqual(migrate_f1.F1_MATERIAL_RAG_MIGRATE_TARGET, "f1_0016")
-        self.assertEqual(migrate_f1.F1_ANALYSIS_REPORT_MIGRATE_TARGET, "f1_0026")
+        self.assertEqual(migrate_f1.F1_ANALYSIS_REPORT_MIGRATE_TARGET, "f1_0044")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0014"), "f1_0014")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0015"), "f1_0015")
         self.assertEqual(migrate_f1._closed_f1_migrate_target("f1_0016"), "f1_0016")
@@ -468,7 +486,7 @@ class AlembicOrchestrationContracts(unittest.TestCase):
         for illegal in (
             "head",
             "f1_0013",
-            "f1_0027",
+            "f1_0045",
             "f1_0014 ",
             "",
             None,

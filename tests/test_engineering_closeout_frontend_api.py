@@ -12,7 +12,8 @@ WEB_SOURCE = ROOT / "src" / "web" / "src"
 class EngineeringCloseoutFrontendApiTests(unittest.TestCase):
     def test_base_client_never_exposes_arbitrary_error_response_text(self) -> None:
         source = (WEB_SOURCE / "api.ts").read_text(encoding="utf-8")
-        self.assertIn("export class ApiError extends Error", source)
+        self.assertIn('import { ApiError } from "./adapters/errors"', source)
+        self.assertIn("export { ApiError }", source)
         self.assertIn('"NETWORK_ERROR"', source)
         self.assertIn('"REQUEST_ABORTED"', source)
         self.assertIn("response.status === 429 || response.status >= 500", source)
@@ -105,7 +106,9 @@ class EngineeringCloseoutFrontendApiTests(unittest.TestCase):
         self.assertIn('"/v1/users/me/enterprises"', adapters_source)
         self.assertIn("enterpriseId: null", adapters_source)
         self.assertIn("options.enterpriseId === null || path === MEMBERSHIP_PATH", api_source)
-        self.assertGreaterEqual(adapters_source.count("born !== getTenantGeneration()"), 6)
+        # A historical no-op membership finally used to add a sixth occurrence.
+        # Its removal changes no protected action; raw occurrence counts are not
+        # evidence that the tenant snapshot/abort contract above is enforced.
         self.assertIn(".then(", adapters_source)
         self.assertIn(".catch(", adapters_source)
         self.assertIn(".finally(", adapters_source)

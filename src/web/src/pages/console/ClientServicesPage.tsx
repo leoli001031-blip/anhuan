@@ -1,6 +1,6 @@
 // 运营台 · 指定客户服务事项（/console/clients/:clientId/services）。
 // 列表和创建都强制携带路由 clientId；不链接 legacy 详情，不使用 mock/fallback。
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Drawer, Empty, Modal, Spin, Typography, message } from "antd";
 import { useParams } from "react-router-dom";
 import { useAuth } from "../../auth/OidcProvider";
@@ -24,6 +24,7 @@ import type {
   ServiceCaseCollection,
   ServiceCaseInput,
 } from "../../p2Api";
+import { useAsyncContext } from "../../components/useAsyncContext";
 import ClientShell from "./ClientShell";
 
 const SERVICE_TYPE_LABEL: Record<string, string> = {
@@ -89,6 +90,8 @@ function serviceTypeLabel(value: string): string {
 export default function ClientServicesPage() {
   const { clientId = "" } = useParams();
   const { getAccessToken } = useAuth();
+  const isCurrent = useAsyncContext(clientId);
+  const createPending = useRef(false);
   const [collectionState, setCollectionState] = useState<ClientCollectionState>(() => ({
     contextId: clientId,
     collection: null,
@@ -109,6 +112,8 @@ export default function ClientServicesPage() {
   useEffect(() => {
     // 路由客户变化时丢弃上一客户的临时表单与详情选择。
     setCreateOpen(false);
+    setCreating(false);
+    createPending.current = false;
     setDetailSelection(null);
   }, [clientId]);
 
@@ -194,16 +199,22 @@ export default function ClientServicesPage() {
   const detailError = detailInContext ? detailState.error : null;
 
   const create = async (values: ServiceCaseInput) => {
+    if (!isCurrent() || createPending.current || !collection?.allowed_actions.includes("create")) return;
+    createPending.current = true;
     setCreating(true);
     try {
       await createClientServiceCase(getAccessToken(), clientId, values);
+      if (!isCurrent()) return;
       message.success("服务事项已创建");
       setCreateOpen(false);
       setNonce((value) => value + 1);
     } catch {
-      message.error("创建失败，请重试");
+      if (isCurrent()) message.error("创建失败，请重试");
     } finally {
-      setCreating(false);
+      if (isCurrent()) {
+        createPending.current = false;
+        setCreating(false);
+      }
     }
   };
 
@@ -294,6 +305,7 @@ export default function ClientServicesPage() {
         }}
       >
         <ServiceCaseForm
+          key={clientId}
           submitLabel="创建"
           submitting={creating}
           onSubmit={create}

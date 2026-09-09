@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal, Protocol
 
-SCHEMA_SESSION = "anhuan-analysis-report-session-v1"
+SCHEMA_SESSION = "anhuan-analysis-report-session-v2"
 SCHEMA_PUBLISHED_LIST = "anhuan-analysis-report-published-list-v1"
 SCHEMA_PUBLISHED_DETAIL = "anhuan-analysis-report-published-detail-v1"
 SCHEMA_GENERATION = "anhuan-analysis-report-generation-v1"
@@ -44,7 +44,7 @@ REVIEW_CHECKLIST_KEYS = (
     "usage_boundary",
 )
 
-ProductRole = Literal["provider_admin", "client_user"]
+ProductRole = Literal["provider_admin", "provider_consultant", "provider_reviewer", "client_user", "technical_admin", "unconfigured"]
 VersionStatus = Literal[
     "queued",
     "generating",
@@ -132,13 +132,23 @@ class HealthSnapshotUnavailable(Exception):
 
 @dataclass(frozen=True, slots=True)
 class EvidenceUnit:
-    page_number: int
+    page_number: int | None
     ordinal: int
     body_sha256: str
     text: str
+    locator: dict | None = None
+    evidence_revision_id: uuid.UUID | None = None
+    fragment_id: uuid.UUID | None = None
+
+    @property
+    def location(self) -> str:
+        return evidence_location(self.page_number, self.locator)
 
     def __post_init__(self) -> None:
-        if self.page_number < 1 or self.ordinal < 1 or not self.text.strip():
+        evidence_location(self.page_number, self.locator)
+        if self.locator is not None and (self.evidence_revision_id is None or self.fragment_id is None):
+            raise ValueError("REPORT_SOURCE_IDENTITY_INVALID")
+        if self.ordinal < 1 or not self.text.strip():
             raise ValueError("REPORT_SOURCE_EVIDENCE_INVALID")
         if hashlib.sha256(self.text.encode("utf-8")).hexdigest() != self.body_sha256:
             raise ValueError("REPORT_SOURCE_EVIDENCE_HASH_MISMATCH")
@@ -151,7 +161,7 @@ class EligibleSource:
     version_number: int
     source_sha256: str
     scope_kind: str
-    page_number: int
+    page_number: int | None
     evidence_units: tuple[EvidenceUnit, ...]
 
 
@@ -176,8 +186,16 @@ class GeneratedCitation:
     document_version_id: uuid.UUID
     document_name: str
     version_number: int
-    page_number: int
+    page_number: int | None
     excerpt: str
+    locator: dict | None = None
+    evidence_revision_id: uuid.UUID | None = None
+    fragment_id: uuid.UUID | None = None
+    evidence_body_sha256: str | None = None
+
+    @property
+    def location(self) -> str:
+        return evidence_location(self.page_number, self.locator)
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,3 +265,15 @@ __all__ = (
     "HealthScoreContext",
     "HealthScorerPort",
 )
+
+
+def evidence_location(page_number: int | None, locator: dict | None = None) -> str:
+    if locator is not None:
+        from ..evidence.contracts import format_location, parse_locator
+        parsed = parse_locator(locator)
+        if page_number != getattr(parsed, 'page_number', None):
+            raise ValueError('REPORT_SOURCE_LOCATION_INVALID')
+        return format_location(parsed)
+    if type(page_number) is not int or page_number < 1:
+        raise ValueError('REPORT_SOURCE_LOCATION_INVALID')
+    return f'第{page_number}页'

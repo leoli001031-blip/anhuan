@@ -116,6 +116,7 @@ def setUpModule() -> None:
     global STACK, WORLD
     socket.create_connection = _guard_connect
     STACK = PostgresIntegrationStack()
+    print(f"ANALYSIS_REPORT_PG project={STACK.project_name}", flush=True)
     try:
         STACK.start()
         WORLD = STACK.seed_world()
@@ -160,6 +161,50 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
     def tearDown(self) -> None:
         health.set_local_scorer(None)
 
+    def test_job_status_projects_retry_delivery_without_internal_identity(self) -> None:
+        from platform_foundation.f1.features.analysis_reports import delivery_repository
+
+        async def scenario():
+            created = await service.create_report(WORLD.provider_a, WORLD.bound_client_id, uuid.uuid4())
+            queued = await service.generate_report(WORLD.provider_a, WORLD.bound_client_id,
+                uuid.UUID(created["report_id"]), uuid.uuid4())
+            job_id = uuid.UUID(queued["job_id"])
+            pending = await service.job_status(WORLD.provider_a, job_id)
+            self.assertEqual(pending["delivery"], {"state": "pending", "attempt": 0, "reason_code": None})
+            claims = await delivery_repository.claim_due_deliveries()
+            claim = next(c for c in claims if c.id == delivery_repository.delivery_id_for(job_id))
+            self.assertTrue(await delivery_repository.finish_delivery(claim.id, claim.dispatch_token,
+                outcome="retry", reason_code="REPORT_QUEUE_DISPATCH_FAILED", retry_seconds=900,
+                runtime_role="f1_worker"))
+            status = await service.job_status(WORLD.provider_a, job_id)
+            self.assertEqual(status["status"], "queued")
+            self.assertIsNone(status["error_reason"])
+            self.assertEqual(status["delivery"], {"state": "retry_wait", "attempt": 1,
+                "reason_code": "REPORT_QUEUE_DISPATCH_FAILED"})
+            self.assertEqual(set(status), {"schema", "job_id", "version_id", "status", "error_reason", "delivery"})
+            with self.assertRaises(ReportNotFound):
+                await service.job_status(WORLD.stranger_c, job_id)
+        _run(scenario())
+
+    def test_job_status_projects_blocked_delivery_after_real_worker_failure(self) -> None:
+        from platform_foundation.f1.features.analysis_reports import delivery_repository, worker
+
+        async def scenario():
+            created = await service.create_report(WORLD.provider_a, WORLD.bound_client_id, uuid.uuid4())
+            queued = await service.generate_report(WORLD.provider_a, WORLD.bound_client_id,
+                uuid.UUID(created["report_id"]), uuid.uuid4())
+            job_id = uuid.UUID(queued["job_id"])
+            claims = await delivery_repository.claim_due_deliveries()
+            claim = next(c for c in claims if c.id == delivery_repository.delivery_id_for(job_id))
+            with patch.object(worker, "_generation_enabled", return_value=False):
+                await worker._process_generation_delivery(claim.id, claim.dispatch_token)
+            status = await service.job_status(WORLD.provider_a, job_id)
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(status["error_reason"], "REPORT_WORKER_GENERATION_DISABLED")
+            self.assertEqual(status["delivery"], {"state": "blocked", "attempt": 1,
+                "reason_code": "REPORT_WORKER_GENERATION_DISABLED"})
+        _run(scenario())
+
     async def _generate_to_draft(
         self,
         tenant,
@@ -167,26 +212,33 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         report_id: uuid.UUID,
         request_id: uuid.UUID,
     ) -> dict[str, Any]:
-        from platform_foundation.f1.features.analysis_reports import queue, worker
+        from platform_foundation.f1.features.analysis_reports import delivery_repository, worker
 
-        with patch.object(queue, "enqueue_generation") as enqueue:
-            queued = await service.generate_report(
-                tenant,
-                client_account_id,
-                report_id,
-                request_id,
-            )
-        self.assertEqual(queued["status"], "queued")
-        enqueue.assert_called_once_with(
-            uuid.UUID(queued["job_id"]), tenant.enterprise_id, tenant.sub
+        queued = await service.generate_report(
+            tenant, client_account_id, report_id, request_id,
         )
-        await worker._process_generation_job(
-            uuid.UUID(queued["job_id"]),
-            tenant.enterprise_id,
-            tenant.sub,
+        self.assertEqual(queued["status"], "queued")
+        # Generation persists its outbox in the same database transaction.
+        # Consume the real database claim instead of mocking the retired direct
+        # enqueue(job_id, enterprise_id, actor) path. Redis fault recovery has a
+        # separate runner; this suite tests the database/worker contracts.
+        delivery_id = delivery_repository.delivery_id_for(uuid.UUID(queued["job_id"]))
+        claims = await delivery_repository.claim_due_deliveries()
+        matching = [claim for claim in claims if claim.id == delivery_id]
+        self.assertEqual(len(matching), 1)
+        claim = matching[0]
+        identity = await delivery_repository.read_delivery_claim(claim.id, claim.dispatch_token)
+        self.assertIsNotNone(identity)
+        self.assertEqual(
+            (identity.job_id, identity.version_id, identity.enterprise_id, identity.actor_sub),
+            (uuid.UUID(queued["job_id"]), uuid.UUID(queued["version_id"]), tenant.enterprise_id, tenant.sub),
+        )
+        await worker._process_generation_delivery(
+            claim.id, claim.dispatch_token,
         )
         finished = await service.job_status(tenant, uuid.UUID(queued["job_id"]))
         self.assertEqual(finished["status"], "draft")
+        self.assertEqual(finished["delivery"]["state"], "done")
         return {**queued, "status": "draft"}
 
     async def _publish(self, client_account_id: uuid.UUID) -> dict[str, Any]:
@@ -411,58 +463,133 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
             all(isinstance(item, ReportNotFound) for item in errors) or visible["analysis_report"] == 0
         )
 
-    def test_illegal_current_version_fk_rejected(self) -> None:
-        report_a, version_b = self._two_reports_and_versions()
+    def _assert_version_belongs_fk(self, table: str, constraint: str, columns: list[str]) -> None:
+        """Verify the real catalog even when a business trigger rejects first."""
         with STACK._bootstrap() as connection:
-            with self.assertRaises(Exception) as raised:
-                with connection.transaction():
-                    connection.execute(
-                        "UPDATE f1.analysis_report SET current_version_id=%s "
-                        "WHERE id=%s",
-                        (version_b, report_a),
-                    )
-            self.assertIn("foreign key", str(raised.exception).lower())
+            row = connection.execute(
+                "SELECT c.contype,c.convalidated,c.confrelid='f1.analysis_report_version'::regclass, "
+                "ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(n,ord) "
+                "JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.n ORDER BY k.ord), "
+                "ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(n,ord) "
+                "JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.n ORDER BY k.ord), "
+                "(SELECT count(*) FROM pg_trigger t WHERE t.tgconstraint=c.oid), "
+                "(SELECT bool_and(t.tgenabled='O') FROM pg_trigger t WHERE t.tgconstraint=c.oid) "
+                "FROM pg_constraint c WHERE c.conrelid=%s::regclass AND c.conname=%s",
+                ("f1." + table, constraint),
+            ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(tuple(row), (
+            "f", True, True, columns, ["enterprise_id", "report_id", "id"], 4, True,
+        ))
+
+    async def _ownership_fixture(self, session):
+        """Two valid same-client reports; one real queued version, no job yet.
+
+        The caller rolls back after its positive/negative controls. This keeps
+        pending generated-state evidence within the transaction under test.
+        """
+        from sqlalchemy import text
+        from platform_foundation.f1.features.analysis_reports import repository
+
+        reports = []
+        for _ in range(2):
+            reports.append(await repository.insert_report(
+                session, enterprise_id=WORLD.enterprise_a,
+                client_account_id=WORLD.bound_client_id, request_id=uuid.uuid4(),
+                actor_id=WORLD.actor_a,
+            ))
+        version_id = uuid.uuid4()
+        await session.execute(text(
+            "INSERT INTO f1.analysis_report_version "
+            "(id,enterprise_id,report_id,client_account_id,version_number,status,"
+            "source_fingerprint_sha256,artifact_ready,created_by_user_id) "
+            "VALUES (:v,:e,:r,:c,1,'queued',:f,FALSE,:u)"
+        ), {"v": version_id, "e": WORLD.enterprise_a, "r": reports[1]["id"],
+            "c": WORLD.bound_client_id, "f": "a" * 64, "u": WORLD.actor_a})
+        return reports[0]["id"], reports[1]["id"], version_id
+
+    def test_illegal_current_version_fk_rejected(self) -> None:
+        from sqlalchemy import text
+        from sqlalchemy.exc import DBAPIError
+        from platform_foundation.f1.database import session_scope
+
+        self._assert_version_belongs_fk("analysis_report", "analysis_report_current_version_belongs_fk",
+                                       ["enterprise_id", "id", "current_version_id"])
+        async def exercise():
+            async with session_scope(role="f1_api", enterprise_id=WORLD.enterprise_a, sub=WORLD.provider_a.sub) as session:
+                report_a, report_b, version_b = await self._ownership_fixture(session)
+                await session.execute(text(
+                    "INSERT INTO f1.analysis_report_generation_job "
+                    "(id,enterprise_id,report_id,version_id,request_id,status,source_fingerprint_sha256) "
+                    "VALUES (:i,:e,:r,:v,:q,'queued',:f)"
+                ), {"i": uuid.uuid4(), "e": WORLD.enterprise_a, "r": report_b,
+                    "v": version_b, "q": uuid.uuid4(), "f": "a" * 64})
+                statement = text("UPDATE f1.analysis_report SET current_version_id=:v,current_version_no=1, "
+                                 "updated_at=statement_timestamp() WHERE id=:r RETURNING current_version_id")
+                # The current-version guard checks the same ownership relation
+                # before PostgreSQL reaches its deferred composite FK.
+                with self.assertRaises(DBAPIError) as raised:
+                    async with session.begin_nested():
+                        await session.execute(statement, {"v": version_b, "r": report_a})
+                self.assertEqual(raised.exception.orig.sqlstate, "P0001")
+                self.assertIn("ANALYSIS_REPORT_CURRENT_VERSION_INVALID", str(raised.exception.orig))
+                self.assertEqual((await session.execute(statement, {"v": version_b, "r": report_b})).scalar_one(), version_b)
+                self.assertIsNone((await session.execute(text("SELECT current_version_id FROM f1.analysis_report WHERE id=:r"), {"r": report_a})).scalar_one())
+                await session.rollback()
+        _run(exercise())
 
     def test_illegal_job_version_fk_rejected(self) -> None:
-        report_a, version_b = self._two_reports_and_versions()
-        with STACK._bootstrap() as connection:
-            with self.assertRaises(Exception) as raised:
-                with connection.transaction():
-                    connection.execute(
-                        "INSERT INTO f1.analysis_report_generation_job "
-                        "(id,enterprise_id,report_id,version_id,request_id,status,"
-                        "source_fingerprint_sha256) VALUES "
-                        "(%s,%s,%s,%s,%s,'queued',%s)",
-                        (
-                            uuid.uuid4(),
-                            WORLD.enterprise_a,
-                            report_a,
-                            version_b,
-                            uuid.uuid4(),
-                            "a" * 64,
-                        ),
-                    )
-            self.assertIn("foreign key", str(raised.exception).lower())
+        from sqlalchemy import text
+        from sqlalchemy.exc import DBAPIError
+        from platform_foundation.f1.database import session_scope
+
+        self._assert_version_belongs_fk("analysis_report_generation_job", "analysis_report_job_version_belongs_fk",
+                                       ["enterprise_id", "report_id", "version_id"])
+        async def exercise():
+            async with session_scope(role="f1_api", enterprise_id=WORLD.enterprise_a, sub=WORLD.provider_a.sub) as session:
+                report_a, report_b, version_b = await self._ownership_fixture(session)
+                statement = text("INSERT INTO f1.analysis_report_generation_job "
+                    "(id,enterprise_id,report_id,version_id,request_id,status,source_fingerprint_sha256) "
+                    "VALUES (:i,:e,:r,:v,:q,'queued',:f) RETURNING report_id")
+                params = {"i": uuid.uuid4(), "e": WORLD.enterprise_a, "r": report_a,
+                          "v": version_b, "q": uuid.uuid4(), "f": "a" * 64}
+                # queued status/fingerprint/no-existing-job are all valid;
+                # only the report/version ownership is wrong.
+                with self.assertRaises(DBAPIError) as raised:
+                    async with session.begin_nested():
+                        await session.execute(statement, params)
+                self.assertEqual(raised.exception.orig.sqlstate, "P0001")
+                self.assertIn("ANALYSIS_REPORT_JOB_INSERT_INVALID", str(raised.exception.orig))
+                self.assertEqual((await session.execute(statement, {**params, "r": report_b})).scalar_one(), report_b)
+                await session.rollback()
+        _run(exercise())
 
     def test_illegal_audit_version_fk_rejected(self) -> None:
-        report_a, version_b = self._two_reports_and_versions()
-        with STACK._bootstrap() as connection:
-            with self.assertRaises(Exception) as raised:
-                with connection.transaction():
-                    connection.execute(
-                        "INSERT INTO f1.analysis_report_audit_event "
-                        "(id,enterprise_id,report_id,version_id,actor_user_id,"
-                        "action,from_status,to_status) VALUES "
-                        "(%s,%s,%s,%s,%s,'generate','empty','queued')",
-                        (
-                            uuid.uuid4(),
-                            WORLD.enterprise_a,
-                            report_a,
-                            version_b,
-                            WORLD.actor_a,
-                        ),
-                    )
-            self.assertIn("foreign key", str(raised.exception).lower())
+        from sqlalchemy import text
+        from sqlalchemy.exc import DBAPIError
+        from platform_foundation.f1.database import session_scope
+        from platform_foundation.f1.features.analysis_reports import repository
+
+        self._assert_version_belongs_fk("analysis_report_audit_event", "analysis_report_audit_version_belongs_fk",
+                                       ["enterprise_id", "report_id", "version_id"])
+        async def exercise():
+            async with session_scope(role="f1_api", enterprise_id=WORLD.enterprise_a, sub=WORLD.provider_a.sub) as session:
+                report_a, report_b, version_b = await self._ownership_fixture(session)
+                params = {"enterprise_id": WORLD.enterprise_a, "report_id": report_a,
+                          "version_id": version_b, "actor_id": WORLD.actor_a,
+                          "action": "generate", "from_status": "empty", "to_status": "queued"}
+                # The real queued insert captured a transition for report B in
+                # this same authenticated transaction. It cannot bind to A.
+                with self.assertRaises(DBAPIError) as raised:
+                    async with session.begin_nested():
+                        await repository.add_audit(session, **params)
+                self.assertEqual(raised.exception.orig.sqlstate, "P0001")
+                self.assertIn("REPORT_TRANSITION_EVIDENCE_REQUIRED", str(raised.exception.orig))
+                await repository.add_audit(session, **{**params, "report_id": report_b})
+                rows = (await session.execute(text("SELECT report_id,transition_id IS NOT NULL FROM f1.analysis_report_audit_event WHERE version_id=:v"), {"v": version_b})).all()
+                self.assertEqual([tuple(row) for row in rows], [(report_b, True)])
+                await session.rollback()
+        _run(exercise())
 
     def test_worker_has_no_table_privileges(self) -> None:
         privileges = STACK.worker_privileges()
@@ -545,10 +672,10 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         self.assertNotEqual(STACK.project_name, "anhuan-f1")
         self.assertIn("anhuan-ar-pgint-", STACK.project_name)
 
-    def test_health_catalog_is_f1_0024_and_47_force_rls(self) -> None:
-        self.assertEqual(STACK.catalog_head(), "f1_0024")
+    def test_health_catalog_matches_candidate_and_complete_force_rls_set(self) -> None:
+        self.assertEqual(STACK.catalog_head(), _MIGRATE_MOD.migrate_f1.F1_ANALYSIS_REPORT_MIGRATE_TARGET)
         names = STACK.force_rls_names()
-        self.assertEqual(len(EXPECTED_RLS_TABLES), 47)
+        self.assertEqual(len(EXPECTED_RLS_TABLES), 53)
         self.assertTrue(set(EXPECTED_RLS_TABLES).issubset(names))
         self.assertIn("analysis_report_health_snapshot", names)
 
@@ -607,7 +734,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         with STACK._bootstrap() as connection:
             with connection.transaction():
                 connection.execute(
-                    "REVOKE INSERT ON f1.analysis_report_health_snapshot FROM f1_api"
+                    "REVOKE INSERT (score) ON f1.analysis_report_health_snapshot FROM f1_api"
                 )
         try:
             with self.assertRaises(Exception):
@@ -619,7 +746,7 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
                 with STACK._bootstrap() as connection:
                     with connection.transaction():
                         connection.execute(
-                            "GRANT INSERT ON f1.analysis_report_health_snapshot TO f1_api"
+                            "GRANT INSERT (score) ON f1.analysis_report_health_snapshot TO f1_api"
                         )
             finally:
                 health.set_local_scorer(None)
@@ -809,8 +936,21 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         bits = STACK.table_privileges("f1_api", "analysis_report_health_snapshot")
         self.assertEqual(
             bits,
-            {"SELECT": True, "INSERT": True, "UPDATE": False, "DELETE": False},
+            {"SELECT": True, "INSERT": False, "UPDATE": False, "DELETE": False},
         )
+        with STACK._bootstrap() as connection:
+            columns = connection.execute(
+                "SELECT attname,has_column_privilege('f1_api',attrelid,attname,'INSERT'),"
+                "has_column_privilege('f1_api',attrelid,attname,'UPDATE') "
+                "FROM pg_attribute WHERE attrelid='f1.analysis_report_health_snapshot'::regclass "
+                "AND attnum>0 AND NOT attisdropped"
+            ).fetchall()
+        self.assertEqual(
+            {str(name) for name, insert, _update in columns if insert},
+            {"id", "enterprise_id", "report_id", "version_id", "client_account_id",
+             "payload", "payload_sha256", "score", "max_score"},
+        )
+        self.assertFalse(any(update for _name, _insert, update in columns))
         self.assertEqual(
             STACK.table_privileges("f1_worker", "analysis_report_health_snapshot"),
             {"SELECT": False, "INSERT": False, "UPDATE": False, "DELETE": False},
@@ -862,26 +1002,6 @@ class AnalysisReportPostgresAuthzTests(unittest.TestCase):
         )
         return created, generated, version_id
 
-    def _two_reports_and_versions(self) -> tuple[uuid.UUID, uuid.UUID]:
-        first = _run(
-            service.create_report(
-                WORLD.provider_a, WORLD.bound_client_id, uuid.uuid4()
-            )
-        )
-        second = _run(
-            service.create_report(
-                WORLD.provider_a, WORLD.race_client_id, uuid.uuid4()
-            )
-        )
-        generated = _run(
-            self._generate_to_draft(
-                WORLD.provider_a,
-                WORLD.race_client_id,
-                uuid.UUID(second["report_id"]),
-                uuid.uuid4(),
-            )
-        )
-        return uuid.UUID(first["report_id"]), uuid.UUID(generated["version_id"])
 
 
 if __name__ == "__main__":

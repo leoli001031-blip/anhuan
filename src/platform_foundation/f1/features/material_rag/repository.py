@@ -14,6 +14,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...database import _worker_dsn, session_scope
+from ..material_intake.ocr import (
+    OCR_PARSER_BACKENDS,
+    PDF_TEXT_PARSER_VERSION,
+)
 from .contracts import (
     CanonicalUnit,
     JobAction,
@@ -583,6 +587,32 @@ async def finalize_empty_scope_dataset_delete(
     )
 
 
+async def index_is_current(
+    session: AsyncSession,
+    *,
+    enterprise_id: uuid.UUID,
+    knowledge_scope_id: uuid.UUID,
+    document_version_id: uuid.UUID,
+) -> bool:
+    """Reject absent or mixed legacy indexes without decrypting evidence."""
+    rows = (
+        await session.execute(
+            text(
+                "SELECT DISTINCT parser_version FROM f1.material_rag_unit "
+                "WHERE enterprise_id=:enterprise_id "
+                "AND knowledge_scope_id=:scope_id AND document_version_id=:version_id"
+            ),
+            {
+                "enterprise_id": enterprise_id,
+                "scope_id": knowledge_scope_id,
+                "version_id": document_version_id,
+            },
+        )
+    ).all()
+    accepted = {*OCR_PARSER_BACKENDS, PDF_TEXT_PARSER_VERSION}
+    return bool(rows) and all(str(row[0]) in accepted for row in rows)
+
+
 async def load_units_for_version(
     session: AsyncSession,
     *,
@@ -938,6 +968,7 @@ __all__ = (
     "load_dataset_binding",
     "load_dataset_binding_state",
     "load_units_for_version",
+    "index_is_current",
     "live_source_mutation_fence",
     "live_scope_job_lock",
     "prepare_empty_scope_dataset_delete",

@@ -193,7 +193,7 @@ class QaFrontendContracts(unittest.TestCase):
         )
         self.assertIn("const contextAtStart = workbenchEpoch.current", polling)
         self.assertEqual(
-            polling.count("if (contextAtStart !== workbenchEpoch.current) return"),
+            polling.count("if (!isCurrent() || contextAtStart !== workbenchEpoch.current) return"),
             2,
         )
         failure = _between(

@@ -15,6 +15,7 @@ import {
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { executeMaterialChain } from "./lib/material-chain-stage.mjs";
 
 const CACHE_PREFIX = "anhuan-internal-pwa-";
 const SELECTED_ENTERPRISE_KEY = "f1-selected-enterprise";
@@ -70,7 +71,7 @@ const UPDATE_TIMEOUT_MS = 180_000;
 const PWA_OS_COMMAND_TIMEOUT_MS = 60_000;
 const PWA_OS_SHIM_TIMEOUT_MS = 20_000;
 const PWA_APP_NAME = "安环内部工作台";
-const RUN_STAGES = new Set(["all", "business", "faults", "pwa-update", "pwa-os", "material-rag-uat", "material-rag-uat-human", "analysis-report-uat", "analysis-report-workflow"]);
+const RUN_STAGES = new Set(["all", "business", "faults", "pwa-update", "pwa-os", "material-rag-uat", "material-rag-uat-human", "analysis-report-uat", "analysis-report-workflow", "invitation-join", "client-portal-access", "material-chain"]);
 const STAGE_SUCCESS_TAGS = Object.freeze({
   all: "LOCAL_BROWSER_VERIFY_OK",
   business: "LOCAL_BROWSER_BUSINESS_VERIFY_OK",
@@ -80,6 +81,9 @@ const STAGE_SUCCESS_TAGS = Object.freeze({
   "material-rag-uat-human": "LOCAL_MATERIAL_RAG_UAT_HUMAN_SESSION_READY",
   "analysis-report-uat": "LOCAL_ANALYSIS_REPORT_DUAL_IDENTITY_BROWSER_OK",
   "analysis-report-workflow": "LOCAL_ANALYSIS_REPORT_WORKFLOW_BROWSER_OK",
+  "invitation-join": "LOCAL_INVITATION_JOIN_BROWSER_OK",
+  "client-portal-access": "LOCAL_CLIENT_PORTAL_ACCESS_BROWSER_OK",
+  "material-chain": "LOCAL_MATERIAL_CHAIN_BROWSER_OK",
 });
 let unexpectedFailureReason = "BROWSER_STAGE_BOOTSTRAP_UNEXPECTED";
 const TOP_LEVEL_PAGES = Object.freeze([
@@ -345,7 +349,7 @@ function parseInputs() {
     fail("PWA_UPDATE_CONTROL_DIRECTORY_INVALID");
   }
   if (installPwa && controlDirectory === null) fail("PWA_OS_CONTROL_REQUIRED");
-  if (["faults", "pwa-update", "pwa-os"].includes(stage) && controlDirectory === null) {
+  if (["faults", "pwa-update", "pwa-os", "material-chain"].includes(stage) && controlDirectory === null) {
     fail("BROWSER_STAGE_CONTROL_REQUIRED");
   }
   if (stage === "pwa-os") fail("PWA_OS_BLOCKED_BY_BROWSER_AUTOMATION_BOUNDARY");
@@ -1209,7 +1213,8 @@ class BrowserPage {
   async setFileInputFiles(selector, files, code) {
     if (
       !Array.isArray(files)
-      || files.length !== 1
+      || files.length < 1
+      || files.length > 20
       || files.some((file) => typeof file !== "string" || !path.isAbsolute(file))
     ) {
       fail(code);
@@ -1371,9 +1376,11 @@ async function login(page, username, password) {
   await page.waitForApiIdle();
 }
 
-async function loginToPath(page, username, password, expectedPath) {
-  page.currentRoute = "/login";
-  const navigated = await page.cdp.call("Page.navigate", { url: `${page.origin}/login` }, page.sessionId);
+async function loginToPath(page, username, password, expectedPath, options = {}) {
+  const entryPath = options.entryPath ?? "/login";
+  const readySelector = options.readySelector ?? ".ant-layout-header";
+  page.currentRoute = entryPath.split("#")[0];
+  const navigated = await page.cdp.call("Page.navigate", { url: `${page.origin}${entryPath}` }, page.sessionId);
   if (navigated.errorText) fail("BROWSER_NAVIGATION_FAILED");
   try {
     await page.waitForExpression(
@@ -1456,7 +1463,7 @@ async function loginToPath(page, username, password, expectedPath) {
   if (!(await page.evaluate(credentials))) fail("OIDC_FORM_SUBMIT_FAILED");
   try {
     await page.waitForExpression(
-      `location.origin === ${JSON.stringify(page.origin)} && location.pathname === ${JSON.stringify(expectedPath)} && Boolean(document.querySelector(".ant-layout-header"))`,
+      `location.origin === ${JSON.stringify(page.origin)} && location.pathname === ${JSON.stringify(expectedPath)} && Boolean(document.querySelector(${JSON.stringify(readySelector)}))`,
       "OIDC_LOGIN_FAILED",
       60_000,
     );
@@ -3566,6 +3573,9 @@ async function executePwaOs() {
 
 function preflightIdentitiesForStage(stage) {
   if (stage === "pwa-os") return [];
+  if (stage === "material-chain") return [ANALYSIS_REPORT_IDENTITIES[0]];
+  if (stage === "invitation-join") return [ANALYSIS_REPORT_IDENTITIES[1]];
+  if (stage === "client-portal-access") return ANALYSIS_REPORT_IDENTITIES;
   if (stage === "analysis-report-uat") return ANALYSIS_REPORT_IDENTITIES;
   if (stage === "analysis-report-workflow") return ANALYSIS_REPORT_WORKFLOW_IDENTITIES;
   if (stage === "material-rag-uat" || stage === "material-rag-uat-human") return [IDENTITIES[0]];
@@ -4922,12 +4932,12 @@ async function spaGoto(page, path, code) {
   await page.waitForApiIdle();
 }
 
-async function navigateLoggedInPath(page, path, code) {
+async function navigateLoggedInPath(page, path, code, readySelector = ".ant-layout-header") {
   page.currentRoute = path;
   const navigated = await page.cdp.call("Page.navigate", { url: `${page.origin}${path}` }, page.sessionId);
   if (navigated.errorText) fail("BROWSER_NAVIGATION_FAILED");
   await page.waitForExpression(
-    `location.origin === ${JSON.stringify(page.origin)} && location.pathname === ${JSON.stringify(path)} && Boolean(document.querySelector(".ant-layout-header"))`,
+    `location.origin === ${JSON.stringify(page.origin)} && location.pathname === ${JSON.stringify(path)} && Boolean(document.querySelector(${JSON.stringify(readySelector)}))`,
     code,
     30_000,
   );
@@ -5446,19 +5456,19 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
         "CLIENT_QA_INPUT_MISSING",
         30_000,
       );
-      const question = "我们的废气治理采用什么方案？";
+      const question = "How does the factory treat exhaust gas?";
       const populated = await page.evaluate(`(() => {
         const input = document.querySelector("textarea");
         const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
         if (!(input instanceof HTMLTextAreaElement) || !setter) return false;
-        setter.call(input, ${JSON.stringify("我们的废气治理采用什么方案？")});
+        setter.call(input, ${JSON.stringify("How does the factory treat exhaust gas?")});
         input.dispatchEvent(new Event("input", { bubbles: true }));
         return true;
       })()`);
       if (!populated) fail("CLIENT_QA_INPUT_FAILED");
       await clickButtonText(page, "提问", "CLIENT_QA_SUBMIT_MISSING");
       await page.waitForExpression(
-        `(document.body?.innerText ?? "").includes("活性炭吸附装置") && document.querySelectorAll(".citation-ref").length >= 1`,
+        `(document.body?.innerText ?? "").includes("activated carbon adsorption") && document.querySelectorAll(".citation-ref").length >= 1`,
         "CLIENT_QA_ANSWER_MISSING",
         30_000,
       );
@@ -5477,7 +5487,7 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
       }
       if (
         typeof qaPayload?.answer !== "string"
-        || !qaPayload.answer.includes("活性炭吸附装置")
+        || !qaPayload.answer.includes("activated carbon adsorption")
         || !Array.isArray(qaPayload?.citations)
         || qaPayload.citations.length < 1
         || qaPayload.refusal_reason !== null
@@ -5594,33 +5604,13 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
   );
 
   const unbound = await runIdentityToPath(
-    cdp,
-    origin,
-    secretDirectory,
-    ANALYSIS_REPORT_EMPLOYEE_IDENTITY,
-    "/portal",
+    cdp, origin, secretDirectory, ANALYSIS_REPORT_EMPLOYEE_IDENTITY, "/workbench",
     async (page) => {
-      await bindSessionAccess(
-        page,
-        UAT_SEED_ENTERPRISE_A,
-        "client_user",
-        "EMPLOYEE_SESSION_ACCESS_UNBOUND",
-      );
-      await clickPortalReportsNav(page);
-      await page.waitForExpression(
-        `location.pathname === "/portal/reports"`,
-        "EMPLOYEE_REPORTS_PAGE_MISSING",
-        30_000,
-      );
+      await bindSessionAccess(page, UAT_SEED_ENTERPRISE_A, "provider_consultant", "EMPLOYEE_SESSION_ACCESS_UNBOUND");
+      await navigateExpect(page, "/portal/reports", "/workbench", "EMPLOYEE_PORTAL_NOT_DENIED");
+      await navigateExpect(page, `/portal/reports/${reportId}`, "/workbench", "UNBOUND_DETAIL_VISIBLE");
       await page.waitForApiIdle();
       if (await page.evaluate(publishedTitleVisibleExpression())) fail("UNBOUND_REPORT_VISIBLE");
-      await spaGoto(page, `/portal/reports/${reportId}`, "UNBOUND_DETAIL_NAV_FAILED");
-      await page.waitForExpression(
-        `(document.body?.innerText ?? "").includes("内容不存在") || location.pathname === "/portal/reports"`,
-        "UNBOUND_DETAIL_VISIBLE",
-        30_000,
-      );
-      await page.waitForApiIdle();
       await assertAnalysisReportSurfaceClean(page);
       arkCalls += page.arkCalls;
       return 0;
@@ -5661,6 +5651,160 @@ async function executeAnalysisReportWorkflow(cdp, origin, secretDirectory) {
 }
 
 
+async function executeClientPortalAccess(cdp, origin, secretDirectory) {
+  let clientId=(await readSecret(secretDirectory,"portal_client_id")).trim();
+  if (!/^[0-9a-f-]{36}$/.test(clientId)) fail("PORTAL_CLIENT_FIXTURE_INVALID");
+  let target="",credential=null;
+  await runIdentityToPath(cdp,origin,secretDirectory,ANALYSIS_REPORT_IDENTITIES[0],"/console/clients",async page=>{
+    await clickButtonText(page,"新建客户","CLIENT_CREATE_BUTTON_MISSING");
+    await page.waitForExpression(`Boolean(document.querySelector('input[aria-label="客户名称"]'))`,"CLIENT_CREATE_FORM_MISSING",30_000);
+    await page.evaluate(`(()=>{const el=document.querySelector('input[aria-label="客户名称"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'Browser customer creation');el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    // Fault injection drops only the UI's first successful response. The real
+    // server commits and CDP retains its receipt; a reload must replay its ID.
+    await page.evaluate(`(()=>{const original=window.fetch;let dropped=false;window.fetch=async(...args)=>{const response=await original(...args);const url=String(args[0] instanceof Request?args[0].url:args[0]);if(!dropped && url.includes('/v1/views-reports/crm/accounts') && (args[1]?.method ?? '').toUpperCase()==='POST' && response.status===201){dropped=true;await response.arrayBuffer();throw new TypeError('Synthetic response loss');}return response;};})()`);
+    await clickButtonText(page,"创建","CLIENT_CREATE_SUBMIT_MISSING");
+    try {
+      await page.waitForExpression(`(document.body?.innerText ?? '').includes('创建结果尚未确认')`,"CLIENT_CREATE_UNKNOWN_RESULT_MISSING",30_000);
+    } catch (error) {
+      console.error("CLIENT_CREATE_FORM_DIAGNOSTIC="+JSON.stringify(await page.evaluate(`({path:location.pathname,dialog:document.querySelector('.ant-modal-content')?.innerText,input:document.querySelector('input[aria-label="客户名称"]')?.value})`)));
+      throw error;
+    }
+    console.error("CLIENT_CREATE_RELOAD_STAGE=unknown_response");
+    const firstReceipt=JSON.parse((await bindLastAnalysisRequest(page,"POST","/api/v1/views-reports/crm/accounts",[201],"CLIENT_CREATE_FIRST_CDP_MISSING")).body);
+    console.error("CLIENT_CREATE_RELOAD_STAGE=receipt_bound");
+    const retained=await page.evaluate(`Object.keys(sessionStorage).filter(k=>k.startsWith('anhuan.pending-write.v1.')).map(k=>[k,sessionStorage.getItem(k)])`);
+    if(retained.length!==1 || !/^[0-9a-f-]{36}$/.test(retained[0][1]))fail("CLIENT_CREATE_PENDING_ID_MISSING");
+    await page.navigate("/console/clients");
+    await page.waitForExpression(`Array.from(document.querySelectorAll('button')).some(el=>el.textContent?.trim()==='新建客户')`,"CLIENT_CREATE_RELOAD_FAILED",30_000);
+    console.error("CLIENT_CREATE_RELOAD_STAGE=reloaded");
+    const afterReload=await page.evaluate(`Object.keys(sessionStorage).filter(k=>k.startsWith('anhuan.pending-write.v1.')).map(k=>[k,sessionStorage.getItem(k)])`);
+    if(JSON.stringify(retained)!==JSON.stringify(afterReload))fail("CLIENT_CREATE_PENDING_ID_LOST");
+    await clickButtonText(page,"新建客户","CLIENT_CREATE_REOPEN_MISSING");
+    await page.waitForExpression(`Boolean(document.querySelector('input[aria-label="客户名称"]'))`,"CLIENT_CREATE_REFILL_MISSING",30_000);
+    await page.evaluate(`(()=>{const el=document.querySelector('input[aria-label="客户名称"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,'Browser customer creation');el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));})()`);
+    await page.evaluate(`(()=>{const original=Storage.prototype.removeItem;Storage.prototype.removeItem=function(key){const result=original.call(this,key);if(String(key).startsWith('anhuan.pending-write.v1.')){Storage.prototype.removeItem=original;throw new Error('Synthetic cleanup failure after removal');}return result;};})()`);
+    await clickButtonText(page,"创建","CLIENT_CREATE_SUBMIT_MISSING");
+    await page.waitForExpression(`/^\\/console\\/clients\\/[0-9a-f-]{36}$/.test(location.pathname)`,"CLIENT_CREATE_NAV_FAILED",30_000);
+    const created=JSON.parse((await bindLastAnalysisRequest(page,"POST","/api/v1/views-reports/crm/accounts",[201],"CLIENT_CREATE_CDP_MISSING")).body);
+    if(created.enterprise_id!==UAT_SEED_ENTERPRISE_A || created.display_name!=="Browser customer creation" || created.stage!=="lead" || !/^[0-9a-f-]{36}$/.test(created.id))fail("CLIENT_CREATE_RECEIPT_INVALID");
+    if(created.id!==firstReceipt.id)fail("CLIENT_CREATE_RELOAD_DUPLICATED_CUSTOMER");
+    if(await page.evaluate(`Object.keys(sessionStorage).some(k=>k.startsWith('anhuan.pending-write.v1.'))`))fail("CLIENT_CREATE_PENDING_ID_NOT_CLEARED");
+    clientId=created.id;
+    const base=`/api/v1/clients/${clientId}`;
+    await page.waitForExpression(`Boolean(document.querySelector("input[aria-label='客户统一社会信用代码']"))`,"PORTAL_OPEN_INPUT_MISSING",30_000);
+    async function input(label,value) {
+      const ok=await page.evaluate(`(()=>{const el=document.querySelector('input[aria-label='+${JSON.stringify(JSON.stringify(label))}+']');if(!el)return false;Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event('input',{bubbles:true}));el.dispatchEvent(new Event('change',{bubbles:true}));return true;})()`);
+      if(!ok)fail("PORTAL_INPUT_MISSING");
+    }
+    await input("客户统一社会信用代码","TEST-NONPRODUCTION-REGISTRATION");
+    await clickButtonText(page,"开通客户门户","PORTAL_OPEN_BUTTON_MISSING");
+    await page.waitForExpression(`Boolean(document.querySelector("input[aria-label='客户负责人邮箱']"))`,"PORTAL_OPEN_NOT_VISIBLE",30_000);
+    const opened=JSON.parse((await bindLastAnalysisRequest(page,"POST",base+"/portal-access",[200],"PORTAL_OPEN_CDP_MISSING")).body);
+    target=opened.customer_enterprise_id;
+    if(!target || target===UAT_SEED_ENTERPRISE_A || target===clientId || opened.status!=="active")fail("PORTAL_OPEN_RECEIPT_INVALID");
+    await input("客户负责人邮箱","invitee@fixture.invalid");
+    await clickButtonText(page,"生成负责人邀请","PORTAL_INVITE_BUTTON_MISSING");
+    await page.waitForExpression(`(document.body?.innerText ?? '').includes('已为 invitee@fixture.invalid 生成邀请')`,"PORTAL_INVITE_NOT_VISIBLE",30_000);
+    await clickButtonText(page,"暂停门户访问","PORTAL_REVOKE_BUTTON_MISSING");
+    await page.waitForExpression(`(document.body?.innerText ?? '').includes('旧邀请仍然失效')`,"PORTAL_REVOKE_NOT_VISIBLE",30_000);
+    const revoked=JSON.parse((await bindLastAnalysisRequest(page,"POST",base+"/portal-access/revoke",[200],"PORTAL_REVOKE_CDP_MISSING")).body);
+    if(revoked.status!=="revoked" || revoked.invitations[0]?.status!=="revoked")fail("PORTAL_REVOKE_RECEIPT_INVALID");
+    await clickButtonText(page,"恢复访问","PORTAL_RESTORE_BUTTON_MISSING");
+    await page.waitForExpression(`Boolean(document.querySelector("input[aria-label='客户负责人邮箱']"))`,"PORTAL_RESTORE_NOT_VISIBLE",30_000);
+    const restored=JSON.parse((await bindLastAnalysisRequest(page,"POST",base+"/portal-access/restore",[200],"PORTAL_RESTORE_CDP_MISSING")).body);
+    if(restored.customer_enterprise_id!==target || restored.status!=="active")fail("PORTAL_RESTORE_RECEIPT_INVALID");
+    await input("客户负责人邮箱","invitee@fixture.invalid");
+    await clickButtonText(page,"生成负责人邀请","PORTAL_REINVITE_BUTTON_MISSING");
+    await page.waitForExpression(`(document.body?.innerText ?? '').includes('已为 invitee@fixture.invalid 生成邀请')`,"PORTAL_REINVITE_NOT_VISIBLE",30_000);
+    const invite=JSON.parse((await bindLastAnalysisRequest(page,"POST",base+"/portal-invitations",[200],"PORTAL_INVITE_CDP_MISSING")).body);
+    credential=invite.token;
+    if(!credential || invite.role!=="enterprise_admin")fail("PORTAL_INVITE_ROLE_INVALID");
+    await navigateLoggedInPath(page,"/members","MEMBERS_NAV_FAILED",".members-page");
+    await page.waitForExpression(`Boolean(document.querySelector('section[aria-label="member-control@fixture.invalid"]'))`,"MEMBERS_LIST_MISSING",30_000);
+    const membersBefore=JSON.parse((await bindLastAnalysisRequest(page,"GET","/api/v1/memberships",[200],"MEMBERS_READ_CDP_MISSING")).body);
+    const controlled=membersBefore.members.find(member=>member.email==="member-control@fixture.invalid");
+    if(!controlled || controlled.role!=="plant_admin" || controlled.status!=="active")fail("MEMBERS_FIXTURE_INVALID");
+    await page.clickElement('section[aria-label="member-control@fixture.invalid"] .ant-select', "MEMBER_ROLE_SELECT_MISSING");
+    await page.waitForExpression(`Array.from(document.querySelectorAll('.ant-select-item-option')).some(el=>el.textContent==='专家')`,"MEMBER_ROLE_OPTIONS_MISSING",10_000);
+    await page.clickElementWithText('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option', '专家', 'MEMBER_ROLE_OPTION_MISSING');
+    async function memberButton(label) {
+      const clicked=await page.evaluate(`(()=>{const row=document.querySelector('section[aria-label="member-control@fixture.invalid"]');const button=Array.from(row?.querySelectorAll('button')??[]).find(el=>el.textContent.replace(/\\s+/g,'')===${JSON.stringify(label)});if(!button||button.disabled)return false;button.click();return true;})()`);
+      if(!clicked)fail("MEMBER_ACTION_BUTTON_MISSING");
+    }
+    await memberButton("保存职责");
+    await page.waitForExpression(`(document.body?.innerText??'').includes('成员职责已更新')`,"MEMBER_ROLE_NOT_SAVED",30_000);
+    const roleChanged=JSON.parse((await bindLastAnalysisRequest(page,"POST",`/api/v1/memberships/${controlled.id}/role`,[200],"MEMBER_ROLE_CDP_MISSING")).body);
+    if(roleChanged.members.find(member=>member.id===controlled.id)?.role!=="auditor")fail("MEMBER_ROLE_RECEIPT_INVALID");
+    await memberButton("停用成员");
+    await page.waitForExpression(`(document.querySelector('section[aria-label="member-control@fixture.invalid"]')?.textContent??'').includes('已停用')`,"MEMBER_REVOKE_NOT_SAVED",30_000);
+    await bindLastAnalysisRequest(page,"POST",`/api/v1/memberships/${controlled.id}/revoke`,[200],"MEMBER_REVOKE_CDP_MISSING");
+    await memberButton("恢复成员");
+    await page.waitForExpression(`(document.body?.innerText??'').includes('成员已恢复')`,"MEMBER_RESTORE_NOT_SAVED",30_000);
+    const memberRestored=JSON.parse((await bindLastAnalysisRequest(page,"POST",`/api/v1/memberships/${controlled.id}/restore`,[200],"MEMBER_RESTORE_CDP_MISSING")).body);
+    if(memberRestored.members.find(member=>member.id===controlled.id)?.status!=="active")fail("MEMBER_RESTORE_RECEIPT_INVALID");
+    if(page.arkCalls!==0 || page.apiNon2xx!==0)fail("PORTAL_MANAGE_UNEXPECTED_ERROR");
+  });
+  let owned;
+  try {
+    owned=await createPage(cdp,origin);const page=owned.page;
+    const identity=ANALYSIS_REPORT_IDENTITIES[1];let password=await readSecret(secretDirectory,identity.secret);
+    try {await loginToPath(page,identity.username,password,"/join",{entryPath:`/join#invite=${encodeURIComponent(credential)}`,readySelector:"textarea[aria-label='邀请内容']"});}
+    finally {password=null;credential=null;}
+    await clickButtonText(page,"接受邀请并进入","PORTAL_JOIN_BUTTON_MISSING");
+    await page.waitForExpression(`location.pathname==='/portal' && Boolean(document.querySelector('.ant-layout-header'))`,"PORTAL_NEW_OWNER_MISSING",30_000);
+    const joined=JSON.parse((await bindLastAnalysisRequest(page,"POST","/api/v1/invitations/consume",[200],"PORTAL_JOIN_CDP_MISSING")).body);
+    if(joined.enterprise_id!==target || joined.role!=="enterprise_admin")fail("PORTAL_JOIN_TARGET_INVALID");
+    await bindSessionAccess(page,target,"client_user","PORTAL_OWNER_ROLE_INVALID");
+    await navigateLoggedInPath(page,"/members","CUSTOMER_MEMBERS_NAV_FAILED",".members-page");
+    await page.waitForExpression(`Boolean(document.querySelector('.members-list'))`,"CUSTOMER_MEMBERS_MISSING",30_000);
+    const customerMembers=JSON.parse((await bindLastAnalysisRequest(page,"GET","/api/v1/memberships",[200],"CUSTOMER_MEMBERS_CDP_MISSING")).body);
+    if(customerMembers.enterprise_id!==target || customerMembers.members.length!==1 || !customerMembers.can_manage)fail("CUSTOMER_MEMBERS_SCOPE_INVALID");
+    if(page.arkCalls!==0 || page.apiNon2xx!==0)fail("PORTAL_OWNER_UNEXPECTED_ERROR");
+    return {create_client:1,create_response_lost_reload_replay:1,create_cleanup_failure_success:1,created_client_id:clientId,open:1,invite:1,revoke:1,restore:1,old_invitation_revoked:1,customer_owner_join:1,customer_role:1,member_role:1,member_revoke:1,member_restore:1,customer_members:1,ark_calls:0,skipped:0};
+  } finally {credential=null;await disposePage(cdp,owned);}
+}
+
+async function executeInvitationJoin(cdp, origin, secretDirectory) {
+  const identity = ANALYSIS_REPORT_IDENTITIES[1];
+  let owned;
+  try {
+    owned = await createPage(cdp, origin);
+    const page = owned.page;
+    let credential = await readSecret(secretDirectory, "join_invitation");
+    let password = await readSecret(secretDirectory, identity.secret);
+    try {
+      await loginToPath(page, identity.username, password, "/join", {
+        entryPath: `/join#invite=${encodeURIComponent(credential)}`,
+        readySelector: "textarea[aria-label='邀请内容']",
+      });
+    } finally { credential = null; password = null; }
+    await page.waitForExpression(
+      `(document.body?.innerText ?? "").includes("当前账号") && location.hash === ""`,
+      "JOIN_OIDC_RETURN_MISSING", 30_000,
+    );
+    const before = await bindLastAnalysisRequest(page, "GET", "/api/v1/users/me/enterprises", [200], "JOIN_MEMBERSHIP_NOT_BOUND");
+    if (JSON.stringify(JSON.parse(before.body)) !== "[]") fail("JOIN_EXPECTED_NEW_MEMBER");
+    await clickButtonText(page, "接受邀请并进入", "JOIN_ACCEPT_BUTTON_MISSING");
+    await page.waitForExpression(
+      `location.pathname === "/portal" && Boolean(document.querySelector(".ant-layout-header"))`,
+      "JOIN_PORTAL_MISSING", 30_000,
+    );
+    const accepted = await bindLastAnalysisRequest(page, "POST", "/api/v1/invitations/consume", [200], "JOIN_ACCEPT_NOT_BOUND");
+    const receipt = JSON.parse(accepted.body);
+    if (receipt.enterprise_id !== "20000000-0000-4000-8000-00000000000b" || receipt.role !== "plant_admin") fail("JOIN_RECEIPT_INVALID");
+    const after = await bindLastAnalysisRequest(page, "GET", "/api/v1/users/me/enterprises", [200], "JOIN_RELOADED_MEMBERSHIP_MISSING");
+    const memberships = JSON.parse(after.body);
+    if (memberships.length !== 1 || memberships[0].enterprise_id !== receipt.enterprise_id) fail("JOIN_MEMBERSHIP_INVALID");
+    const cleared = await page.evaluate(`sessionStorage.getItem("anhuan.pending-invitation.v1") === null`);
+    if (!cleared) fail("JOIN_CREDENTIAL_NOT_CLEARED");
+    await navigateLoggedInPath(page, "/portal", "JOIN_REFRESH_FAILED");
+    await bindSessionAccess(page, receipt.enterprise_id, "client_user", "JOIN_SESSION_INVALID");
+    if (page.arkCalls !== 0 || page.apiNon2xx !== 0) fail("JOIN_UNEXPECTED_EXTERNAL_OR_API_ERROR");
+    return { oidc_return: 1, initially_unbound: 1, accepted: 1, membership_refreshed: 1,
+      portal_visible: 1, credential_cleared: 1, refresh_preserved: 1, skipped: 0 };
+  } finally { await disposePage(cdp, owned); }
+}
+
 async function executeStage(
   stage,
   cdp,
@@ -5670,6 +5814,8 @@ async function executeStage(
   controlDirectory,
   runtime,
 ) {
+  if (stage === "invitation-join") return executeInvitationJoin(cdp, origin, secretDirectory);
+  if (stage === "client-portal-access") return executeClientPortalAccess(cdp, origin, secretDirectory);
   if (stage === "all") {
     return executeAll(
       cdp,
@@ -5679,6 +5825,12 @@ async function executeStage(
       controlDirectory,
       runtime,
     );
+  }
+  if (stage === "material-chain") {
+    return executeMaterialChain({cdp, origin, secretDirectory, controlDirectory,
+      runIdentityToPath, identity: ANALYSIS_REPORT_IDENTITIES[0], crmAccountId: ANALYSIS_REPORT_CRM_ID,
+      enterpriseId: UAT_SEED_ENTERPRISE_A, bindSessionAccess, navigateLoggedInPath,
+      clickButtonText, bindLastAnalysisRequest, VerifyError, delay});
   }
   if (stage === "business") return executeBusiness(cdp, origin, secretDirectory);
   if (stage === "faults") {

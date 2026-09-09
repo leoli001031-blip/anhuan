@@ -148,6 +148,7 @@ class Tenant:
     sub: str
     roles: tuple[str, ...]
     role: str | None = None
+    business_kind: str | None = None
 
 
 async def memberships_for_sub(sub: str) -> list[dict[str, str]]:
@@ -172,6 +173,18 @@ async def memberships_for_sub(sub: str) -> list[dict[str, str]]:
             }
             for row in result.fetchall()
         ]
+
+
+async def business_kind_for(enterprise_id: uuid.UUID, sub: str) -> str | None:
+    # JSON projection keeps the default f1_0014 stack compatible: only the
+    # analysis-report candidate has the new column. RLS still binds this read.
+    async with session_scope(role="f1_api", enterprise_id=enterprise_id, sub=sub) as session:
+        row = (await session.execute(text(
+            "SELECT to_jsonb(enterprise)->>'business_kind' FROM f1.enterprise AS enterprise WHERE id=:id"
+        ), {"id": enterprise_id})).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="enterprise not found")
+    return row[0]
 
 
 async def current_tenant(
@@ -201,6 +214,7 @@ async def current_tenant(
         sub=user["sub"],
         roles=tuple(user.get("roles", [])),
         role=selected.get("role"),
+        business_kind=await business_kind_for(uuid.UUID(selected["enterprise_id"]), user["sub"]),
     )
 
 

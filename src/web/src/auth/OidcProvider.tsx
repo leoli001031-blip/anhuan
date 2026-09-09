@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { User } from "oidc-client-ts";
+import { signinDestination } from "../features/invitations/invitationFlow";
 import { userManager } from "./userManager";
 
 interface AuthContextValue {
@@ -7,9 +8,9 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   isInitializing: boolean;
   authError: string | null;
-  login: () => Promise<void>;
+  login: (returnTo?: "/join") => Promise<void>;
   logout: () => Promise<void>;
-  completeSigninCallback: () => Promise<void>;
+  completeSigninCallback: () => Promise<string>;
   getAccessToken: () => string | null;
 }
 
@@ -20,7 +21,7 @@ const AuthContext = createContext<AuthContextValue>({
   authError: null,
   login: () => Promise.resolve(),
   logout: () => Promise.resolve(),
-  completeSigninCallback: () => Promise.resolve(),
+  completeSigninCallback: () => Promise.resolve("/"),
   getAccessToken: () => null,
 });
 
@@ -70,9 +71,9 @@ export function OidcProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const login = async () => {
+  const login = async (returnTo?: "/join") => {
     setAuthError(null);
-    await userManager.signinRedirect();
+    await userManager.signinRedirect({ state: returnTo === "/join" ? { returnTo } : undefined });
   };
   const logout = async () => {
     await userManager.signoutRedirect();
@@ -84,6 +85,7 @@ export function OidcProvider({ children }: { children: ReactNode }) {
       setUser(loaded);
       setAuthError(null);
       setIsInitializing(false);
+      return signinDestination(loaded.state);
     } catch {
       setUser(null);
       setAuthError("OIDC_CALLBACK_FAILED");

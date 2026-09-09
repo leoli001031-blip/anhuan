@@ -58,7 +58,10 @@ LOCAL_ENGINEERING_FLAG = "F1_LOCAL_ENGINEERING"
 
 
 def local_extractive_enabled() -> bool:
-    """Require two explicit local flags; every other runtime stays on RAGFlow."""
+    """Native evidence uses the unified local corpus; legacy runtimes keep their gate."""
+    from ..evidence.repository import native_extraction_enabled
+    if native_extraction_enabled():
+        return True
     return (
         os.environ.get(LOCAL_EXTRACTIVE_FLAG) == "1"
         and os.environ.get(LOCAL_ENGINEERING_FLAG) == "1"
@@ -110,6 +113,22 @@ def _decode_local_released_unit(
         document_name=str(row["document_name"]),
         version_number=int(row["version_number"]),  # type: ignore[arg-type]
     )
+
+
+async def _effective_local_records(tenant: Tenant, context: RetrievalContext) -> tuple[ReleasedUnitRecord, ...]:
+    from ..evidence.effective import load_effective_sources
+    try:
+        async with session_scope(role='f1_api', enterprise_id=tenant.enterprise_id, sub=tenant.sub) as session:
+            sources = await load_effective_sources(session, context._scope_ids)
+        return tuple(ReleasedUnitRecord(canonical_unit_id=f.id, knowledge_scope_id=s.knowledge_scope_id,
+            document_record_id=s.document_record_id, document_version_id=s.document_version_id,
+            source_sha256=s.source_sha256, page_number=getattr(f.locator, 'page_number', None),
+            body_sha256=f.body_sha256, body=f.body, scope_kind=s.scope_kind,
+            document_name=s.document_name, version_number=s.version_number,
+            locator=f.locator.to_dict(), evidence_revision_id=f.evidence_revision_id)
+            for s in sources for f in s.fragments)
+    except Exception:
+        raise MaterialRagUnavailable('MATERIAL_EFFECTIVE_CORPUS_UNAVAILABLE') from None
 
 
 class PostgresMaterialRagRepository:
@@ -269,6 +288,9 @@ class PostgresMaterialRagRepository:
     ) -> tuple[ReleasedUnitRecord, ...]:
         if not 1 <= candidate_limit <= MAX_LOCAL_CANDIDATES:
             raise ValueError("MATERIAL_LOCAL_CANDIDATE_LIMIT")
+        from ..evidence.repository import native_extraction_enabled
+        if native_extraction_enabled():
+            return await _effective_local_records(tenant, context)
         async with session_scope(
             role="f1_api", enterprise_id=tenant.enterprise_id, sub=tenant.sub
         ) as session:
@@ -315,7 +337,7 @@ class PostgresMaterialRagRepository:
                     {
                         "enterprise_id": tenant.enterprise_id,
                         "scope_ids": list(context._scope_ids),
-                        "candidate_limit": candidate_limit,
+                        "candidate_limit": candidate_limit + 1,
                     },
                 )
             ).mappings().all()
@@ -495,6 +517,9 @@ class AudiencePostgresMaterialRagRepository:
     ) -> tuple[ReleasedUnitRecord, ...]:
         if not 1 <= candidate_limit <= MAX_LOCAL_CANDIDATES:
             raise ValueError("MATERIAL_LOCAL_CANDIDATE_LIMIT")
+        from ..evidence.repository import native_extraction_enabled
+        if native_extraction_enabled():
+            return await _effective_local_records(tenant, context)
         resolved = await self.resolve_audience(tenant)
         if resolved is None:
             raise MaterialRagUnavailable("MATERIAL_LOCAL_AUDIENCE_INVALID")

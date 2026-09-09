@@ -230,9 +230,11 @@ def _map_consume_error(error) -> str:
         "INVITE_ALREADY_USED",
         "INVITE_CLAIMS_MISMATCH",
         "INVITE_EXPIRED",
+        "INVITE_REVOKED",
         "OIDC_IDENTITY_REQUIRED",
         "INVITE_IDENTITY_MISMATCH",
         "MEMBERSHIP_ALREADY_EXISTS",
+        "MEMBERSHIP_INACTIVE",
         "INVITE_FORBIDDEN",
         "INVITE_ROLE_ESCALATION",
     ):

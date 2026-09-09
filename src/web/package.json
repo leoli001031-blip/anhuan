@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "lint": "oxlint",
     "preview": "vite preview",
+    "verify:frontend-context": "node --test scripts/frontend-context.test.cjs scripts/invitation-flow.test.cjs scripts/session-routing.test.cjs scripts/client-portal-access.test.cjs scripts/memberships.test.cjs scripts/client-creation.test.cjs scripts/native-evidence.test.cjs scripts/material-review.test.cjs scripts/effective-evidence.test.cjs scripts/batch-upload.test.cjs",
     "verify:material-automation": "node scripts/material-automation-contract-verify.mjs"
   },
   "dependencies": {

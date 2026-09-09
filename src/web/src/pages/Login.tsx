@@ -1,4 +1,5 @@
 import { Button, Typography } from "antd";
+import { readInvitation } from "../features/invitations/invitationFlow";
 import { useAuth } from "../auth/OidcProvider";
 
 // OIDC 错误（如静默续期失败）必须可见且可重试，不能只有死按钮。
@@ -41,7 +42,7 @@ export default function Login() {
             {AUTH_ERROR_COPY[authError] ?? "登录遇到问题，请重试。"}
           </Typography.Paragraph>
         )}
-        <Button type="primary" onClick={() => void login()} block>
+        <Button type="primary" onClick={() => void login(readInvitation() ? "/join" : undefined)} block>
           {authError ? "重试登录" : "登录"}
         </Button>
       </div>

@@ -10,12 +10,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..material_rag.repository import load_units_for_version
+from ..material_rag.repository import index_is_current, load_units_for_version
 from .contracts import (
     EvidenceUnit,
     EligibleSource,
     FrozenSourceSet,
     GeneratedReport,
+    GenerationFailed,
     RECOVERABLE_GENERATION_FAILURE_REASONS,
     SECTION_KEYS,
     TEMPLATE_ID,
@@ -105,11 +106,14 @@ def fingerprint_for(enterprise_id: uuid.UUID, client_account_id: uuid.UUID, sour
                 "document_version_id": str(item.document_version_id),
                 "source_sha256": item.source_sha256,
                 "version_number": item.version_number,
+                **({"evidence_identity": [dict(fragment_id=str(u.fragment_id), revision_id=str(u.evidence_revision_id),
+                    locator=u.locator, body_sha256=u.body_sha256, ordinal=u.ordinal) for u in item.evidence_units]}
+                    if any(u.locator is not None for u in item.evidence_units) else {}),
                 "evidence_body_sha256": [
                     unit.body_sha256
                     for unit in sorted(
                         item.evidence_units,
-                        key=lambda unit: (unit.page_number, unit.ordinal),
+                        key=lambda unit: (unit.page_number or 0, unit.ordinal),
                     )
                 ],
             }
@@ -125,6 +129,31 @@ def fingerprint_for(enterprise_id: uuid.UUID, client_account_id: uuid.UUID, sour
 async def load_eligible_sources(
     session: AsyncSession, enterprise_id: uuid.UUID, client_account_id: uuid.UUID
 ) -> list[EligibleSource]:
+    from ..evidence.repository import native_extraction_enabled
+    if native_extraction_enabled():
+        from ..evidence.effective import load_effective_sources
+        scope_ids = (await session.execute(text("SELECT id FROM f1.material_knowledge_scope WHERE enterprise_id=:eid "
+            "AND ((scope_kind='service_provider' AND client_account_id IS NULL) OR (scope_kind='client' AND client_account_id=:client)) "
+            "ORDER BY scope_kind DESC"), {'eid': enterprise_id, 'client': client_account_id})).scalars().all()
+        if len(scope_ids) != 2:
+            raise GenerationFailed('REPORT_SOURCE_SET_INVALID')
+        try:
+            effective = await load_effective_sources(session, tuple(scope_ids))
+        except Exception:
+            raise GenerationFailed('REPORT_SOURCE_INDEX_OUTDATED') from None
+        result = []
+        for source in effective:
+            if source.evidence_kind == 'revoked':
+                continue
+            if not source.fragments:
+                raise GenerationFailed('REPORT_SOURCE_INDEX_OUTDATED')
+            units = tuple(EvidenceUnit(page_number=getattr(f.locator,'page_number',None), ordinal=f.ordinal,
+                body_sha256=f.body_sha256, text=f.body, locator=f.locator.to_dict(),
+                evidence_revision_id=f.evidence_revision_id, fragment_id=f.id) for f in source.fragments)
+            result.append(EligibleSource(document_version_id=source.document_version_id, document_name=source.document_name,
+                version_number=source.version_number, source_sha256=source.source_sha256, scope_kind=source.scope_kind,
+                page_number=units[0].page_number, evidence_units=units))
+        return result
     rows = (
         await session.execute(
             text(
@@ -174,6 +203,13 @@ async def load_eligible_sources(
     ).all()
     sources: list[EligibleSource] = []
     for row in rows:
+        if not await index_is_current(
+            session,
+            enterprise_id=enterprise_id,
+            knowledge_scope_id=row[5],
+            document_version_id=row[0],
+        ):
+            raise GenerationFailed("REPORT_SOURCE_INDEX_OUTDATED")
         units = await load_units_for_version(
             session,
             enterprise_id=enterprise_id,
@@ -429,8 +465,11 @@ async def attach_sections(
         await session.execute(
             text(
                 "SELECT id, document_version_id, document_name, version_number, "
-                "page_number, excerpt "
-                "FROM f1.analysis_report_citation "
+                "page_number, excerpt, to_jsonb(citation)->\'locator\' AS locator, "
+                "to_jsonb(citation)->>\'evidence_revision_id\' AS evidence_revision_id, "
+                "to_jsonb(citation)->>\'fragment_id\' AS fragment_id, "
+                "to_jsonb(citation)->>\'evidence_body_sha256\' AS evidence_body_sha256 "
+                "FROM f1.analysis_report_citation AS citation "
                 "WHERE version_id = :version_id "
                 "ORDER BY ordinal"
             ),
@@ -539,10 +578,15 @@ async def get_job(
     row = (
         await session.execute(
             text(
-                "SELECT id, version_id, status, error_reason, "
-                "source_fingerprint_sha256, request_id, lease_until "
-                "FROM f1.analysis_report_generation_job "
-                "WHERE enterprise_id = :enterprise_id AND id = :job_id"
+                "SELECT job.id, job.version_id, job.status, job.error_reason, "
+                "job.source_fingerprint_sha256, job.request_id, job.lease_until, "
+                "delivery.state AS delivery_state, delivery.attempt AS delivery_attempt, "
+                "delivery.reason_code AS delivery_reason_code "
+                "FROM f1.analysis_report_generation_job AS job "
+                "LEFT JOIN f1.analysis_report_generation_delivery AS delivery "
+                "ON delivery.enterprise_id=job.enterprise_id AND delivery.job_id=job.id "
+                "AND delivery.report_id=job.report_id AND delivery.version_id=job.version_id "
+                "WHERE job.enterprise_id = :enterprise_id AND job.id = :job_id"
             ),
             {"enterprise_id": enterprise_id, "job_id": job_id},
         )
@@ -1202,9 +1246,11 @@ async def persist_generated(
                 "INSERT INTO f1.analysis_report_citation ("
                 "id, enterprise_id, version_id, document_version_id, "
                 "document_name, version_number, page_number, excerpt, ordinal"
+                + (",locator,evidence_revision_id,fragment_id,evidence_body_sha256" if citation.locator is not None else "") +
                 ") VALUES ("
                 ":id, :enterprise_id, :version_id, :document_version_id, "
                 ":document_name, :version_number, :page_number, :excerpt, :ordinal"
+                + (",CAST(:locator AS jsonb),:evidence_revision_id,:fragment_id,:evidence_body_sha256" if citation.locator is not None else "") +
                 ")"
             ),
             {
@@ -1215,6 +1261,10 @@ async def persist_generated(
                 "document_name": citation.document_name,
                 "version_number": citation.version_number,
                 "page_number": citation.page_number,
+                "locator": json.dumps(citation.locator),
+                "evidence_revision_id": citation.evidence_revision_id,
+                "fragment_id": citation.fragment_id,
+                "evidence_body_sha256": citation.evidence_body_sha256,
                 "excerpt": citation.excerpt,
                 "ordinal": ordinal,
             },

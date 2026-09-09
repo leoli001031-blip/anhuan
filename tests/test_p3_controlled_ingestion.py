@@ -209,6 +209,14 @@ def _jpeg_bytes(*, width: int = 1, height: int = 1, metadata: bytes = b"") -> by
         if metadata
         else b""
     )
+    if width * height <= 1_000_000:
+        from PIL import Image
+        output = io.BytesIO()
+        with Image.new("RGB", (width, height), "white") as image:
+            image.save(output, "JPEG")
+        raw = output.getvalue()
+        return raw[:2] + app1 + raw[2:]
+    # Oversize header fixture must be rejected before allocating its pixels.
     sof0 = (
         b"\xff\xc0"
         + struct.pack(">H", 11)
@@ -257,10 +265,12 @@ class P3MigrationAndTenantContractTests(unittest.TestCase):
         script = ScriptDirectory.from_config(
             Config(str(ROOT / "infra/f1/alembic.ini"))
         )
-        self.assertEqual(script.get_heads(), ["f1_0026"])
+        self.assertEqual(script.get_heads(), ["f1_0044"])
         self.assertEqual(script.get_revision("f1_0006").down_revision, "f1_0005")
         self.assertEqual(script.get_revision("f1_0015").down_revision, "f1_0014")
         self.assertEqual(script.get_revision("f1_0026").down_revision, "f1_0025")
+        self.assertEqual(script.get_revision("f1_0027").down_revision, "f1_0026")
+        self.assertEqual(script.get_revision("f1_0028").down_revision, "f1_0027")
         if str(ROOT) not in sys.path:
             sys.path.insert(0, str(ROOT))
         from infra.f1.migrate_f1 import F1_DEFAULT_MIGRATE_TARGET

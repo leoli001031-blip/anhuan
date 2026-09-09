@@ -1,4 +1,5 @@
 import { tenantFetch, ApiError } from "../../api";
+import { assertClientCreateReceipt, assertClientRequestId, normalizeClientCreate } from "../../adapters/clientCreation";
 import { p4ReasonCopy } from "./reasonCopy";
 import type {
   BusinessReportCollection,
@@ -110,17 +111,23 @@ export function listCrmAccounts(
   });
 }
 
-export function createCrmAccount(
+export async function createCrmAccount(
   token: string | null,
   input: CreateCrmAccountInput,
   signal?: AbortSignal,
 ): Promise<CrmAccount> {
-  return requestJson<CrmAccount>(P4_VIEWS_REPORTS_BASE + "/crm/accounts", {
-    token,
-    method: "POST",
-    body: input,
-    signal,
-  });
+  const request_id = input.request_id ?? crypto.randomUUID();
+  assertClientRequestId(request_id);
+  const body = {...normalizeClientCreate(input), request_id};
+  try {
+    const result = await tenantFetch<CrmAccount>(P4_VIEWS_REPORTS_BASE + "/crm/accounts", {
+      token, method: "POST", body, signal, parse: "json",
+    });
+    assertClientCreateReceipt(result.payload, result.enterpriseId, result.status);
+    return result.payload;
+  } catch (error) {
+    throw mapTransportError(error);
+  }
 }
 
 export function getCrmAccount(

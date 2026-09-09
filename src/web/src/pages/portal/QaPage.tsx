@@ -5,6 +5,7 @@ import { Button, Input, Skeleton, Typography } from "antd";
 import { useApi } from "../../adapters";
 import type { QaAnswer } from "../../adapters/types";
 import ErrorState from "../../components/ErrorState";
+import OriginalEvidenceView from '../../components/OriginalEvidenceView';
 
 type Phase =
   | { kind: "idle" }
@@ -111,12 +112,14 @@ export default function QaPage() {
                       <div key={`${c.documentName}-${i}`} style={{ padding: "6px 0" }}>
                         <span className="citation-ref">[{i + 1}]</span>{" "}
                         <Typography.Text style={{ fontSize: 14 }}>
-                          {c.documentName} · 第 {c.pageNumber} 页
+                          {c.documentName} · {c.location ?? `第 ${c.pageNumber} 页`}
                         </Typography.Text>
                         <div>
                           <Typography.Text type="secondary" style={{ fontSize: 13 }}>
                             {c.snippet}
                           </Typography.Text>
+                          {c.documentVersionId && c.locator && c.evidenceRevisionId && c.fragmentId && <OriginalEvidenceView target={{documentVersionId:c.documentVersionId,
+                            locator:c.locator,fragmentId:c.fragmentId,revisionId:c.evidenceRevisionId,sourceSha256:c.sourceSha256}} />}
                         </div>
                       </div>
                     ))}

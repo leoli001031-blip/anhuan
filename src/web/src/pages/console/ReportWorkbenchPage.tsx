@@ -12,12 +12,15 @@ import {
 } from "../../adapters/AnalysisReportApi";
 import { ApiError, errorKind } from "../../adapters/errors";
 import type {
+  JobStatusV1,
   ReportStatus,
   ReviewChecklistV1,
   VersionDetailV1,
   VersionHistoryItemV1,
 } from "../../adapters/types";
 import { REPORT_STATUS_LABEL } from "../../adapters/types";
+import { useAsyncContext } from "../../components/useAsyncContext";
+import { reasonCopy } from "../../features/p3/reasonCopy";
 import ErrorState from "../../components/ErrorState";
 import ReportDocument, { formatDateTime } from "../../components/ReportDocument";
 import StatusDot, { type StatusTone } from "../../components/StatusDot";
@@ -88,7 +91,7 @@ export default function ReportWorkbenchPage() {
   const [checked, setChecked] = useState<ReviewChecklistV1>(emptyReviewChecklist);
   const [returnOpen, setReturnOpen] = useState(false);
   const [returnComment, setReturnComment] = useState("");
-  const [job, setJob] = useState<{ jobId: string; status: string } | null>(null);
+  const [job, setJob] = useState<{ jobId: string; status: string; delivery?: JobStatusV1["delivery"] } | null>(null);
   const [jobPollFailed, setJobPollFailed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -101,9 +104,26 @@ export default function ReportWorkbenchPage() {
   const jobStorageKey = `ar-job:${storageScope}`;
   const requestStorageKey = `ar-generate-request:${storageScope}`;
 
+  const isCurrent = useAsyncContext(storageScope);
+  const isSelectedCurrent = useAsyncContext(`${storageScope}:${selectedId ?? "empty"}`);
+  const boundContext = useRef<(() => boolean) | null>(null);
+  const actionPending = useRef(false);
+  const downloadPending = useRef(false);
+  const confirmation = useRef<ReturnType<typeof Modal.confirm> | null>(null);
+
+  useEffect(() => () => {
+    confirmation.current?.destroy();
+    confirmation.current = null;
+  }, [isSelectedCurrent]);
+
   // 路由客户/报告变化：先清旧状态（版本/选中/详情/任务/请求ID），不残留上一上下文。
   useEffect(() => {
     workbenchEpoch.current += 1;
+    boundContext.current = null;
+    actionPending.current = false;
+    downloadPending.current = false;
+    setBusy(false);
+    setDownloading(false);
     setVersions(null);
     setListError(null);
     setSelectedId(null);
@@ -138,6 +158,7 @@ export default function ReportWorkbenchPage() {
       .then((reports) => {
         if (!active) return;
         if (reports.some((r) => r.report_id === reportId)) {
+          boundContext.current = isCurrent;
           setBound(true);
         } else {
           setListError(new ApiError(404, "REPORT_NOT_FOUND", false));
@@ -150,7 +171,7 @@ export default function ReportWorkbenchPage() {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- nonce drives retry
-  }, [api, clientId, reportId, bound, nonce]);
+  }, [api, clientId, reportId, bound, nonce, isCurrent]);
 
   // 版本历史（绑定后才读取）
   useEffect(() => {
@@ -200,16 +221,17 @@ export default function ReportWorkbenchPage() {
 
   // 生成进度轮询：终态即停并校验版本归属；短暂失败保留任务，永久失败保留 request ID 供重放。
   useEffect(() => {
-    if (!bound || !job || job.status === "draft" || job.status === "failed") return;
+    if (!bound || !job || job.status === "draft" || job.status === "failed"
+      || (job.status === "queued" && job.delivery?.state === "blocked")) return;
     let active = true;
     const contextAtStart = workbenchEpoch.current;
     const timer = setTimeout(() => {
       api
         .getJob(job.jobId)
         .then((next) => {
-          if (!active) return;
+          if (!active || !isCurrent()) return;
           setJobPollFailed(false);
-          setJob({ jobId: job.jobId, status: next.status });
+          setJob({ jobId: job.jobId, status: next.status, delivery: next.delivery });
           if (next.status === "draft") {
             generateRequestId.current = null;
             sessionStorage.removeItem(jobStorageKey);
@@ -219,7 +241,7 @@ export default function ReportWorkbenchPage() {
             api
               .listVersions(reportId)
               .then((items) => {
-                if (contextAtStart !== workbenchEpoch.current) return;
+                if (!isCurrent() || contextAtStart !== workbenchEpoch.current) return;
                 if (items.some((v) => v.version_id === next.version_id)) {
                   message.success("生成完成，已进入草稿");
                   setSelectedId(next.version_id);
@@ -228,7 +250,7 @@ export default function ReportWorkbenchPage() {
                 }
               })
               .catch(() => {
-                if (contextAtStart !== workbenchEpoch.current) return;
+                if (!isCurrent() || contextAtStart !== workbenchEpoch.current) return;
                 message.error("生成结果确认失败，请刷新重试");
               });
           } else if (next.status === "failed") {
@@ -240,13 +262,15 @@ export default function ReportWorkbenchPage() {
             } else {
               generateRequestId.current = null;
               sessionStorage.removeItem(requestStorageKey);
-              message.error("生成失败，请检查材料后重新生成");
+              message.error(next.error_reason === "REPORT_SOURCE_INDEX_OUTDATED"
+                ? reasonCopy(next.error_reason)
+                : "生成失败，请检查材料后重新生成");
             }
             setNonce((n) => n + 1);
           }
         })
         .catch((error) => {
-          if (!active) return;
+          if (!active || !isCurrent()) return;
           const kind = errorKind(error);
           const retryable =
             error instanceof ApiError
@@ -263,12 +287,12 @@ export default function ReportWorkbenchPage() {
           setJobPollFailed(false);
           message.error("生成任务已失效，请恢复原请求");
         });
-    }, 2000);
+    }, job.delivery?.state === "retry_wait" ? 10000 : 2000);
     return () => {
       active = false;
       clearTimeout(timer);
     };
-  }, [api, job, jobStorageKey, requestStorageKey, reportId, bound]);
+  }, [api, job, jobStorageKey, requestStorageKey, reportId, bound, isCurrent]);
 
   const refresh = useCallback(() => {
     setNonce((n) => n + 1);
@@ -289,16 +313,19 @@ export default function ReportWorkbenchPage() {
     action: TransitionAction,
     evidence?: TransitionEvidence,
   ): Promise<boolean> => {
-    if (!selectedId) return false;
+    if (!isCurrent() || !isSelectedCurrent() || boundContext.current !== isCurrent || !selectedId || !current || actionPending.current) return false;
+    actionPending.current = true;
     setBusy(true);
     try {
       await api.transition(selectedId, action, evidence);
+      if (!isCurrent() || !isSelectedCurrent()) return false;
       message.success(
         { submit: "已提交审核", return: "已退回", approve: "已批准", publish: "已发布", withdraw: "已撤回" }[action],
       );
       refresh();
       return true;
     } catch (e) {
+      if (!isCurrent() || !isSelectedCurrent()) return false;
       if (errorKind(e) === "conflict") {
         message.warning("状态已变化，已为你刷新到最新状态");
         refresh();
@@ -307,24 +334,30 @@ export default function ReportWorkbenchPage() {
       }
       return false;
     } finally {
-      setBusy(false);
+      if (isCurrent()) {
+        actionPending.current = false;
+        setBusy(false);
+      }
     }
   };
 
   const submitReturn = async () => {
+    if (!isCurrent() || !isSelectedCurrent()) return;
     const comment = returnComment.trim();
     if (!comment) {
       message.warning("请填写退回原因");
       return;
     }
-    if (await runTransition("return", { comment })) {
+    if (await runTransition("return", { comment }) && isCurrent() && isSelectedCurrent()) {
       setReturnOpen(false);
       setReturnComment("");
     }
   };
 
   const confirmWithdraw = () => {
-    Modal.confirm({
+    if (!isCurrent() || !isSelectedCurrent() || actionPending.current) return;
+    confirmation.current?.destroy();
+    confirmation.current = Modal.confirm({
       title: "撤回此版本？",
       content: "撤回后客户将立即看不到此版本，该操作需要重新生成并发布才能恢复。",
       okText: "确认",
@@ -335,7 +368,9 @@ export default function ReportWorkbenchPage() {
   };
 
   const confirmPublish = () => {
-    Modal.confirm({
+    if (!isCurrent() || !isSelectedCurrent() || actionPending.current) return;
+    confirmation.current?.destroy();
+    confirmation.current = Modal.confirm({
       title: "发布此版本？",
       content: "发布后客户立即可见；同一份报告的旧发布版本将自动标记为已被替代。",
       okText: "发布",
@@ -345,7 +380,8 @@ export default function ReportWorkbenchPage() {
   };
 
   const generate = async () => {
-    if (!clientId) return;
+    if (!clientId || !isCurrent() || boundContext.current !== isCurrent || actionPending.current) return;
+    actionPending.current = true;
     setBusy(true);
     if (!generateRequestId.current) {
       generateRequestId.current = crypto.randomUUID();
@@ -353,7 +389,15 @@ export default function ReportWorkbenchPage() {
     }
     try {
       const accepted = await api.generate(clientId, reportId, generateRequestId.current);
+      if (!isCurrent()) return;
       if (accepted.status === "draft") {
+        const items = await api.listVersions(reportId);
+        if (!isCurrent()) return;
+        if (!items.some((version) => version.version_id === accepted.version_id)) {
+          message.error("版本归属校验失败，已为你刷新");
+          refresh();
+          return;
+        }
         generateRequestId.current = null;
         sessionStorage.removeItem(requestStorageKey);
         sessionStorage.removeItem(jobStorageKey);
@@ -365,14 +409,18 @@ export default function ReportWorkbenchPage() {
         setJob(null);
         try {
           const failed = await api.getJob(accepted.job_id);
+          if (!isCurrent()) return;
           if (generationFailureCanResume(failed.error_reason)) {
             message.warning("生成服务中断，可恢复原生成任务");
           } else {
             generateRequestId.current = null;
             sessionStorage.removeItem(requestStorageKey);
-            message.error("生成失败，请检查材料后重新生成");
+            message.error(failed.error_reason === "REPORT_SOURCE_INDEX_OUTDATED"
+              ? reasonCopy(failed.error_reason)
+              : "生成失败，请检查材料后重新生成");
           }
         } catch {
+          if (!isCurrent()) return;
           // 无法确认失败类型时保留原 request ID，避免丢掉可恢复任务。
           message.warning("暂时无法确认生成状态，可恢复原任务");
         }
@@ -382,7 +430,12 @@ export default function ReportWorkbenchPage() {
         sessionStorage.setItem(jobStorageKey, accepted.job_id);
       }
     } catch (e) {
-      if (errorKind(e) === "notFound") {
+      if (!isCurrent()) return;
+      if (e instanceof ApiError && e.code === "REPORT_SOURCE_INDEX_OUTDATED") {
+        generateRequestId.current = null;
+        sessionStorage.removeItem(requestStorageKey);
+        message.warning(reasonCopy(e.code));
+      } else if (errorKind(e) === "notFound") {
         generateRequestId.current = null;
         sessionStorage.removeItem(requestStorageKey);
         message.error("可用材料不足或报告不存在，无法生成");
@@ -399,35 +452,50 @@ export default function ReportWorkbenchPage() {
         message.error("生成请求失败，请重试");
       }
     } finally {
-      setBusy(false);
+      if (isCurrent()) {
+        actionPending.current = false;
+        setBusy(false);
+      }
     }
   };
 
   const downloadHtml = async () => {
-    if (!selectedId) return;
+    if (!isCurrent() || !isSelectedCurrent() || !selectedId || downloadPending.current) return;
+    downloadPending.current = true;
     setDownloading(true);
     try {
       const artifact = await api.getVersionHtmlArtifact(selectedId);
+      if (!isCurrent() || !isSelectedCurrent()) return;
       saveHtmlReportArtifact(artifact);
       message.success("HTML 报告已开始下载");
     } catch {
+      if (!isCurrent() || !isSelectedCurrent()) return;
       message.error("HTML 报告下载失败，请稍后重试");
     } finally {
-      setDownloading(false);
+      if (isCurrent()) {
+        downloadPending.current = false;
+        setDownloading(false);
+      }
     }
   };
 
   const downloadPdf = async () => {
-    if (!selectedId) return;
+    if (!isCurrent() || !isSelectedCurrent() || !selectedId || downloadPending.current) return;
+    downloadPending.current = true;
     setDownloading(true);
     try {
       const artifact = await api.getVersionPdfArtifact(selectedId);
+      if (!isCurrent() || !isSelectedCurrent()) return;
       saveHtmlReportArtifact(artifact);
       message.success("PDF 报告已开始下载");
     } catch {
+      if (!isCurrent() || !isSelectedCurrent()) return;
       message.error("PDF 报告下载失败，请稍后重试");
     } finally {
-      setDownloading(false);
+      if (isCurrent()) {
+        downloadPending.current = false;
+        setDownloading(false);
+      }
     }
   };
 
@@ -499,7 +567,25 @@ export default function ReportWorkbenchPage() {
                     </Button>
                   </div>
                 ) : generating ? (
-                  <StatusDot tone="processing" label="正在生成，通常需要数十秒…" />
+                  <div>
+                    <StatusDot
+                      tone={job?.status === "queued" && ["retry_wait", "blocked"].includes(job.delivery?.state ?? "") ? "warning" : "processing"}
+                      label={job?.status !== "queued" ? "正在生成"
+                        : job.delivery?.state === "retry_wait" ? "投递失败，等待自动重试"
+                        : job.delivery?.state === "blocked" ? "任务已暂停，需要处理后恢复"
+                        : job.delivery?.state === "dispatched" ? "已投递，等待处理"
+                        : "排队中"}
+                    />
+                    {job?.status === "queued" && job.delivery && ["retry_wait", "blocked"].includes(job.delivery.state) && (
+                      <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 8 }}>
+                        已尝试投递 {job.delivery.attempt} 次。
+                        {job.delivery.reason_code ? reasonCopy(job.delivery.reason_code) : "暂未取得失败原因。"}
+                      </Typography.Paragraph>
+                    )}
+                    {job?.status === "queued" && job.delivery?.state === "blocked" && (
+                      <Button size="small" onClick={() => setJob({ ...job, delivery: null })}>刷新任务状态</Button>
+                    )}
+                  </div>
                 ) : (
                   <StatusDot
                     tone={STATUS_TONE[status ?? "empty"]}

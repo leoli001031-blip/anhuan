@@ -26,6 +26,7 @@ from ..material_intake.cloud_ocr import resolve_ocr_engine
 from ..material_intake.ocr import (
     LocalOcrError,
     OcrPageResult,
+    PDF_TEXT_PARSER_VERSION,
     RETRYABLE_OCR_REASON_CODES,
     extract_pdf_text_pages,
 )
@@ -50,7 +51,7 @@ ENGINEERING_FLAG = "F1_LOCAL_ENGINEERING"
 AUTO_PIPELINE_FLAG = "F1_MATERIAL_AUTO_PIPELINE_LOCAL"
 LOCAL_INDEX_FLAG = "F1_MATERIAL_RAG_LOCAL_INDEX"
 PHYSICAL_ORCHESTRATION_FLAG = "F1_MATERIAL_RAG_ORCHESTRATION_LOCAL"
-PDF_PARSER_VERSION = "pypdf-6.14.2"
+PDF_PARSER_VERSION = PDF_TEXT_PARSER_VERSION
 MAX_PDF_PAGES = 128
 MAX_PAGE_TEXT_CHARACTERS = 100_000
 MAX_DOCUMENT_TEXT_CHARACTERS = 2_000_000
@@ -155,9 +156,12 @@ async def _released_pdf(claim: MaterialRagJobClaim) -> _ReleasedPdf:
 
 
 def _open_source(claim: MaterialRagJobClaim, source: _ReleasedPdf) -> BinaryIO:
-    from ... import storage
+    from ... import storage, source_gateway
 
     try:
+        if source_gateway.gateway_enabled():
+            from io import BytesIO
+            return BytesIO(source_gateway.fetch_source("pdf-index", claim.id, claim.lease_token, claim.source_sha256, source.source_size))
         return storage.open_quarantine_source(
             source.object_key,
             claim.source_sha256,
@@ -354,12 +358,33 @@ async def run_local_index_job(
             raise MaterialRagLeaseLost("MATERIAL_RAG_LEASE_LOST")
         source = await _released_pdf(claim)
         engine = resolve_ocr_engine()
-        units = await asyncio.to_thread(_parse_pdf, claim, source, ocr_pages=engine.pages)
+        from ...ocr_cache import task_scope
+        with task_scope('pdf-index', claim.id, claim.lease_token, claim.enterprise_id, claim.document_version_id):
+            units = await asyncio.to_thread(_parse_pdf, claim, source, ocr_pages=engine.pages)
         _validate_units(claim, units)
         # Re-prove the exact released source under this live job lease while
         # writing encrypted canonical units.  No remote mutation occurs.
         with live_source_mutation_fence(claim, lease_seconds=900):
             async with _claimed_session(claim) as session:
+                if claim.action == "rebuild":
+                    # A rebuild replaces one complete manifest atomically.
+                    # Old parser rows must never coexist with new evidence.
+                    # Frozen report bodies are held separately and unchanged.
+                    await session.execute(
+                        text(
+                            "DELETE FROM f1.material_rag_unit "
+                            "WHERE enterprise_id=:enterprise_id "
+                            "AND knowledge_scope_id=:scope_id "
+                            "AND document_version_id=:version_id "
+                            "AND source_sha256=:source_sha"
+                        ),
+                        {
+                            "enterprise_id": claim.enterprise_id,
+                            "scope_id": claim.knowledge_scope_id,
+                            "version_id": claim.document_version_id,
+                            "source_sha": claim.source_sha256,
+                        },
+                    )
                 await persist_canonical_units(session, units)
                 await session.commit()
         async with _claimed_session(claim) as session:

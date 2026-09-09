@@ -11,19 +11,9 @@ export interface Membership {
   role: string;
 }
 
-export class ApiError extends Error {
-  readonly status: number;
-  readonly code: string;
-  readonly retryable: boolean;
-
-  constructor(status: number, code: string, retryable: boolean) {
-    super(code);
-    this.name = "ApiError";
-    this.status = status;
-    this.code = code;
-    this.retryable = retryable;
-  }
-}
+// Transport, adapters and UI must share constructor identity for instanceof.
+import { ApiError } from "./adapters/errors";
+export { ApiError };
 
 export {
   ENTERPRISE_CHANGED_EVENT,

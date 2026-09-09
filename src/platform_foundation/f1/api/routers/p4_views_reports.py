@@ -43,6 +43,7 @@ class DashboardOut(BaseModel):
 
 
 class CrmAccountCreate(BaseModel):
+    request_id: uuid.UUID | None = None
     display_name: str = Field(min_length=1, max_length=200)
     stage: Literal["lead", "active", "dormant", "closed"] = "lead"
     owner_user_id: uuid.UUID | None = None

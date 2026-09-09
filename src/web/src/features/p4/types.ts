@@ -86,6 +86,7 @@ export interface CrmAccountCollection {
 }
 
 export interface CreateCrmAccountInput {
+  request_id?: string;
   display_name: string;
   stage: CrmStage;
   owner_user_id?: string | null;
@@ -94,7 +95,7 @@ export interface CreateCrmAccountInput {
   next_follow_up_at?: string | null;
 }
 
-export type UpdateCrmAccountInput = Partial<CreateCrmAccountInput>;
+export type UpdateCrmAccountInput = Partial<Omit<CreateCrmAccountInput, "request_id">>;
 
 export interface CreateCrmContactInput {
   display_name: string;

@@ -308,6 +308,10 @@ async def _finish_generation_delivery(
 async def _process_generation_delivery(
     delivery_id: uuid.UUID, dispatch_token: uuid.UUID
 ) -> None:
+    if os.environ.get('F1_REPORT_WORKER_RESTRICTED') == '1':
+        from .restricted_worker import process_delivery
+        await process_delivery(delivery_id, dispatch_token)
+        return
     claim = await delivery_repository.read_delivery_claim(
         delivery_id, dispatch_token
     )

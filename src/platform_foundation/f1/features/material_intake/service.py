@@ -24,6 +24,7 @@ from .contracts import (
     material_allowed_actions,
 )
 from .ocr import (
+    MATERIAL_EXTRACTION_CONTRACT,
     MAX_OCR_CHECKPOINT_TEXT_BYTES,
     MAX_OCR_PAGE_TEXT_CHARACTERS,
     OCR_PARSER_BACKEND,
@@ -81,7 +82,7 @@ async def _register_auto_pipeline_delivery_if_enabled(
     tenant: Tenant,
     document_version_id: uuid.UUID,
 ) -> None:
-    """Atomically hand a ready analysis to the local automatic pipeline."""
+    """Atomically hand a ready material to the local automatic pipeline."""
     if tenant.role not in {"super_admin", "enterprise_admin"}:
         return
     # Lazy imports keep the material-analysis module independent when the
@@ -89,6 +90,13 @@ async def _register_auto_pipeline_delivery_if_enabled(
     from ..material_pipeline.coordinator import auto_pipeline_enabled
 
     if not auto_pipeline_enabled():
+        return
+    from ...ingestion_context import current_capability
+
+    if current_capability() is not None:
+        stable = (await session.execute(text('SELECT f1.register_ingestion_worker_pipeline()'))).scalar_one()
+        if stable is None:
+            raise RuntimeError('INGESTION_HANDOFF_DENIED')
         return
     from ..material_pipeline.repository import register_delivery_in_session
 
@@ -590,7 +598,8 @@ async def persist_material_analysis(
                 raise RuntimeError("MATERIAL_ANALYSIS_SOURCE_NOT_READY")
             revisions_enabled = material_analysis_recovery_enabled()
             revision_select = (
-                ",analysis.analysis_revision" if revisions_enabled else ""
+                ",analysis.analysis_revision,analysis.extraction_contract"
+                if revisions_enabled else ""
             )
             revision_order = (
                 " ORDER BY analysis.analysis_revision DESC,analysis.id DESC LIMIT 1"
@@ -634,14 +643,19 @@ async def persist_material_analysis(
                     raise RuntimeError("MATERIAL_ANALYSIS_SOURCE_IDENTITY_MISMATCH")
                 existing_status = str(existing["status"])
                 ocr_retry_required = bool(existing["ocr_retry_required"])
-                if existing_status == "confirmed" and ocr_retry_required:
+                extraction_outdated = revisions_enabled and int(
+                    existing["extraction_contract"]
+                ) != MATERIAL_EXTRACTION_CONTRACT
+                if existing_status == "confirmed" and (
+                    ocr_retry_required or extraction_outdated
+                ):
                     raise RuntimeError(
                         "MATERIAL_ANALYSIS_CONFIRMED_OCR_REVIEW_REQUIRED"
                     )
                 if existing_status in {"ready", "confirmed"} and not (
                     revisions_enabled
                     and existing_status == "ready"
-                    and ocr_retry_required
+                    and (ocr_retry_required or extraction_outdated)
                 ):
                     await _register_auto_pipeline_delivery_if_enabled(
                         session,
@@ -687,6 +701,7 @@ async def persist_material_analysis(
                 "source_sha256": source_sha256,
                 "analysis_version": MATERIAL_ANALYSIS_VERSION,
                 "analysis_revision": analysis_revision,
+                "extraction_contract": MATERIAL_EXTRACTION_CONTRACT,
                 "supersedes_analysis_id": supersedes_analysis_id,
                 "status": status,
                 "profile": profile,
@@ -701,12 +716,12 @@ async def persist_material_analysis(
                 "candidate_count": candidate_count,
             }
             revision_insert_columns = (
-                "analysis_revision,supersedes_analysis_id,"
+                "analysis_revision,supersedes_analysis_id,extraction_contract,"
                 if revisions_enabled
                 else ""
             )
             revision_insert_values = (
-                ":analysis_revision,:supersedes_analysis_id,"
+                ":analysis_revision,:supersedes_analysis_id,:extraction_contract,"
                 if revisions_enabled
                 else ""
             )

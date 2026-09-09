@@ -9,7 +9,7 @@ import uuid
 from collections.abc import Sequence
 from typing import Protocol
 
-from .contracts import MaterialEvidence, ScopeKind
+from .contracts import MaterialEvidence, ScopeKind, MAX_CORPUS_FRAGMENTS
 
 
 MAX_LOCAL_CANDIDATES = 256
@@ -73,7 +73,7 @@ def rank_local_evidence(
     """
     if not isinstance(query, str) or not query.strip() or not 1 <= limit <= 20:
         raise ValueError("MATERIAL_LOCAL_QUERY_INVALID")
-    if len(records) > MAX_LOCAL_CANDIDATES:
+    if len(records) > MAX_CORPUS_FRAGMENTS:
         raise LocalExtractiveIntegrityError("MATERIAL_LOCAL_CANDIDATE_LIMIT")
     query_text = _normalized(query)
     query_features = _features(query)
@@ -111,6 +111,8 @@ def rank_local_evidence(
                 body_sha256=record.body_sha256,
                 snippet=compact_body[:320],
                 scope_kind=record.scope_kind,
+                locator=getattr(record, "locator", None),
+                evidence_revision_id=getattr(record, "evidence_revision_id", None),
             )
         except LocalExtractiveIntegrityError:
             raise
@@ -120,7 +122,7 @@ def rank_local_evidence(
             (
                 -score,
                 str(record.document_version_id),
-                record.page_number,
+                record.page_number or 0,
                 str(record.canonical_unit_id),
                 evidence,
             )

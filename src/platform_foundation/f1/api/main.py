@@ -9,11 +9,14 @@ from ..observability import init_telemetry
 from ..health import readiness
 from .routers import (
     analysis_reports,
+    client_portal_access,
     audit,
     documents,
     enterprises,
+    evidence_original,
     findings,
     invitation,
+    memberships,
     material_qa,
     material_qa_uat,
     p3_controlled_ingestion,
@@ -30,6 +33,10 @@ from .routers import (
 )
 
 app = FastAPI(title="AnHuan F1 Platform Shell")
+from ..features.material_pipeline.control_gateway import router as pipeline_control_router
+
+app.include_router(pipeline_control_router)
+app.include_router(evidence_original.router, prefix='/api/v1/evidence', tags=['evidence'])
 
 # OpenTelemetry: SDK + FastAPI auto-instrumentation.
 init_telemetry()
@@ -38,6 +45,8 @@ FastAPIInstrumentor.instrument_app(app)
 app.include_router(enterprises.router, prefix="/api/v1/enterprises", tags=["enterprises"])
 app.include_router(plants.router, prefix="/api/v1/plants", tags=["plants"])
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
+app.include_router(memberships.router, prefix="/api/v1/memberships", tags=["memberships"])
+app.include_router(client_portal_access.router, prefix="/api/v1/clients", tags=["client-access"])
 app.include_router(documents.router, prefix="/api/v1/documents", tags=["documents"])
 app.include_router(qa.router, prefix="/api/v1/qa", tags=["qa"])
 app.include_router(
