@@ -11,7 +11,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             assert self.path=='/chat/completions'
-            assert self.headers.get('Authorization')=='Bearer '+(ROOT/'ocr_key').read_text().strip()
+            assert self.headers.get('Authorization')=='Bearer '+Path('/synthetic-auth/ocr_key').read_text().strip()
             n=int(self.headers.get('Content-Length','0'));assert 0<n<9*1024*1024
             data=json.loads(self.rfile.read(n));assert data['model']=='synthetic-hash-bound'
             images=[x['image_url']['url'] for m in data['messages'] if isinstance(m.get('content'),list) for x in m['content'] if x.get('type')=='image_url']

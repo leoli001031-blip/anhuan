@@ -104,17 +104,34 @@ class ServiceStorageRuntimeTests(unittest.TestCase):
         docker('run','--rm','--label',f'io.anhuan.scope={SCOPE}','--label',f'io.anhuan.storage-run={RUN}',
                '--network','none','--read-only','--volume',str(script)+':/init.sh:ro','--volume',str(directory)+':/source:ro',*mounts,
                'redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2','/bin/sh','/init.sh')
+        # The initializer creates root-owned 0600 runtime files. On Linux the
+        # host runner must not be able to read them; inspect from the same
+        # runtime identity and return only ownership/mode/content hashes.
+        readonly_mounts=[]
+        for name,target in destinations.items():readonly_mounts.extend(['--volume',str(target)+':/'+name+':ro'])
+        observed=docker('run','--rm','--user','0:0','--label',f'io.anhuan.scope={SCOPE}','--label',f'io.anhuan.storage-run={RUN}',
+            '--network','none','--read-only',*readonly_mounts,
+            'redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2','/bin/sh','-ec',
+            'for file in /api/* /worker/* /ingestion-worker/* /storage-provisioner/* /source-gateway/* /migrator/* /report-worker/*; do '
+            '[ -f "$file" ] || continue; printf "%s " "$file"; stat -c "%u %a" "$file" | tr "\\n" " "; '
+            'sha256sum "$file" | cut -d " " -f 1; done')
+        metadata={}
+        for line in observed.splitlines():
+            name,uid,mode,digest=line.split();metadata[name]={'uid':int(uid),'mode':int(mode,8),'sha256':digest}
+        def runtime_files(destination):
+            return {Path(name).name for name in metadata if Path(name).parent==Path('/'+destination)}
+        def matches_source(destination,name,source):
+            value=metadata['/'+destination+'/'+name]
+            self.assertEqual(value,{'uid':0,'mode':0o600,'sha256':hashlib.sha256((directory/source).read_bytes()).hexdigest()})
         for role, destination in (('api','api'),('ingestion','source-gateway')):
-            target=destinations[destination]
-            self.assertEqual({p.name for p in target.iterdir()},{'minio_service_user','minio_service_password'} | ({'f1_source_reader_password'} if role=='ingestion' else set()))
+            self.assertEqual(runtime_files(destination),{'minio_service_user','minio_service_password'} | ({'f1_source_reader_password'} if role=='ingestion' else set()))
             for kind in ('user','password'):
-                self.assertEqual((target/f'minio_service_{kind}').read_bytes(),(directory/f'minio_{role}_{kind}').read_bytes())
-                self.assertEqual((target/f'minio_service_{kind}').stat().st_mode&0o777,0o600)
-        self.assertEqual({p.name for p in destinations['ingestion-worker'].iterdir()},{'f1_ingestion_worker_password'})
-        self.assertEqual(list(destinations['worker'].iterdir()),[])
-        self.assertEqual({p.name for p in destinations['migrator'].iterdir()},{'f1_source_reader_password','f1_report_worker_password','f1_ingestion_worker_password'})
-        self.assertEqual({p.name for p in destinations['report-worker'].iterdir()},{'f1_report_worker_password'})
-        self.assertEqual((destinations['report-worker']/'f1_report_worker_password').read_bytes(),(directory/'f1_report_worker_password').read_bytes())
+                matches_source(destination,f'minio_service_{kind}',f'minio_{role}_{kind}')
+        self.assertEqual(runtime_files('ingestion-worker'),{'f1_ingestion_worker_password'})
+        self.assertEqual(runtime_files('worker'),set())
+        self.assertEqual(runtime_files('migrator'),{'f1_source_reader_password','f1_report_worker_password','f1_ingestion_worker_password'})
+        self.assertEqual(runtime_files('report-worker'),{'f1_report_worker_password'})
+        matches_source('report-worker','f1_report_worker_password','f1_report_worker_password')
         # Existing candidates may need new service identities. Adding them is
         # resumable without changing existing keys or accepting unknown files.
         (directory/'minio_worker_user').unlink()

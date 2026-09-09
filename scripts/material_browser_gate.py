@@ -227,8 +227,25 @@ def run(evidence:Path, *, recovery_fault=False):
             for name in ['api','worker','ingestion-worker']:
                 svc=cfg['services'][name]
                 svc['environment'].update(F1_MATERIAL_CLOUD_OCR_PROVIDER='glm_vision',F1_MATERIAL_CLOUD_OCR_MODEL='synthetic-hash-bound',F1_MATERIAL_CLOUD_OCR_DIALECT='chat',F1_MATERIAL_CLOUD_OCR_BASE_URL='https://synthetic-ocr:8443',F1_MATERIAL_CLOUD_OCR_API_KEY_FILE='/synthetic/ocr_key')
-                svc['volumes'] += [{'type':'bind','source':str(materials/'ocr_key'),'target':'/synthetic/ocr_key','read_only':True},{'type':'bind','source':str(materials/'ca.pem'),'target':'/usr/local/lib/python3.11/site-packages/certifi/cacert.pem','read_only':True}]
-            cfg['services']['synthetic-ocr']={'image':state['runtime_image'],'command':['python','-B','/runner/synthetic_ocr_server.py'],'volumes':[{'type':'bind','source':str(ROOT/'scripts/synthetic_ocr_server.py'),'target':'/runner/synthetic_ocr_server.py','read_only':True},{'type':'bind','source':str(materials),'target':'/synthetic','read_only':True}],'networks':['localnet'],'labels':{'io.anhuan.scope':'analysis-report-uat','io.anhuan.project-id':state['project_id']},'read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'healthcheck':{'test':['CMD','python','-c',"import socket;socket.create_connection(('127.0.0.1',8443),2).close()"],'interval':'3s','timeout':'3s','retries':20}}
+                svc['volumes'] += [{'type':'volume','source':'synthetic_ocr_auth','target':'/synthetic','read_only':True},{'type':'bind','source':str(materials/'ca.pem'),'target':'/usr/local/lib/python3.11/site-packages/certifi/cacert.pem','read_only':True}]
+            labels={'io.anhuan.scope':'analysis-report-uat','io.anhuan.project-id':state['project_id']}
+            for name in ['synthetic_ocr_inputs','synthetic_ocr_auth']:
+                cfg['volumes'][name]={'labels':labels}
+            # Linux bind mounts retain the host UID. Keep host secrets at 0600,
+            # and copy only the generated test inputs into owned runtime volumes.
+            # API/worker mounts contain the auth key, never the server TLS key.
+            cfg['services']['synthetic-input-init']={
+                'image':cfg['services']['secret-init']['image'],'user':'0:0',
+                'command':['/bin/sh','-ec',
+                    'umask 077; cp /source/tls.pem /source/tls.key /source/ocr_responses.json /inputs/; '
+                    'cp /source/ocr_key /auth/ocr_key; '
+                    'chown -R 65532:65532 /inputs /auth; '
+                    'chmod 0700 /inputs /auth; chmod 0400 /inputs/*; chmod 0600 /auth/ocr_key'],
+                'network_mode':'none','read_only':True,'restart':'no','labels':labels,
+                'volumes':[{'type':'bind','source':str(materials),'target':'/source','read_only':True},
+                    {'type':'volume','source':'synthetic_ocr_inputs','target':'/inputs'},
+                    {'type':'volume','source':'synthetic_ocr_auth','target':'/auth'}]}
+            cfg['services']['synthetic-ocr']={'image':state['runtime_image'],'user':'65532:65532','command':['python','-B','/runner/synthetic_ocr_server.py'],'volumes':[{'type':'bind','source':str(ROOT/'scripts/synthetic_ocr_server.py'),'target':'/runner/synthetic_ocr_server.py','read_only':True},{'type':'volume','source':'synthetic_ocr_inputs','target':'/synthetic','read_only':True},{'type':'volume','source':'synthetic_ocr_auth','target':'/synthetic-auth','read_only':True}],'networks':['localnet'],'labels':labels,'read_only':True,'cap_drop':['ALL'],'security_opt':['no-new-privileges:true'],'healthcheck':{'test':['CMD','python','-c',"import socket;socket.create_connection(('127.0.0.1',8443),2).close()"],'interval':'3s','timeout':'3s','retries':20}}
             pdf_input=next(item for item in report['inputs'] if item['id']=='pdf')
             cfg['services']['render-probe']={'image':state['runtime_image'],'network_mode':'none',
                 'command':['python','-B','-c',"from pathlib import Path;import hashlib;from platform_foundation.f1.features.material_intake.pdf_renderer import render_pdf_page;data=Path('/input.pdf').read_bytes();assert hashlib.sha256(data).hexdigest()=="+repr(pdf_input['sha256'])+";print(hashlib.sha256(render_pdf_page(data,1)).hexdigest())"],
@@ -245,6 +262,16 @@ def run(evidence:Path, *, recovery_fault=False):
             mappings[rendered]=mappings.pop(old)
             (materials/'ocr_responses.json').write_text(json.dumps(mappings))
             report['test_ocr_pdf_render']={'host_sha256':old,'candidate_linux_sha256':rendered,'source_sha256':pdf_input['sha256']};persist()
+            compose('run','--rm','--no-deps','synthetic-input-init',timeout=60)
+            permission_probe=compose('run','--rm','--no-deps','synthetic-ocr','python','-B','-c',
+                "from pathlib import Path;import os,ssl,stat;assert os.geteuid()==65532;"
+                "files=[Path('/synthetic/tls.key'),Path('/synthetic/tls.pem'),Path('/synthetic/ocr_responses.json'),Path('/synthetic-auth/ocr_key')];"
+                "assert all(p.stat().st_uid==65532 and stat.S_IMODE(p.stat().st_mode)==(0o600 if p.name=='ocr_key' else 0o400) and p.read_bytes() for p in files);"
+                "assert sorted(p.name for p in Path('/synthetic-auth').iterdir())==['ocr_key'];"
+                "ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER).load_cert_chain('/synthetic/tls.pem','/synthetic/tls.key');print('SYNTHETIC_INPUT_PERMISSIONS_PASSED')",timeout=30)
+            assert permission_probe.stdout.strip()=='SYNTHETIC_INPUT_PERMISSIONS_PASSED'
+            assert all(stat.S_IMODE((materials/name).stat().st_mode)==0o600 for name in ['tls.key','ocr_key'])
+            report['synthetic_input_permissions']={'status':'PASSED','runtime_uid':65532,'tls_key_mode':'0400','auth_key_mode':'0600','host_secret_mode':'0600','auth_volume_contains_tls_key':False};persist()
             compose('up','-d','--wait','--wait-timeout','360','postgres','keycloak','minio','redis','clamd',timeout=420)
             compose('run','--rm','--no-deps','storage-provisioner',timeout=180)
             compose('run','--rm','migrator',timeout=600)
