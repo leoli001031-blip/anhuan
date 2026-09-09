@@ -208,6 +208,11 @@ def run(evidence:Path, *, recovery_fault=False):
     try:
         shared=bounded_shared_fingerprint()
         assert not control.exists() and not browser_control.exists()
+        node=Path(shutil.which('node') or '/missing-node').resolve(strict=True)
+        node_stat=node.stat()
+        report['node_runtime']={'path':str(node),'mode':oct(stat.S_IMODE(node_stat.st_mode)),
+            'uid':node_stat.st_uid,'sha256':hashlib.sha256(node.read_bytes()).hexdigest()};persist()
+        assert stat.S_ISREG(node_stat.st_mode) and not node_stat.st_mode & (stat.S_IWGRP|stat.S_IWOTH) and os.access(node,os.X_OK), 'NODE_EXECUTABLE_PERMISSIONS_INVALID'
         owns_control=True
         with patch.dict(os.environ,clean_env,clear=True),patch.object(U,'_identity',return_value=identity),patch.object(U,'_run',command):
             state,paths=U._initialize()
@@ -344,8 +349,6 @@ def run(evidence:Path, *, recovery_fault=False):
                 compose('up','-d','--wait','--wait-timeout','90','worker','ingestion-worker','report-worker',timeout=120)
                 recovered=True
                 report['runtime_recovery']['state']='SERVICES_RESTARTED';persist()
-            node=Path(shutil.which('node') or '/missing-node').resolve(strict=True)
-            assert stat.S_ISREG(node.stat().st_mode) and not node.stat().st_mode & (stat.S_IWGRP|stat.S_IWOTH) and os.access(node,os.X_OK)
             cp=command([str(node),str(U.LC.PWA_BROWSER_RUNNER),origin,str(paths['secrets']),'--stage','material-chain','--pwa-update-control',str(browser_control)],paths=paths,timeout=1200,check=False,on_tick=supervise_recovery if recovery_fault else None)
             if cp.returncode:raise RuntimeError('MATERIAL_BROWSER_STAGE_FAILED')
             lines=cp.stdout.strip().splitlines();assert lines[-1]=='LOCAL_MATERIAL_CHAIN_BROWSER_OK'

@@ -56,6 +56,28 @@ jobs:
         if: matrix.mode == 'browser'
         shell: bash
         run: google-chrome --version 2>&1 | tee .local/acceptance/chrome-version.log
+      - name: Prepare isolated Node executable
+        if: matrix.mode == 'browser'
+        shell: bash
+        run: |
+          python - <<'PY' | tee .local/acceptance/node-runtime.json
+          import hashlib, json, os, pathlib, shutil, stat, tempfile
+          source = pathlib.Path(shutil.which('node')).resolve(strict=True)
+          info = source.stat()
+          assert stat.S_ISREG(info.st_mode) and os.access(source, os.X_OK)
+          before = hashlib.sha256(source.read_bytes()).hexdigest()
+          folder = pathlib.Path(tempfile.mkdtemp(prefix='anhuan-acceptance-node-', dir=os.environ['RUNNER_TEMP']))
+          target = folder / 'node'
+          shutil.copyfile(source, target)
+          target.chmod(0o500)
+          assert hashlib.sha256(target.read_bytes()).hexdigest() == before
+          assert hashlib.sha256(source.read_bytes()).hexdigest() == before
+          with open(os.environ['GITHUB_PATH'], 'a') as output:
+              output.write(str(folder) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('ANHUAN_ACCEPTANCE_NODE_DIR=' + str(folder) + '\n')
+          print(json.dumps({'source': str(source), 'source_mode': oct(stat.S_IMODE(info.st_mode)), 'sha256': before, 'executable': str(target), 'mode': '0500'}))
+          PY
       - name: Run acceptance gate
         shell: bash
         run: python -B scripts/acceptance_gate.py --mode '${{ matrix.mode }}' --evidence-dir .local/acceptance --timeout 1800
@@ -68,3 +90,17 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 14
+      - name: Remove isolated Node executable
+        if: always() && matrix.mode == 'browser'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import os, pathlib, shutil
+          raw = os.environ.get('ANHUAN_ACCEPTANCE_NODE_DIR')
+          if raw:
+              folder = pathlib.Path(raw)
+              assert folder.parent == pathlib.Path(os.environ['RUNNER_TEMP'])
+              assert folder.name.startswith('anhuan-acceptance-node-')
+              assert not folder.is_symlink() and folder.stat().st_uid == os.geteuid()
+              shutil.rmtree(folder)
+          PY
