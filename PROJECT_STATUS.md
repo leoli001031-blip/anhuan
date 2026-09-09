@@ -7,7 +7,7 @@
 
 ## 2026-09-09 当前优先批次
 
-当前候选仍为未提交工作树`codex/phase1-go-live-20260908@60f3217`，单一源码head `f1_0044`。B0映射更新、B2材料全链及B4本地工程验收已取得稳定同源码回执：368项离线、198项前端、197项实库、1个新环境恢复场景、29项浏览器检查通过。真实OCR/材料质量为NOT_TESTED，远端CI为NOT_RUN，当前候选NOT_COMMITTED / NOT_PUSHED / NOT_DEPLOYED。精确范围与后续依赖见[PHASE1_MATERIAL_STABILITY_TASKS.md](./PHASE1_MATERIAL_STABILITY_TASKS.md)，证据见[当前批次汇总](../../../out/phase1_material_stability_2026-09-09/current_priority_result.json)。以下9月2日及更早内容是历史快照，不代表0044当前候选。
+当前工程候选`codex/phase1-go-live-20260908@2297e3d`已按用户授权提交并推送，单一源码head `f1_0044`。B0映射、B2材料全链、B4本地及[远端CI](https://github.com/leoli001031-blip/anhuan/actions/runs/34332728730)已取得稳定同源码回执：368项离线、198项前端、197项实库、1个新环境恢复场景、29项浏览器检查通过。远端CI为REMOTE_CI_PASSED；真实OCR/材料质量仍为NOT_TESTED，当前候选NOT_DEPLOYED。该记录后的文档提交由同一workflow复验，当前提交回执见仓外remote_ci/current_result.json。精确范围与后续依赖见[PHASE1_MATERIAL_STABILITY_TASKS.md](./PHASE1_MATERIAL_STABILITY_TASKS.md)，证据见[当前批次汇总](../../../out/phase1_material_stability_2026-09-09/current_priority_result.json)。以下9月2日及更早内容是历史快照，不代表0044当前候选。
 
 ## 代码与版本
 

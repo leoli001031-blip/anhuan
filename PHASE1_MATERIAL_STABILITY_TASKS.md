@@ -4,7 +4,7 @@
 
 ## B0 当前起点
 
-工作树：`codex/phase1-go-live-20260908`，HEAD=`60f321745a4c3b3297ba96bb8077264bcbdbed07`，实现未提交；当前单一迁移head=`f1_0044 / 55`（55为受保护表子集）。起点0034及270项离线/157项前端/119项实库保留在仓外baseline.json。9月9日最终冻结验收：368项离线、198项前端、197项实库、1个多阶段新环境恢复场景、29项浏览器全链通过；四个工程门及真实quality未测门的源码指纹一致，运行期间不变。总回执：[current_priority_result.json](../../../out/phase1_material_stability_2026-09-09/current_priority_result.json)。以下表格为当前状态；后文逐阶段记录保留当时的限制，不覆盖最终结果。
+工作树：`codex/phase1-go-live-20260908`，起点HEAD=`60f321745a4c3b3297ba96bb8077264bcbdbed07`；工程候选现已提交/推送至`2297e3d`并通过远端CI（见末尾记录）；当前单一迁移head=`f1_0044 / 55`（55为受保护表子集）。起点0034及270项离线/157项前端/119项实库保留在仓外baseline.json。9月9日最终冻结验收：368项离线、198项前端、197项实库、1个多阶段新环境恢复场景、29项浏览器全链通过；四个工程门及真实quality未测门的源码指纹一致，运行期间不变。总回执：[current_priority_result.json](../../../out/phase1_material_stability_2026-09-09/current_priority_result.json)。以下表格为当前状态；后文逐阶段记录保留当时的限制，不覆盖最终结果。
 
 | 原问题 | 当前实现/证据入口 | 本轮处理 |
 |---|---|---|
@@ -16,7 +16,7 @@
 | E01 测试栈误清理 | analysis_report_postgres_integration.py、test_analysis_report_harness_isolation/parallel | 已有精确项目清理与并行实测；新测试资源复用这套边界 |
 | E02 部署迁移目标失配 | analysis-reports/migrate.py、DEPLOYMENT.md及deployment_preflight测试 | 当前0044合同及新环境恢复已通过；每次新迁移同步专属入口，默认0014/material0016不变 |
 | E03 测试门失配 | acceptance_gate.py、unittest_evidence_runner.py及上述两份回执 | 已有实际逐例统计；扩展套件必须纳入统一门 |
-| E04 未接线验收与CI | acceptance_gate.py五个mode均有runner；.github/workflows/acceptance.yml接offline/integration/restore/browser | 四个工程mode本地通过，quality缺真实输入NOT_TESTED；S07远端CI尚未运行 |
+| E04 未接线验收与CI | acceptance_gate.py五个mode均有runner；.github/workflows/acceptance.yml接offline/integration/restore/browser | 四个工程mode本地及远端CI通过，quality缺真实输入NOT_TESTED；远端证据见末尾 |
 | E05 队列失败不可见 | analysis_reports/service.py:job_status已投影delivery state/attempt/reason；ReportWorkbenchPage显示自动重试/暂停 | S01定向通过，当前浏览器门含真实Redis故障/后台重启；S08只读监控在故障时实际ALERT |
 
 以上是原问题到实现/回归入口的映射，不能据此宣称最终发布已验收。新增故障按同样规则记录。
@@ -26,7 +26,7 @@
 | R04/R05/R07 | 四格式上传、版本、解析、修订、检索、原件与报告引用已接通并通过合成浏览器全链 | P01–P07工程验收通过；P08真实材料质量仍待输入 |
 | R13/R14 | 四格式定位/revision/片段/正文SHA已冻结；人工修订或新版本不改旧报告 | P06工程通过；正式模板与专业业务验收另列B3/B5 |
 | R20 | 数据库投递、受限历史补投/恢复、对象对账修复、独立后台权限、OCR缓存已接通 | S01–S05本地定向/整栈通过；目标环境需重验 |
-| R21/R22 | 统一门五个mode已接；当前0044新环境恢复与浏览器门本地通过 | S07远端CI；P08真实质量；S08目标部署/告警/维护交接待完成 |
+| R21/R22 | 统一门五个mode已接；当前0044新环境恢复与浏览器门本地通过 | S07远端CI已通过；P08真实质量及S08目标部署/告警/维护交接待完成 |
 | R01–R03/R06/R08–R12/R15–R19 | 有不同程度代码基础，完整业务验收未完成 | 保留B1/B3；仅处理本次材料/权限/报告接入所必需部分，不顺带宣称其完成 |
 
 ## B2 材料全链
@@ -52,7 +52,7 @@
 | S04 TARGETED_TEST_PASSED / 整栈OCR复用通过；真实质量待输入 | PDF分析/索引及JPEG复用可信OCR checkpoint，校验source/parser/render身份与覆盖 | P03/P04、现有0028/0029契约 | 相同已确认输入复用，源/渲染/解析版本变化失效；不会用旧错误结果生成新报告；真实调用计数佐证 |
 | S05 TARGETED_TEST_PASSED / 实际Redis中断与worker重启恢复通过 | native历史缺任务补投、blocked受限重绑、租约/重启恢复 | P04/S02；保持完成revision不可变 | 缺任务只补一次；旧actor/token不能提交；未知提交结果不覆盖已完成数据；重复投递无重复片段 |
 | S06 新环境恢复/独立读取TARGETED_TEST_PASSED | 当前analysis-report候选备份/恢复：DB、MinIO、密钥、迁移和重建；独立新环境演练 | P04/P06/S02/S05稳定 | 恢复后原件hash、密文解密、revision、检索与冻结报告一致；缺密钥/损坏备份明确拒绝；旧0015/0016恢复工具不冒充0034+证明 |
-| S07 本地统一门通过；远端CI NOT_RUN | acceptance_gate接browser/restore/quality真实runner，扩CI并上传逐例证据 | 相应runner成熟即接线 | 缺依赖/输入不返回PASS；同候选完整计数与日志；CI实际执行并取回结果，配置存在不算通过 |
+| S07 本地统一门通过 / REMOTE_CI_PASSED | acceptance_gate接browser/restore/quality真实runner，扩CI并上传逐例证据 | 相应runner成熟即接线 | 缺依赖/输入不返回PASS；同候选完整计数与日志；CI实际执行并取回结果，配置存在不算通过 |
 | S08 本地只读监控/故障告警通过；目标环境与通知NOT_TESTED | 队列/失败/对象异常监控，目标环境预检、安装升级、恢复告警说明与维护交接 | S01–S07；实际环境、预算、维护人输入 | 本地隔离工程先验；目标环境版本与配置核对、告警真实触达及恢复耗时另验；正式部署状态单独记录 |
 
 执行顺序：B0核对与S01定向验证已完成→P01→P02/P03→P04→P05/P06→P07/P08；S02–S05随相关任务合同稳定穿插，S06/S07完成后进行最终一致候选验收，S08实际部署依赖环境输入。遇到影响数据正确性的阻断先修，并及时更新顺序。通用工程无需重新等待客户授权；真实数据/费用/生产配置按已经明确的授权范围处理。
@@ -115,8 +115,19 @@ S08正常时十二服务、数据库与readyz通过，Redis中断时三者均ALE
 | 剩余项 | 入口 | 依赖 | 验收条件 |
 |---|---|---|---|
 | P08真实材料质量 | scripts/MATERIAL_QUALITY_GATE.md；acceptance_gate.py --mode quality | 允许处理的四格式原件、独立人工金标、实际模型配置/处理授权、复核人 | 真实提取逐块比对数字/单位/遗漏/位置；记录实际模型调用，专业内容与人工接受分别验收 |
-| S07远端CI | .github/workflows/acceptance.yml | 当前可审查候选的commit/push明确授权与可用远端仓库 | 同一提交的offline/integration/restore/browser四个job实际运行并保存逐例日志；无checks不算通过 |
+| S07远端CI（已完成） | .github/workflows/acceptance.yml及下方实际运行回执 | 授权已收到、候选已提交推送 | 2297e3d四个job已实际通过；逐例证据及日志SHA已取回核对 |
 | S08目标运行 | CANDIDATE_OPERATIONS.md、CURRENT_HEAD_RECOVERY.md、OBJECT_RECONCILE.md | 实际环境/账号、负责人、预算、阈值/通知渠道、备份保留与RPO/RTO（唯一决策台账Q07/Q08/Q11/Q12） | 目标预检与迁移/恢复、告警真实送达、运维交接及观察完成 |
 | 完整一期其余范围 | PHASE1_GO_LIVE_PLAN.md B1/B3/B5–B7 | 原计划业务场景/职责/模板及验收输入 | 按R01–R22逐项验收；本批不关闭全部一期目标 |
 
-本批状态为TARGETED_TEST_PASSED / NOT_RELEASE_VERIFIED；NOT_COMMITTED / NOT_PUSHED / NOT_DEPLOYED。首轮final_acceptance的SOURCE_CHANGED及5项加载失败、此前probe失败日志均保留；最终通过不改写失败事实。
+以上本地批次在授权前的状态为TARGETED_TEST_PASSED / NOT_RELEASE_VERIFIED；当时NOT_COMMITTED / NOT_PUSHED / NOT_DEPLOYED。首轮final_acceptance的SOURCE_CHANGED及5项加载失败、此前probe失败日志均保留；最终通过不改写失败事实。
+
+
+## 2026-09-09 远端CI实跑与修复
+
+用户已明确授权commit/push及远端CI。基础候选提交7db0998，Linux凭据修复09739f4，Node执行环境修复2297e3d，均已推送到`codex/phase1-go-live-20260908`。提交`2297e3dd40ef01e66bd0c3450e2fc853901d4fc2`的[GitHub Actions运行34332728730](https://github.com/leoli001031-blip/anhuan/actions/runs/34332728730)四项全部成功：368项离线、198项前端与lint/build/material-automation、197项集成、1个多阶段恢复场景、29项浏览器检查。四门源码指纹均为`2651caec937b027ccd8d5f025ae02e67c48b570736363eee267f4b1b0d8bcfa6`且运行期间不变；已下载全部逐例回执并核对44份日志SHA。
+
+原生Linux浏览器实际262.21秒完成四格式材料链、Redis中断与三个worker重启；原四个delivery以相同ID恢复done。原件/修订/新版本及旧冻结引用、partial提示与排除、未知上传回包刷新重试全部通过。PDF/JPEG各一次实际TLS HTTP合成OCR调用；三个后台运行卷无API数据库密码和对象凭据。专属容器/卷/网络归零，临时控制目录与本次镜像标签移除，共享指纹不变。
+
+首轮34330845206的离线/恢复通过，集成196通过1错误、浏览器启动失败；第二轮34331984434的离线/恢复/集成通过，浏览器在Node预检停止。前两轮回执保留：宿主机不应直接读取root拥有的0600运行凭据，测试改用对应容器身份核对SHA和权限；合成OCR私钥改由专用初始化容器写入65532拥有的私有卷，API与worker仅收到独立auth卷；CI预装Node实际mode0777，现复制完全相同SHA的二进制到本次独立0500路径并清理，原严格预检保留且提前执行。业务权限与测试断言没有放宽。
+
+S07现为REMOTE_CI_PASSED；本记录后的文档提交仍按同一workflow运行，最终当前提交结果见[远端CI汇总](../../../out/phase1_material_stability_2026-09-09/remote_ci/current_result.json)与该提交的GitHub Checks。本地原冻结门与两轮远端失败记录不被覆盖。P08真实材料/人工金标质量、业务接受及S08目标部署/外部告警仍为NOT_TESTED或NOT_DEPLOYED；本次没有部署、合并或发送外部通知。

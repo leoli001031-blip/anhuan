@@ -1,13 +1,13 @@
 # 完整一期正式上线执行事实
 
 更新：2026-09-09（Asia/Shanghai）  
-工程状态：`IN_PROGRESS / TARGETED_TEST_PASSED / NOT_RELEASE_VERIFIED / NOT_PRODUCTION`  
+工程状态：`IN_PROGRESS / TARGETED_TEST_PASSED / REMOTE_CI_PASSED / NOT_RELEASE_VERIFIED / NOT_PRODUCTION`
 目标与验收矩阵：[PHASE1_GO_LIVE_PLAN.md](./PHASE1_GO_LIVE_PLAN.md)
 
 ## 当前基线
 
 - 用户已明确完整一期正式上线，并要求持续完成开发、debug、测试、质量验收、部署与运维。尚未完成全部一期目标。
-- 工作分支 `codex/phase1-go-live-20260908`，起点提交 `60f321745a4c3b3297ba96bb8077264bcbdbed07`；本轮代码未提交、未推送、未部署。其他worktree与共享服务保留。
+- 工作分支 `codex/phase1-go-live-20260908`，起点提交 `60f321745a4c3b3297ba96bb8077264bcbdbed07`；本轮工程候选已授权提交/推送到2297e3d并通过远端CI；未部署。其他worktree与共享服务保留。
 - 当前源码为线性迁移 `f1_0044 / 55`；默认工程 `f1_0014 / 35`、material-RAG `f1_0016`保持。0027绑定报告真实转换及事件；0028保留旧解析事实并增加提取契约；0029接受整页OCR的契约3及 `cloud-vision-page-3`，不重标旧证据。0030新增组织类型并仅按明确关系回填，用于session-v2身份投影；未知/双用途旧组织保持待配置。0031新增客户门户开通/暂停/恢复与绑定邀请，保留客户、服务商和CRM的独立身份；0032新增成员角色调整/停用/恢复、最后管理员保护、历史记录保留和后台结果提交时的成员锁；0033为客户创建保存不可变请求身份并限制当前服务商管理员；0034新增原生证据任务、不可变提取修订与加密片段，DOCX释放同事务登记，后台提交受源/成员锁与租约限制；0035扩展XLSX/JPEG任务、格式定位/Unicode身份、图片处理身份与受限片段读取；0036新增人工文本/字段的不可变加密修订、确认/撤销、并发与请求重放；0037统一有效证据、格式引用和原件查看；0038增加原生任务受限恢复和不可变请求回执；0039增加复核原件对照；0040增加任务租约限定的内部源读取；0041增加报告worker独立任务能力与凭据；0042新增摄取数据库角色与持久交接；0043按任务限制对象读取/预览写入；0044新增加密OCR结果缓存。55为受保护表子集，下一迁移从0045继续。
 - 用户反馈某项工具操作被安全策略拦截，尚未收到具体原文。2026-09-08本轮读取 `/goal` 状态为 `blocked`，工具未返回原因；不把它描述为已恢复。普通本地编辑、测试和隔离Docker实测仍可执行。
 
@@ -19,6 +19,7 @@
 
 | 工作流 | 当前证据与边界 |
 |---|---|
+| 9月9日远端CI实跑 | [GitHub运行34332728730](https://github.com/leoli001031-blip/anhuan/actions/runs/34332728730)，2297e3d的offline/integration/restore/browser全部成功；368项离线、198项前端、197项集成、1个恢复场景、29项浏览器检查。四门同源码且稳定，完整回执已下载并核对44份日志SHA；原四delivery经Redis中断/worker重启恢复、OCR各1次、资源清理/共享不变均通过。真实质量和目标部署仍未完成；详见末尾及[汇总](../../../out/phase1_material_stability_2026-09-09/remote_ci/current_result.json)。 |
 | 9月9日B0/B2/B4最终冻结候选 | [汇总回执](../../../out/phase1_material_stability_2026-09-09/current_priority_result.json)：368项离线、198项前端及lint/build/material-automation、197项实库、1个新环境恢复多阶段场景、29项真实浏览器材料链通过。五门源码SHA均为541490c1ad3be5c073a94f14a534d80086578ce21d48f269a2a0982b16907f44且运行期稳定；quality缺真实原件/金标为NOT_TESTED。四格式准确定位、DOCX修订/新版本、旧冻结引用保持、partial提示与排除、混合批次及回包丢失后刷新重试、Redis中断及三个Linux worker重启恢复、独立运行凭据均有实际证明。OCR响应为合成；全部资源清理与共享指纹保持。S07远端CI、P08真实质量、S08目标部署/告警触达待完成。收尾仅更新四份记录文档并另存差异，不重标测试时指纹。 |
 | 9月9日P05人工修订 | [回执](../../../out/phase1_material_stability_2026-09-09/material_reviews_result.json)：0036下39项原生实库、325项离线、169项前端及build/lint/material-automation通过。四格式原始提取保持；文本/字段来源绑定、确认/撤销、并发冲突、未知回包重试与当前权限复核已接通。原始/修订并排校对界面、来源确认和客户切换隔离已验证。完整提取才可编辑；检索/报告应用继续P06，浏览器和真实质量后续验收。 |
 | 9月9日P04持久化接入 | [回执](../../../out/phase1_material_stability_2026-09-09/native_formats_persistence_result.json)：0035/52下32项原生实库、320项离线、163项前端与build/lint/material-automation通过。Excel/JPEG释放同事务登记；中文/emoji定位加密往返、图片重试与方向/处理身份、旧版本分页读取及跨租户/停用拒绝均验证。对象读取与OCR为替身；人工修订、检索与报告继续P05/P06。 |
@@ -44,7 +45,7 @@
 | DOCX原生持久化0034 | 新增三个FORCE-RLS表、独立NOLOGIN definer的六个受限入口、真实任务租约/续租及完成事务，默认0014/0016不启用。当前22项专属实库通过：release与注册原子回滚、真实Python worker解析/加密/SQL接线、完整及partial结果、原件字节不符拒绝、并发claim/成员停用/源锁等待、提交中途失败及租约过期均无半写、重放不重复、直接DML/正文/内部helper拒绝；对象存储读取和释放复制使用替身。加密/worker新增15项离线通过；DOCX状态界面6项实际TSX回归通过，未做真实浏览器/对象存储全链。当前未接v2检索或报告，也未实现历史缺job补投、blocked重绑；普通python-docx附属part仍partial。首轮0034统一门263项离线中4项失败、119项实库中1项失败，均为旧0033/49目录断言；已更新到精确0034/52及下一非法目标0035，128项相关合同通过，未删用例或放宽为泛化断言。统一前端runner已显式纳入原生状态和上传回归。最新统一门270项离线、157项前端、119项实库全部通过；首轮失败回执保留。 |
 | DOCX真实对象存储 | [独立探针](../../../out/phase1_go_live_2026-09-08/backend/native-storage/run-20260908T091214Z-4b4c55af/report.json)：真实MinIO释放复制→worker→AEAD加密持久化→metadata→独立解密26/26通过。完整最小DOCX为3块/3片段，普通包为5块/19条缺口/零片段；错误SHA/大小/ETag拒绝释放，同长度原件篡改阻断且零修订/片段。真实PG与MinIO专属资源已清理，共享指纹未变。扫描/预览使用fixture，未覆盖HTTP/ClamAV/RQ/浏览器；该探针早于后续可见性源码修改，不能冒称最终全链证明。 |
 | DOCX可见性与上传界面 | 正文、docDefaults及实际生效样式链内color/shd统一标可见性未决，partial且零可用片段；未使用样式保持原行为。新增7项测试和8个固定包复测通过，普通包仍保留19条缺口。材料面板与新版本上传接受后端开放的PDF/DOCX并限制DOCX 25 MiB；切换客户/文档后旧请求结果不能清空新上传状态，未知结果重试保留请求ID。11项实际TSX定向回归通过，并计入最新157项；未做DOCX真实浏览器上传验收。 |
-| CI与验收入口 | 已有真实unittest/Node逐例计数、日志、进程错误及工作树指纹；Linux CI配置已写入，远端尚未运行。browser/restore/quality统一入口均已接入；四个工程mode本地通过，真实quality缺输入为NOT_TESTED；远端CI尚未执行。 |
+| CI与验收入口 | 已有真实unittest/Node逐例计数、日志、进程错误及工作树指纹；Linux CI已实际运行并取回证据。browser/restore/quality统一入口均已接入；四个工程mode本地及远端通过，真实quality缺输入为NOT_TESTED。 |
 
 此前失败日志保留，后续通过回执不覆盖它们。上述证据是本地定向验证，不是同一已提交发布候选的最终全门验收。
 
@@ -91,3 +92,14 @@ S08独立运维验证：candidate_ops_check.py按明确候选容器/image、数�
 ### 2026-09-09 B0/B2/B4本地工程批次收口
 
 当前以[执行清单最终结果](PHASE1_MATERIAL_STABILITY_TASKS.md)及[汇总回执](../../../out/phase1_material_stability_2026-09-09/current_priority_result.json)为准。表中各旧日期/阶段的待接线描述只保留当时事实。完整一期未完成；真实材料/金标/业务接受、同提交远端CI与目标部署运维仍须分别完成。未commit/push/deploy。
+
+
+### 2026-09-09 授权提交推送与远端CI验收
+
+用户已明确授权commit/push及远端CI。基础候选提交7db0998，Linux凭据修复09739f4，Node执行环境修复2297e3d，均已推送到`codex/phase1-go-live-20260908`。提交`2297e3dd40ef01e66bd0c3450e2fc853901d4fc2`的[GitHub Actions运行34332728730](https://github.com/leoli001031-blip/anhuan/actions/runs/34332728730)四项全部成功：368项离线、198项前端与lint/build/material-automation、197项集成、1个多阶段恢复场景、29项浏览器检查。四门源码指纹均为`2651caec937b027ccd8d5f025ae02e67c48b570736363eee267f4b1b0d8bcfa6`且运行期间不变；已下载全部逐例回执并核对44份日志SHA。
+
+原生Linux浏览器实际262.21秒完成四格式材料链、Redis中断与三个worker重启；原四个delivery以相同ID恢复done。原件/修订/新版本及旧冻结引用、partial提示与排除、未知上传回包刷新重试全部通过。PDF/JPEG各一次实际TLS HTTP合成OCR调用；三个后台运行卷无API数据库密码和对象凭据。专属容器/卷/网络归零，临时控制目录与本次镜像标签移除，共享指纹不变。
+
+首轮34330845206的离线/恢复通过，集成196通过1错误、浏览器启动失败；第二轮34331984434的离线/恢复/集成通过，浏览器在Node预检停止。前两轮回执保留：宿主机不应直接读取root拥有的0600运行凭据，测试改用对应容器身份核对SHA和权限；合成OCR私钥改由专用初始化容器写入65532拥有的私有卷，API与worker仅收到独立auth卷；CI预装Node实际mode0777，现复制完全相同SHA的二进制到本次独立0500路径并清理，原严格预检保留且提前执行。业务权限与测试断言没有放宽。
+
+S07现为REMOTE_CI_PASSED；本记录后的文档提交仍按同一workflow运行，最终当前提交结果见[远端CI汇总](../../../out/phase1_material_stability_2026-09-09/remote_ci/current_result.json)与该提交的GitHub Checks。本地原冻结门与两轮远端失败记录不被覆盖。P08真实材料/人工金标质量、业务接受及S08目标部署/外部告警仍为NOT_TESTED或NOT_DEPLOYED；本次没有部署、合并或发送外部通知。

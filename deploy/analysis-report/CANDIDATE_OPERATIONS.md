@@ -128,3 +128,6 @@ PYTHONPATH=src:. python -B -m unittest \
 2026-09-09 本地定向验证共 17 项通过：12 项离线边界检查和 5 项专用 PostgreSQL 18 检查。实库已观察到已知 retry/blocked、pending 超时与过期租约；验证历史终态不误报、角色可见性收窄时拒绝、只读事务拒绝写入、错误集群/head 拒绝，以及业务行/审计不变。独立栈清理为 `CLEAN`，专用容器/网络/卷均为 0，共享指纹不变。此17项定向记录本身不包含候选十二服务联动检查。随后0044冻结候选的browser统一门实际运行十二服务：正常时services/database/readiness均PASSED，Redis中断时三者均ALERT；未配置对象计划，objects仍NOT_TESTED，正常总状态亦NOT_TESTED。原四个上传投递在Redis与worker恢复后均以相同ID完成。证据为仓外out/phase1_material_stability_2026-09-09/final_frozen/20260909T011819Z-browser-a037d05f/的browser-result.json、ops-baseline.json与ops-queue-outage.json；总索引为current_priority_result.json。专属资源及本次镜像标签清理完成，共享指纹不变。这是本地隔离候选监控证明，不是目标环境或通知触达证明。
 
 正式运维交接仍需明确实际服务器与部署负责人、值班与通知接收人/渠道、业务峰值及阈值、备份周期/保留地点/保留期、允许的数据损失与恢复时限（RPO/RTO）、存储/OCR/模型预算，以及对应真实演练证据。在这些输入落地前，回执始终保留 `production_deployment=NOT_TESTED`、`alerts_delivered=NOT_TESTED`、`formal_sla=NOT_CONFIGURED`；本地示例阈值不能替代这些决定。
+
+
+2026-09-09补充：[2297e3d远端CI](https://github.com/leoli001031-blip/anhuan/actions/runs/34332728730)已在GitHub Ubuntu 24.04实际完成相同的十二服务观察、Redis故障告警和原四个delivery重启恢复。browser 29项、integration 197项、restore 1场景及offline均通过；完整回执已取回仓外remote_ci/run-34332728730。此项关闭S07远端CI缺口，正式部署、真实通知送达及正式SLA仍维持上述未验状态。
